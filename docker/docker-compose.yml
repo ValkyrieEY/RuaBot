@@ -1,0 +1,57 @@
+# Docker Compose for Xiaoyi_QQ Framework
+version: '3.8'
+
+services:
+  xiaoyi_qq:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    container_name: xiaoyi_qq_framework
+    ports:
+      - "8000:8000"
+    environment:
+      - ENVIRONMENT=production
+      - DATABASE_URL=sqlite+aiosqlite:///./data/onebot_framework.db
+      - LOG_LEVEL=INFO
+      - SECRET_KEY=${SECRET_KEY:-change-this-secret-key}
+      - WEB_UI_USERNAME=${WEB_UI_USERNAME:-admin}
+      - WEB_UI_PASSWORD=${WEB_UI_PASSWORD:-admin123}
+    volumes:
+      - ../data:/app/data
+      - ../logs:/app/logs
+      - ../plugins:/app/plugins
+    restart: unless-stopped
+    networks:
+      - xiaoyi_network
+
+  # PostgreSQL database (optional, for production)
+  # postgres:
+  #   image: postgres:15-alpine
+  #   container_name: xiaoyi_postgres
+  #   environment:
+  #     - POSTGRES_DB=xiaoyi_qq
+  #     - POSTGRES_USER=xiaoyi
+  #     - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-xiaoyi123}
+  #   volumes:
+  #     - postgres_data:/var/lib/postgresql/data
+  #   ports:
+  #     - "5432:5432"
+  #   networks:
+  #     - xiaoyi_network
+
+  # Redis cache (optional, for distributed deployment)
+  # redis:
+  #   image: redis:7-alpine
+  #   container_name: xiaoyi_redis
+  #   ports:
+  #     - "6379:6379"
+  #   networks:
+  #     - xiaoyi_network
+
+networks:
+  xiaoyi_network:
+    driver: bridge
+
+# volumes:
+#   postgres_data:
+

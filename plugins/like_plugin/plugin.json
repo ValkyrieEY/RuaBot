@@ -1,0 +1,25 @@
+{
+  "name": "like_plugin",
+  "version": "1.0.0",
+  "author": "XQNEXT",
+  "description": "QQ名片点赞插件 - 给用户QQ名片点赞10次，每天限制10次",
+  "category": "entertainment",
+  "tags": ["like", "qq", "profile", "点赞"],
+  "default_config": {
+    "bot_name": "机器人",
+    "reminder": ""
+  },
+  "config_schema": {
+    "bot_name": {
+      "type": "string",
+      "default": "机器人",
+      "description": "机器人名称"
+    },
+    "reminder": {
+      "type": "string",
+      "default": "",
+      "description": "触发前缀（留空则不需要前缀）"
+    }
+  }
+}
+

@@ -1,0 +1,19 @@
+{
+  "name": "so_good",
+  "version": "1.0.0",
+  "author": "XQNEXT",
+  "description": "SoGood 评价插件 - 评价用户今天的表现，发电功能",
+  "category": "entertainment",
+  "tags": ["rating", "evaluation", "power", "评价", "发电"],
+  "default_config": {
+    "reminder": ""
+  },
+  "config_schema": {
+    "reminder": {
+      "type": "string",
+      "default": "",
+      "description": "触发前缀（留空则不需要前缀）"
+    }
+  }
+}
+

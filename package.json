@@ -1,0 +1,12 @@
+{
+  "name": "onebot-framework",
+  "version": "0.0.1",
+  "private": true,
+  "scripts": {
+    "build": "cd webui && npm run build",
+    "dev": "cd webui && npm run dev",
+    "preview": "cd webui && npm run preview",
+    "lint": "cd webui && npm run lint"
+  }
+}
+

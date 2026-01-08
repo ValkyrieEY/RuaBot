@@ -1,0 +1,51 @@
+[app]
+name = "Xiaoyi_QQ Framework"
+version = "0.0.1"
+environment = "development"
+debug = false
+web_ui_password = "admin123"
+web_ui_enabled = true
+log_level = "INFO"
+
+[server]
+host = "0.0.0.0"
+port = 8000
+
+[onebot]
+version = "v11"
+connection_type = "ws_forward"
+http_url = "http://localhost:5700"
+ws_url = "ws://127.0.0.1:3001"
+ws_reverse_host = "0.0.0.0"
+ws_reverse_port = 8080
+ws_reverse_path = "/onebot/v11/ws"
+access_token = ""
+secret = ""
+
+[database]
+url = "sqlite+aiosqlite:///./data/onebot_framework.db"
+
+[security]
+secret_key = "your-secret-key-change-this-in-production"
+access_token_expire_minutes = 30
+
+[logging]
+level = "INFO"
+file = "logs/onebot_framework.log"
+
+[plugins]
+dir = "./plugins"
+auto_load = true
+
+[web_ui]
+enabled = true
+username = "admin"
+password = "admin123"
+
+[tencent_cloud]
+secret_id = ""
+secret_key = ""
+
+[ai]
+thread_pool_enabled = true
+thread_pool_workers = 5

@@ -1,0 +1,2 @@
+"""Kawaii Status Plugin"""
+

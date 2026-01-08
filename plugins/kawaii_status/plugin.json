@@ -1,0 +1,47 @@
+{
+  "name": "kawaii_status",
+  "version": "0.2.0",
+  "author": "XQNEXT",
+  "description": "服务器状态查看插件，显示 CPU、内存、磁盘等信息",
+  "entry": "main.py",
+  "dependencies": [
+    {
+      "name": "psutil",
+      "version": ">=5.9.8",
+      "required": true
+    },
+    {
+      "name": "pillow",
+      "version": ">=10.3.0",
+      "required": true
+    },
+    {
+      "name": "py-cpuinfo",
+      "version": ">=9.0.0",
+      "required": true
+    }
+  ],
+  "config_schema": {
+    "to_me": {
+      "type": "boolean",
+      "default": false,
+      "description": "触发指令是否需要 @Bot"
+    },
+    "only_superuser": {
+      "type": "boolean",
+      "default": false,
+      "description": "是否只能由 SUPERUSER 触发指令"
+    },
+    "nickname": {
+      "type": "string",
+      "default": "Bot",
+      "description": "Bot 昵称"
+    }
+  },
+  "default_config": {
+    "to_me": false,
+    "only_superuser": false,
+    "nickname": "Bot"
+  }
+}
+

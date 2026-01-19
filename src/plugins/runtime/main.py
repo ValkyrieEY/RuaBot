@@ -8,8 +8,10 @@ import sys
 import json
 import asyncio
 import importlib.util
+import os
+import signal
 from pathlib import Path
-from typing import Dict, Any, List
+from typing import Dict, Any, List, Optional
 
 # Add parent directory to path
 sys.path.insert(0, str(Path(__file__).parent.parent.parent.parent))
@@ -24,10 +26,18 @@ class PluginRuntime:
         self.running = True
         self.plugins_dir = Path("plugins")
         self.pending_requests: Dict[str, asyncio.Future] = {}  # request_id -> Future
+        self.parent_pid = os.getppid()  # Store parent process ID
+        self.parent_check_task: Optional[asyncio.Task] = None
     
     async def run(self):
         """Main runtime loop."""
         self.log("info", "Plugin runtime started")
+        
+        # Setup signal handlers for graceful shutdown
+        self._setup_signal_handlers()
+        
+        # Start parent process monitor
+        self.parent_check_task = asyncio.create_task(self._monitor_parent_process())
         
         # Start stdin reader in background
         asyncio.create_task(self._stdin_reader())
@@ -40,7 +50,79 @@ class PluginRuntime:
         except KeyboardInterrupt:
             pass
         finally:
+            # Cancel parent check task
+            if self.parent_check_task and not self.parent_check_task.done():
+                self.parent_check_task.cancel()
+                try:
+                    await self.parent_check_task
+                except asyncio.CancelledError:
+                    pass
             self.log("info", "Plugin runtime stopped")
+    
+    def _setup_signal_handlers(self):
+        """Setup signal handlers for graceful shutdown."""
+        def signal_handler(signum, frame):
+            """Handle termination signals."""
+            self.log("info", f"Received signal {signum}, shutting down...")
+            self.running = False
+        
+        # Register signal handlers (Unix only)
+        if sys.platform != 'win32':
+            signal.signal(signal.SIGTERM, signal_handler)
+            signal.signal(signal.SIGINT, signal_handler)
+    
+    async def _monitor_parent_process(self):
+        """Monitor parent process and exit if it's gone.
+        
+        This prevents orphaned plugin processes when the framework crashes.
+        """
+        try:
+            while self.running:
+                await asyncio.sleep(5)  # Check every 5 seconds
+                
+                # Check if parent process still exists
+                try:
+                    if sys.platform == 'win32':
+                        # On Windows, use psutil if available
+                        try:
+                            import psutil
+                            try:
+                                parent = psutil.Process(self.parent_pid)
+                                if not parent.is_running():
+                                    self.log("warning", "Parent process no longer exists, shutting down...")
+                                    self.running = False
+                                    break
+                            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                                self.log("warning", "Parent process no longer exists, shutting down...")
+                                self.running = False
+                                break
+                        except ImportError:
+                            # psutil not available on Windows
+                            # Try alternative: check if stdin is closed (indicates parent is gone)
+                            try:
+                                if sys.stdin.closed:
+                                    self.log("warning", "Stdin closed, parent process likely gone, shutting down...")
+                                    self.running = False
+                                    break
+                            except Exception:
+                                # If we can't check, continue monitoring
+                                pass
+                    else:
+                        # On Unix, use os.kill with signal 0 to check if process exists
+                        try:
+                            os.kill(self.parent_pid, 0)
+                        except OSError:
+                            # Parent process doesn't exist
+                            self.log("warning", "Parent process no longer exists, shutting down...")
+                            self.running = False
+                            break
+                except Exception as e:
+                    self.log("error", f"Error checking parent process: {e}")
+                    # Continue monitoring even if check fails
+        except asyncio.CancelledError:
+            pass
+        except Exception as e:
+            self.log("error", f"Error in parent process monitor: {e}")
     
     async def _stdin_reader(self):
         """Continuously read from stdin in background."""
@@ -83,7 +165,9 @@ class PluginRuntime:
         if msg_type == 'init_plugins':
             await self.init_plugins(data.get('plugins', []))
         elif msg_type == 'reload_plugin':
-            await self.reload_plugin(data.get('plugin_name'))
+            await self.reload_plugin(data.get('plugin_name'), data.get('config'))
+        elif msg_type == 'unload_plugin':
+            await self.unload_plugin(data.get('plugin_name'))
         elif msg_type == 'event':
             await self.handle_event(data)
         elif msg_type == 'heartbeat':
@@ -203,11 +287,62 @@ class PluginRuntime:
                 import traceback
                 self.log("error", traceback.format_exc())
     
-    async def reload_plugin(self, plugin_name: str):
+    async def unload_plugin(self, plugin_name: str):
+        """Unload a single plugin without reloading.
+        
+        Args:
+            plugin_name: Plugin name (format: author/name or just name)
+        """
+        self.log("info", f"Unloading plugin: {plugin_name}")
+        
+        try:
+            # Parse plugin name
+            if '/' in plugin_name:
+                plugin_id = plugin_name
+            else:
+                # Try to find plugin by name
+                plugin_id = None
+                for pid in self.plugins.keys():
+                    if pid.endswith(f'/{plugin_name}') or pid == plugin_name:
+                        plugin_id = pid
+                        break
+                
+                if not plugin_id:
+                    self.log("warning", f"Plugin {plugin_name} not found in loaded plugins")
+                    return
+            
+            # Unload plugin
+            if plugin_id in self.plugins:
+                plugin_instance = self.plugins[plugin_id]
+                if hasattr(plugin_instance, 'on_unload'):
+                    try:
+                        await plugin_instance.on_unload()
+                    except Exception as e:
+                        self.log("error", f"Error in plugin on_unload: {e}")
+                
+                del self.plugins[plugin_id]
+                if plugin_id in self.plugin_configs:
+                    del self.plugin_configs[plugin_id]
+                
+                # Remove module from sys.modules
+                module_name = f"plugin_{plugin_id.replace('/', '_')}"
+                if module_name in sys.modules:
+                    del sys.modules[module_name]
+                
+                self.log("info", f"Plugin {plugin_id} unloaded successfully")
+            else:
+                self.log("warning", f"Plugin {plugin_id} not found in loaded plugins")
+        except Exception as e:
+            self.log("error", f"Failed to unload plugin {plugin_name}: {e}")
+            import traceback
+            self.log("error", traceback.format_exc())
+    
+    async def reload_plugin(self, plugin_name: str, config_override: Optional[Dict[str, Any]] = None):
         """Reload a single plugin.
         
         Args:
             plugin_name: Plugin name (format: author/name or just name)
+            config_override: Optional config to use instead of reading from database
         """
         self.log("info", f"Reloading plugin: {plugin_name}")
         
@@ -231,7 +366,7 @@ class PluginRuntime:
                     name = plugin_name
                     plugin_id = f"{author}/{name}"
             
-            # Unload plugin
+            # Unload plugin first
             if plugin_id in self.plugins:
                 plugin_instance = self.plugins[plugin_id]
                 if hasattr(plugin_instance, 'on_unload'):
@@ -249,23 +384,62 @@ class PluginRuntime:
                 if module_name in sys.modules:
                     del sys.modules[module_name]
             
-            # Reload plugin from database
-            # Get plugin setting from database
+            # Check if plugin is enabled before reloading
             if '/' in plugin_id:
                 author, name = plugin_id.split('/', 1)
             else:
                 author = 'XQNEXT'  # Default author
                 name = plugin_id
             
-            # Always get fresh config from database
-            plugin_config_data = {}
+            # Check plugin enabled status from database
+            is_enabled = True
             try:
                 from ..core.database import get_database_manager
                 db_manager = get_database_manager()
                 setting = await db_manager.get_plugin_setting(author, name)
-                if setting and setting.config:
-                    plugin_config_data = setting.config
+                if setting:
+                    is_enabled = setting.enabled
                 else:
+                    # If not in database, check system.json
+                    plugin_path = self.plugins_dir / name
+                    system_json = plugin_path / "system.json"
+                    if system_json.exists():
+                        import json
+                        with open(system_json, 'r', encoding='utf-8') as f:
+                            system_data = json.load(f)
+                            is_enabled = system_data.get('enabled', False)
+            except Exception as e:
+                self.log("warning", f"Could not check plugin enabled status: {e}, assuming enabled")
+            
+            # Only reload if plugin is enabled
+            if not is_enabled:
+                self.log("info", f"Plugin {plugin_id} is disabled, not reloading")
+                return
+            
+            # Get config: use override if provided, otherwise read from database
+            plugin_config_data = {}
+            if config_override is not None:
+                plugin_config_data = config_override
+                self.log("info", f"Using config override for {plugin_id}: {plugin_config_data}")
+            else:
+                # Get fresh config from database
+                try:
+                    from ..core.database import get_database_manager
+                    db_manager = get_database_manager()
+                    setting = await db_manager.get_plugin_setting(author, name)
+                    if setting and setting.config:
+                        plugin_config_data = setting.config
+                    else:
+                        # Fallback to default config from plugin.json
+                        plugin_path = self.plugins_dir / name
+                        plugin_json = plugin_path / "plugin.json"
+                        if plugin_json.exists():
+                            import json
+                            with open(plugin_json, 'r', encoding='utf-8') as f:
+                                plugin_metadata = json.load(f)
+                                plugin_config_data = plugin_metadata.get('default_config', {})
+                except Exception as e:
+                    self.log("warning", f"Could not get plugin config from database: {e}, using default config")
                     # Fallback to default config from plugin.json
                     plugin_path = self.plugins_dir / name
                     plugin_json = plugin_path / "plugin.json"
@@ -274,16 +448,6 @@ class PluginRuntime:
                         with open(plugin_json, 'r', encoding='utf-8') as f:
                             plugin_metadata = json.load(f)
                             plugin_config_data = plugin_metadata.get('default_config', {})
-            except Exception as e:
-                self.log("warning", f"Could not get plugin config from database: {e}, using default config")
-                # Fallback to default config from plugin.json
-                plugin_path = self.plugins_dir / name
-                plugin_json = plugin_path / "plugin.json"
-                if plugin_json.exists():
-                    import json
-                    with open(plugin_json, 'r', encoding='utf-8') as f:
-                        plugin_metadata = json.load(f)
-                        plugin_config_data = plugin_metadata.get('default_config', {})
             
             # Get plugin config
             plugin_config = {
@@ -295,7 +459,7 @@ class PluginRuntime:
             # Load plugin
             await self.init_plugins([plugin_config])
             
-            self.log("info", f"Plugin {plugin_id} reloaded successfully")
+            self.log("info", f"Plugin {plugin_id} reloaded successfully with config: {plugin_config_data}")
         except Exception as e:
             self.log("error", f"Failed to reload plugin {plugin_name}: {e}")
             import traceback

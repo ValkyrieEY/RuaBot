@@ -1,6 +1,7 @@
 import { useEffect, useState, useRef } from 'react'
-import { Send, Users, User, Search, RefreshCw, MessageSquare, ArrowLeft } from 'lucide-react'
+import { Send, Users, User, Search, RefreshCw, MessageSquare, ArrowLeft, Wifi, WifiOff } from 'lucide-react'
 import { api } from '@/utils/api'
+import { useWebSocket, type WebSocketMessage } from '@/hooks/useWebSocket'
 
 interface Contact {
   id: string
@@ -46,6 +47,80 @@ export default function ChatPage() {
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const messageContainerRef = useRef<HTMLDivElement>(null)
   const prevMessagesLengthRef = useRef(0)
+
+  // WebSocket for real-time message updates
+  const { isConnected } = useWebSocket({
+    onMessage: (wsMessage: WebSocketMessage) => {
+      // Skip system messages
+      if (wsMessage.is_system) return
+
+      // Update messages if this message belongs to the currently selected chat
+      if (selectedContact) {
+        let isForCurrentChat = false
+        
+        // Group message matching
+        if (wsMessage.message_type === 'group' && selectedContact.type === 'group') {
+          isForCurrentChat = wsMessage.group_id === selectedContact.id
+        }
+        // Private message matching
+        else if (wsMessage.message_type === 'private' && selectedContact.type === 'private') {
+          // For self-sent messages, check if target_id matches the selected contact
+          // For received messages, check if user_id matches the selected contact
+          if (wsMessage.is_self && wsMessage.target_id) {
+            // Bot sent to this contact - match by target_id
+            isForCurrentChat = wsMessage.target_id === selectedContact.id
+          } else {
+            // Message from contact - match by sender ID
+            isForCurrentChat = wsMessage.user_id === selectedContact.id
+          }
+        }
+
+        if (isForCurrentChat) {
+          setMessages((prev) => {
+            // Check if message already exists
+            if (prev.some((m) => m.message_id === wsMessage.message_id)) {
+              return prev
+            }
+            // Add new message
+            return [
+              ...prev,
+              {
+                id: wsMessage.id,
+                timestamp: wsMessage.timestamp,
+                message_id: wsMessage.message_id || wsMessage.id,
+                user_id: wsMessage.user_id || '',
+                message: wsMessage.message || wsMessage.raw_message || '',
+                sender: wsMessage.sender || {},
+                is_self: wsMessage.is_self || false
+              }
+            ]
+          })
+        }
+      }
+
+      // Update unread counts if message is not for current chat and not self
+      if (!wsMessage.is_self) {
+        const contactKey = wsMessage.message_type === 'group'
+          ? `group-${wsMessage.group_id}`
+          : `private-${wsMessage.user_id}`
+
+        // Don't count as unread if this contact is currently selected
+        if (selectedContact) {
+          const selectedKey = `${selectedContact.type}-${selectedContact.id}`
+          if (contactKey === selectedKey) return
+        }
+
+        // Skip if this chat has been viewed
+        if (viewedChatsRef.current.has(contactKey)) return
+
+        // Increment unread count
+        setUnreadCounts((prev) => ({
+          ...prev,
+          [contactKey]: (prev[contactKey] || 0) + 1
+        }))
+      }
+    }
+  })
 
   // Load contacts on mount
   useEffect(() => {
@@ -136,25 +211,28 @@ export default function ChatPage() {
       }
     }
     
-    // Check immediately and then every 3 seconds
+    // Check immediately and adjust interval based on WebSocket status
     checkNewMessages()
-    const interval = setInterval(checkNewMessages, 3000)
+    // Use longer interval when WebSocket is connected (30s vs 5s)
+    const checkInterval = isConnected ? 30000 : 5000
+    const interval = setInterval(checkNewMessages, checkInterval)
     
     return () => clearInterval(interval)
-  }, [selectedContact])
+  }, [selectedContact, isConnected])
 
   // Load messages when contact is selected
   useEffect(() => {
     if (selectedContact) {
       loadMessages(selectedContact, true) // Initial load with scroll
       prevMessagesLengthRef.current = 0 // Reset counter
-      // Auto refresh messages every 2 seconds
+      // Auto refresh messages - use longer interval when WebSocket is connected
+      const refreshInterval = isConnected ? 30000 : 5000 // 30s with WebSocket, 5s without
       const interval = setInterval(() => {
         loadMessages(selectedContact, false) // Refresh without forced scroll
-      }, 2000)
+      }, refreshInterval)
       return () => clearInterval(interval)
     }
-  }, [selectedContact])
+  }, [selectedContact, isConnected])
 
   // Scroll to bottom when NEW messages arrive (not when switching contacts)
   useEffect(() => {
@@ -435,7 +513,19 @@ export default function ChatPage() {
                   className="w-10 h-10 rounded-full object-cover flex-shrink-0"
                 />
                 <div className="min-w-0 flex-1">
-                  <h2 className="font-semibold text-gray-900 truncate">{selectedContact.name}</h2>
+                  <div className="flex items-center gap-2">
+                    <h2 className="font-semibold text-gray-900 truncate">{selectedContact.name}</h2>
+                    {/* WebSocket Status Indicator */}
+                    {isConnected ? (
+                      <span title="实时连接" className="flex-shrink-0">
+                        <Wifi className="w-3.5 h-3.5 text-green-500" />
+                      </span>
+                    ) : (
+                      <span title="离线模式" className="flex-shrink-0">
+                        <WifiOff className="w-3.5 h-3.5 text-orange-500" />
+                      </span>
+                    )}
+                  </div>
                   {selectedContact.type === 'group' && selectedContact.member_count && (
                     <p className="text-xs text-gray-500">{selectedContact.member_count} 名成员</p>
                   )}

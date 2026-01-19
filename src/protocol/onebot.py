@@ -74,6 +74,12 @@ class OneBotAdapter(ProtocolAdapter):
         Args:
             handler: Async function that takes event dict as parameter
         """
+        if handler is None:
+            logger.warning("Attempted to register None as event handler, ignoring")
+            return
+        if not callable(handler):
+            logger.warning(f"Attempted to register non-callable object as event handler: {type(handler)}, ignoring")
+            return
         self._event_handlers.append(handler)
         logger.info(f"Registered event handler, total handlers: {len(self._event_handlers)}")
     
@@ -169,20 +175,34 @@ class OneBotAdapter(ProtocolAdapter):
         """Handle forward WebSocket connection."""
         while self._running:
             try:
-                # Build connection parameters
-                # For websockets >= 12.0 (Python 3.13 compatible), use additional_headers (list of tuples)
-                # For older versions, use extra_headers (dict)
+                # Build connection parameters with token authentication
                 connect_kwargs = {}
                 if self.access_token:
-                    # Try additional_headers first (websockets >= 12.0, Python 3.13 compatible)
-                    # This is a list of (header_name, header_value) tuples
-                    connect_kwargs["additional_headers"] = [
-                        ("Authorization", f"Bearer {self.access_token}")
-                    ]
+                    # Try to detect websockets version and use appropriate parameter
+                    # websockets >= 12.0 uses additional_headers (list of tuples)
+                    # websockets < 12.0 uses extra_headers (dict)
+                    import inspect
+                    sig = inspect.signature(websockets.connect)
+                    
+                    if 'additional_headers' in sig.parameters:
+                        # websockets >= 12.0
+                        connect_kwargs["additional_headers"] = [
+                            ("Authorization", f"Bearer {self.access_token}")
+                        ]
+                    elif 'extra_headers' in sig.parameters:
+                        # websockets < 12.0
+                        connect_kwargs["extra_headers"] = {
+                            "Authorization": f"Bearer {self.access_token}"
+                        }
+                    else:
+                        logger.warning("Cannot determine websockets header parameter, trying extra_headers")
+                        connect_kwargs["extra_headers"] = {
+                            "Authorization": f"Bearer {self.access_token}"
+                        }
 
                 logger.info(f"Connecting to forward WebSocket: {self.ws_url}")
                 if self.access_token:
-                    logger.info("🔑 Using access token for authentication")
+                    logger.info("Using access token for authentication")
                 try:
                     ws = await websockets.connect(self.ws_url, **connect_kwargs)
                     self._ws = ws
@@ -198,6 +218,11 @@ class OneBotAdapter(ProtocolAdapter):
                                 # Check if it's an API response (has echo field but no post_type)
                                 if data.get("echo") is not None and data.get("post_type") is None:
                                     echo = data.get("echo")
+                                    # Skip empty echo (some implementations send empty echo)
+                                    if not echo or echo == "":
+                                        logger.debug(f"Received API response with empty echo, ignoring")
+                                        continue
+                                    
                                     logger.debug(f"Received API response with echo: {echo}, data: {data}")
                                     if echo in self._api_responses:
                                         future = self._api_responses.pop(echo)
@@ -208,7 +233,8 @@ class OneBotAdapter(ProtocolAdapter):
                                             logger.warning(f"Future already done for echo: {echo}")
                                         continue
                                     else:
-                                        logger.warning(f"No waiting future found for echo: {echo}, active echoes: {list(self._api_responses.keys())}")
+                                        # Only warn if echo is not empty (empty echo is common and harmless)
+                                        logger.debug(f"No waiting future found for echo: {echo}, active echoes: {list(self._api_responses.keys())}")
                                 
                                 post_type = data.get("post_type", "unknown")
                                 logger.info(f"Received WebSocket message: {post_type}", 
@@ -286,6 +312,11 @@ class OneBotAdapter(ProtocolAdapter):
                         # Check if it's an API response (has echo field but no post_type)
                         if data.get("echo") is not None and data.get("post_type") is None:
                             echo = data.get("echo")
+                            # Skip empty echo (some implementations send empty echo)
+                            if not echo or echo == "":
+                                logger.debug(f"Received API response (reverse) with empty echo, ignoring")
+                                continue
+                            
                             logger.debug(f"Received API response (reverse) with echo: {echo}, data: {data}")
                             if echo in self._api_responses:
                                 future = self._api_responses.pop(echo)
@@ -296,7 +327,8 @@ class OneBotAdapter(ProtocolAdapter):
                                     logger.warning(f"Future already done for echo: {echo}")
                                 continue
                             else:
-                                logger.warning(f"No waiting future found for echo: {echo}, active echoes: {list(self._api_responses.keys())}")
+                                # Only warn if echo is not empty (empty echo is common and harmless)
+                                logger.debug(f"No waiting future found for echo: {echo}, active echoes: {list(self._api_responses.keys())}")
                         
                         logger.debug("Received reverse WebSocket message", post_type=data.get("post_type", "unknown"))
                         await self._handle_event(data)
@@ -659,6 +691,9 @@ class OneBotAdapter(ProtocolAdapter):
         # Call all registered event handlers
         for handler in self._event_handlers:
             try:
+                if handler is None or not callable(handler):
+                    logger.warning(f"Skipping invalid handler: {handler}")
+                    continue
                 await handler(event)
             except Exception as e:
                 logger.error(f"Error in event handler: {e}", exc_info=True)

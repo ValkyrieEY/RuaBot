@@ -1,7 +1,8 @@
 import { useEffect, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { api, type MessageLog } from '@/utils/api'
-import { MessageSquare, User, Users, Clock, RefreshCw, Bell, UserPlus } from 'lucide-react'
+import { MessageSquare, User, Users, Clock, RefreshCw, Bell, UserPlus, Wifi, WifiOff } from 'lucide-react'
+import { useWebSocket, type WebSocketMessage } from '@/hooks/useWebSocket'
 
 export default function MessageLogPage() {
   const { t } = useTranslation()
@@ -12,16 +13,39 @@ export default function MessageLogPage() {
   const [autoRefresh, setAutoRefresh] = useState(true)
   const [filter, setFilter] = useState<'all' | 'message' | 'notice' | 'request'>('all')
 
+  // WebSocket for real-time updates
+  const { isConnected } = useWebSocket({
+    onMessage: (wsMessage: WebSocketMessage) => {
+      // Add new message to the top of the list
+      setMessages((prev) => {
+        // Check if message already exists (by id)
+        if (prev.some((m) => m.id === wsMessage.id)) {
+          return prev
+        }
+        // Add new message and maintain limit
+        const newMessages = [wsMessage as MessageLog, ...prev]
+        return newMessages.slice(0, limit)
+      })
+    },
+    onConnected: () => {
+      console.log('[MessageLog] WebSocket connected')
+    },
+    onDisconnected: () => {
+      console.log('[MessageLog] WebSocket disconnected')
+    }
+  })
+
   useEffect(() => {
     loadMessages()
+    // Still use polling as fallback, but with longer interval (30 seconds)
     let interval: ReturnType<typeof setInterval> | null = null
-    if (autoRefresh) {
-      interval = setInterval(loadMessages, 5000) // Auto-refresh every 5 seconds
+    if (autoRefresh && !isConnected) {
+      interval = setInterval(loadMessages, 30000) // Fallback polling every 30 seconds when WebSocket disconnected
     }
     return () => {
       if (interval) clearInterval(interval)
     }
-  }, [limit, autoRefresh])
+  }, [limit, autoRefresh, isConnected])
 
   const loadMessages = async (showRefreshing = false) => {
     if (showRefreshing) {
@@ -80,8 +104,26 @@ export default function MessageLogPage() {
       {/* Header */}
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
         <div className="min-w-0 flex-shrink">
-          <h1 className="text-xl sm:text-2xl font-bold text-gray-900 truncate">{t('messages.title')}</h1>
-          <p className="text-gray-500 text-sm mt-1">查看消息、通知和请求事件</p>
+          <div className="flex items-center gap-3">
+            <h1 className="text-xl sm:text-2xl font-bold text-gray-900 truncate">{t('messages.title')}</h1>
+            {/* WebSocket Status Indicator */}
+            <div className="flex items-center gap-1.5 text-xs">
+              {isConnected ? (
+                <>
+                  <Wifi className="w-4 h-4 text-green-500" />
+                  <span className="text-green-600 font-medium">实时</span>
+                </>
+              ) : (
+                <>
+                  <WifiOff className="w-4 h-4 text-orange-500" />
+                  <span className="text-orange-600 font-medium">轮询</span>
+                </>
+              )}
+            </div>
+          </div>
+          <p className="text-gray-500 text-sm mt-1">
+            查看消息、通知和请求事件{isConnected ? ' (实时推送)' : ' (定时刷新)'}
+          </p>
         </div>
         <div className="flex items-center gap-2 sm:gap-4 flex-nowrap flex-shrink-0">
           <label className="flex items-center gap-2 text-sm text-gray-600 cursor-pointer whitespace-nowrap">

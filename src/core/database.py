@@ -296,12 +296,19 @@ class DatabaseManager:
             )
             return result.scalar_one_or_none()
     
-    async def list_ai_configs(self, config_type: Optional[str] = None) -> List[AIConfig]:
-        """List AI configurations."""
+    async def list_ai_configs(self, config_type: Optional[str] = None, exclude_left: bool = False) -> List[AIConfig]:
+        """List AI configurations.
+        
+        Args:
+            config_type: Filter by config type ('global', 'group', 'user')
+            exclude_left: If True, exclude groups that have been left
+        """
         async with self.session() as session:
             query = select(AIConfig)
             if config_type:
                 query = query.where(AIConfig.config_type == config_type)
+            if exclude_left:
+                query = query.where(AIConfig.is_left == False)
             query = query.order_by(AIConfig.updated_at.desc())
             result = await session.execute(query)
             return list(result.scalars().all())
@@ -374,6 +381,50 @@ class DatabaseManager:
                     AIConfig.target_id.in_(target_ids)
                 )
                 .values(**kwargs)
+            )
+            return result.rowcount
+    
+    async def mark_group_left(self, group_id: str) -> bool:
+        """Mark a group as left.
+        
+        Args:
+            group_id: Group ID
+            
+        Returns:
+            True if marked successfully, False if not found
+        """
+        async with self.session() as session:
+            result = await session.execute(
+                update(AIConfig)
+                .where(
+                    AIConfig.config_type == 'group',
+                    AIConfig.target_id == group_id
+                )
+                .values(is_left=True, left_at=datetime.utcnow())
+            )
+            return result.rowcount > 0
+    
+    async def cleanup_expired_left_groups(self, days: int = 30) -> int:
+        """Clean up group configurations that were left more than specified days ago.
+        
+        Args:
+            days: Number of days after which to delete left group data
+            
+        Returns:
+            Number of deleted records
+        """
+        from datetime import datetime, timedelta
+        
+        cutoff_date = datetime.utcnow() - timedelta(days=days)
+        
+        async with self.session() as session:
+            result = await session.execute(
+                delete(AIConfig)
+                .where(
+                    AIConfig.config_type == 'group',
+                    AIConfig.is_left == True,
+                    AIConfig.left_at < cutoff_date
+                )
             )
             return result.rowcount
     

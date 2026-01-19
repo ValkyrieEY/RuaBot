@@ -228,8 +228,10 @@ class Replyer:
         # Remove any remaining XML-like tags that might be tool-related
         text = re.sub(r'</?arg[^>]*>', '', text)
         
-        # Clean up multiple newlines
-        text = re.sub(r'\n{3,}', '\n\n', text)
+        # Clean up excessive newlines (only remove 5+ newlines, keep up to 4 for StreamSplitter)
+        # StreamSplitter uses \n\n\n\n (4 newlines) as default split point
+        # and auto-detects from 4 down to 2, so we preserve 2-4 newlines
+        text = re.sub(r'\n{5,}', '\n\n\n\n', text)
         
         return text.strip()
     

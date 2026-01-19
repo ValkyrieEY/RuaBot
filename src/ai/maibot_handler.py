@@ -25,6 +25,7 @@ from .person_profiler import get_person_profiler
 from .group_profiler import get_group_profiler
 from .heartflow_enhanced import get_heartflow_enhanced
 from .learning_config import get_learning_config
+from .learning_scheduler import get_learning_scheduler
 
 logger = get_logger(__name__)
 
@@ -45,6 +46,7 @@ class RuaBotHandler:
         self.group_profiler = get_group_profiler()
         self.heartflow = get_heartflow_enhanced()
         self.learning_config = get_learning_config()
+        self.learning_scheduler = get_learning_scheduler()
         
         # Thinking loop state
         self._thinking_loops: Dict[str, bool] = {}  # {chat_id: is_thinking}
@@ -91,6 +93,17 @@ class RuaBotHandler:
             
             # Step 1: Record incoming message
             await self._record_message(chat_id, message, bot_name)
+            
+            # Step 1.5: Track message for learning scheduler
+            self.learning_scheduler.record_message(chat_id)
+            
+            # Trigger learning if threshold reached (async, don't wait)
+            if self.learning_scheduler.should_trigger_learning(chat_id):
+                asyncio.create_task(self.learning_scheduler.trigger_learning(
+                    chat_id=chat_id,
+                    llm_client=llm_client,
+                    bot_name=bot_name
+                ))
             
             # Step 2: Get recent messages for context
             messages = await self.message_recorder.get_recent_messages(

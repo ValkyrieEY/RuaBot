@@ -18,7 +18,7 @@ from .tools import AITools
 from .mcp_manager import MCPManager
 from .frequency_control import frequency_control_manager
 from .thread_pool import get_thread_pool_manager
-from .RuaBot_handler import get_RuaBot_handler
+from .maibot_handler import get_RuaBot_handler
 from .init_ai_database import ensure_ai_database_initialized
 
 logger = get_logger(__name__)
@@ -169,6 +169,11 @@ class AIMessageHandler:
             tool_args: Arguments for the tool
             context: Optional context information (group_id, user_id, message_type, etc.)
         """
+        # Validate tool_name
+        if not tool_name:
+            logger.error("Tool name is None or empty")
+            return {"success": False, "error": "Tool name is required"}
+        
         # Fill in missing required parameters from context
         if context:
             # For send_group_message, fill group_id if missing
@@ -372,6 +377,10 @@ class AIMessageHandler:
                 sentences = re.split(r'([。！？\.\!\?]+)', current_part)
                 temp_part = ""
                 
+                # Check if we have sentence delimiters
+                has_sentences = len(sentences) > 1
+                
+                if has_sentences:
                 for i in range(0, len(sentences), 2):
                     sentence = sentences[i]
                     punctuation = sentences[i+1] if i+1 < len(sentences) else ""
@@ -384,6 +393,26 @@ class AIMessageHandler:
                         temp_part += full_sentence
                 
                 current_part = temp_part
+                else:
+                    # No sentence delimiters found, split by character count
+                    # Try to split at word boundaries (spaces, Chinese punctuation)
+                    while len(current_part) > max_length:
+                        # Try to find a good split point near max_length
+                        split_point = max_length
+                        
+                        # Look for space or punctuation within last 100 chars
+                        for i in range(max_length - 100, max_length):
+                            if i < len(current_part):
+                                char = current_part[i]
+                                if char in (' ', '，', ',', '、', '；', ';', '：', ':'):
+                                    split_point = i + 1
+                                    break
+                        
+                        # Split at the found point
+                        parts.append(current_part[:split_point].strip())
+                        current_part = current_part[split_point:].strip()
+                    
+                    # Remaining part will be added at the end
         
         # Add remaining part
         if current_part.strip():
@@ -1205,11 +1234,19 @@ class AIMessageHandler:
                             "   - 需要@（艾特）用户时（使用send_group_message的at_user_ids参数）"
                             "   - 需要引用/回复某条消息时（使用reply_to_message_id参数）"
                             "   - 给其他群或用户发送消息时（跨群/跨用户发送）"
+                            "   - 用户明确要求分段发送、多次发送、发送多条消息时（例如：'分段发送三条喜欢你'、'发送3条消息'等）"
                             "\n2. [重要] 正常对话回复不要使用这些工具！直接返回文本内容即可，系统会自动将你的文本回复发送到当前群或私聊。"
                             "\n3. 如果你只是要回复用户的问题或进行正常对话，直接返回文本，不要调用send_group_message或send_private_message工具。"
-                            "\n4. 使用send_group_message工具时，不要在message参数中包含@符号，系统会根据at_user_ids参数自动添加@。"
-                            "\n5. 在正常文本回复中，不要包含@符号或@用户，因为系统会自动处理@功能。"
-                            "\n6. 如果工具已经发送了消息，不要再次发送文本消息，避免重复。"
+                            "\n4. [关键] 当用户要求分段发送或多次发送消息时，你必须多次调用send_group_message工具："
+                            "   - 例如：用户说'分段发送三条喜欢你'，你需要调用3次send_group_message工具，每次发送一条'喜欢你'的消息"
+                            "   - 例如：用户说'发送5条消息'，你需要调用5次send_group_message工具"
+                            "   - 每次工具调用只发送一条消息，不要在一次调用中发送多条消息"
+                            "   - 你可以在一次响应中返回多个tool_calls，系统会依次执行"
+                            "   - 或者多次循环调用工具，每次调用后系统会继续让你判断是否需要发送更多消息"
+                            "   - 当你完成所有要求的消息发送后，返回纯文本响应（不包含工具调用），系统会自动退出循环"
+                            "\n5. 使用send_group_message工具时，不要在message参数中包含@符号，系统会根据at_user_ids参数自动添加@。"
+                            "\n6. 在正常文本回复中，不要包含@符号或@用户，因为系统会自动处理@功能。"
+                            "\n7. 如果工具已经发送了消息，不要再次发送文本消息，避免重复。"
                         )
                         messages.append({
                             'role': 'system',
@@ -1276,7 +1313,41 @@ class AIMessageHandler:
                         for tool_call in tool_calls:
                             tool_id = tool_call.get("id")
                             function = tool_call.get("function", {})
+                            
+                            # Try multiple ways to get tool name
+                            tool_name = None
+                            if function:
+                                # Standard format: function.name
                             tool_name = function.get("name")
+                                # Alternative: function.name might be at top level
+                                if not tool_name:
+                                    tool_name = tool_call.get("name")
+                                # Alternative: check if function itself is a string (some models)
+                                if not tool_name and isinstance(function, str):
+                                    tool_name = function
+                            
+                            # If still no tool_name, try to get from tools list using index
+                            if not tool_name and tools:
+                                tool_index = tool_call.get("index")
+                                if tool_index is not None and isinstance(tool_index, int) and 0 <= tool_index < len(tools):
+                                    tool_def = tools[tool_index]
+                                    if isinstance(tool_def, dict) and "function" in tool_def:
+                                        tool_name = tool_def["function"].get("name")
+                                        logger.info(f"Got tool name from index {tool_index}: {tool_name}")
+                            
+                            # Validate tool_name
+                            if not tool_name:
+                                logger.error(f"Invalid tool call: missing tool name. tool_call={tool_call}")
+                                # Try to extract from error message or log more details
+                                logger.debug(f"Full tool_call structure: {json.dumps(tool_call, ensure_ascii=False, indent=2)}")
+                                tool_results.append({
+                                    "tool_call_id": tool_id,
+                                    "role": "tool",
+                                    "name": "unknown",
+                                    "content": json.dumps({"success": False, "error": "Missing tool name in tool call"}, ensure_ascii=False)
+                                })
+                                continue
+                            
                             tool_args = json.loads(function.get("arguments", "{}"))
                             
                             logger.info(f"Calling tool: {tool_name} with args: {tool_args}")
@@ -1297,7 +1368,7 @@ class AIMessageHandler:
                             if tool_name in ["send_group_message", "send_private_message"]:
                                 if tool_result.get("success"):
                                     tool_sent_message = True
-                                    logger.info(f"Tool {tool_name} successfully sent a message, will skip text reply")
+                                    logger.info(f"Tool {tool_name} successfully sent a message")
                             
                             tool_results.append({
                                 "tool_call_id": tool_id,
@@ -1314,18 +1385,14 @@ class AIMessageHandler:
                         })
                         messages.extend(tool_results)
                         
-                        # If tool already sent a message, skip further rounds to avoid duplicate messages
-                        if tool_sent_message:
-                            logger.info("Tool already sent a message, skipping further rounds to avoid duplicate")
-                            should_skip_reply = True
-                            response_text = ""
-                            break
-                        
-                        # Continue to next round to let model process tool results
+                        # Continue to next round to let model process tool results and decide if more actions are needed
+                        # Don't break here - let AI decide if it needs to send more messages (e.g., "分段发送三条")
+                        # Only break if AI returns a text response (indicating it's done)
+                        logger.info(f"Tool calls completed, continuing to next round for AI to decide if more actions needed")
                         continue
                     
                     elif isinstance(response, dict):
-                        # Regular text response - exit loop
+                        # Regular text response - AI is done with tool calls, exit loop
                         response_text = response.get("content", "")
                         
                         # Clean up @ mentions from text response to avoid duplicate @
@@ -1337,6 +1404,14 @@ class AIMessageHandler:
                         # Clean up extra spaces
                         response_text = re.sub(r'\s+', ' ', response_text).strip()
                         
+                        # If tool already sent messages, don't send text reply (avoid duplicate)
+                        if tool_sent_message:
+                            logger.info("Tool already sent messages, skipping text reply to avoid duplicate")
+                            should_skip_reply = True
+                            response_text = ""
+                        
+                        # Exit loop - AI returned text response without tool calls, indicating it's done
+                        logger.info("AI returned text response without tool calls, exiting tool calling loop")
                         break
                     else:
                         # Fallback for string response (backward compatibility)

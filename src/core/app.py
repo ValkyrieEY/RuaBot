@@ -1,6 +1,7 @@
 """Application lifecycle management and dependency injection."""
 
 import asyncio
+import sys
 from typing import Any, Dict, Optional, Type
 from contextlib import asynccontextmanager
 from datetime import datetime
@@ -62,6 +63,9 @@ class Application:
         self._running = False
         self._tasks: list[asyncio.Task] = []
         self._start_time: Optional[datetime] = None
+        
+        # Setup signal handlers for graceful shutdown
+        self._setup_signal_handlers()
 
         # Setup logger
         setup_logger(
@@ -165,12 +169,11 @@ class Application:
             logger.error(f"Failed to initialize plugin system: {e}", exc_info=True)
             logger.info("Plugin system disabled due to initialization error")
 
-        # Initialize and start maintenance tasks (Dream, Expression Check, Expression Reflect)
+        # Initialize and start maintenance tasks (Dream, Expression Check)
         try:
             from ..ai.model_manager import ModelManager
             from ..ai.dream import init_dream_scheduler
             from ..ai.expression_auto_checker import start_expression_auto_check_scheduler
-            from ..ai.expression_reflector import get_expression_reflector
             
             model_manager = ModelManager()
             await model_manager.initialize()
@@ -197,7 +200,8 @@ class Application:
                             first_delay_seconds=300,  # 5分钟后首次运行
                             interval_minutes=30  # 每30分钟运行一次
                         )
-                        self.add_task(dream_scheduler.start_background())
+                        # start_background() returns a Task, store it directly
+                        self._tasks.append(dream_scheduler.start_background())
                         logger.info("Dream scheduler started")
                     except Exception as e:
                         logger.error(f"Failed to start dream scheduler: {e}", exc_info=True)
@@ -212,25 +216,6 @@ class Application:
                         logger.info("Expression auto check scheduler started")
                     except Exception as e:
                         logger.error(f"Failed to start expression auto check: {e}", exc_info=True)
-                    
-                    # Start Expression Reflector (periodic)
-                    try:
-                        reflector = get_expression_reflector()
-                        async def periodic_reflect():
-                            while True:
-                                await asyncio.sleep(7200)  # 每2小时反思一次
-                                try:
-                                    await reflector.reflect_on_expressions(
-                                        llm_client=llm_client,
-                                        min_usage_count=5,
-                                        limit=30
-                                    )
-                                except Exception as e:
-                                    logger.error(f"Expression reflection failed: {e}", exc_info=True)
-                        self.add_task(periodic_reflect())
-                        logger.info("Expression reflector started")
-                    except Exception as e:
-                        logger.error(f"Failed to start expression reflector: {e}", exc_info=True)
                 else:
                     logger.warning("Default model not found with secret, maintenance tasks disabled")
             else:
@@ -238,6 +223,24 @@ class Application:
         except Exception as e:
             logger.error(f"Failed to start maintenance tasks: {e}", exc_info=True)
             logger.info("Maintenance tasks disabled due to error")
+        
+        # Start group data cleanup scheduler (runs daily)
+        try:
+            async def cleanup_expired_groups():
+                """Cleanup expired left group data daily."""
+                while True:
+                    await asyncio.sleep(86400)  # 每24小时运行一次
+                    try:
+                        count = await self.db_manager.cleanup_expired_left_groups(days=30)
+                        if count > 0:
+                            logger.info(f"Auto cleanup: deleted {count} expired left group configurations")
+                    except Exception as e:
+                        logger.error(f"Failed to cleanup expired groups: {e}", exc_info=True)
+            
+            self.add_task(cleanup_expired_groups())
+            logger.info("Group data cleanup scheduler started (runs daily)")
+        except Exception as e:
+            logger.error(f"Failed to start group cleanup scheduler: {e}", exc_info=True)
 
         # Publish startup event
         await self.event_bus.publish(
@@ -311,6 +314,22 @@ class Application:
     def is_running(self) -> bool:
         """Check if application is running."""
         return self._running
+    
+    def _setup_signal_handlers(self):
+        """Setup signal handlers for graceful shutdown."""
+        import signal
+        
+        def signal_handler(signum, frame):
+            """Handle termination signals."""
+            logger.info(f"Received signal {signum}, initiating shutdown...")
+            # Create a task to shutdown gracefully
+            if self._running:
+                asyncio.create_task(self.shutdown())
+        
+        # Register signal handlers (Unix only, Windows uses different mechanism)
+        if sys.platform != 'win32':
+            signal.signal(signal.SIGTERM, signal_handler)
+            signal.signal(signal.SIGINT, signal_handler)
 
 
 # Global application instance

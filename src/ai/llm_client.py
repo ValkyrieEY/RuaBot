@@ -52,6 +52,80 @@ class LLMClient:
             await self._client.aclose()
             self._client = None
     
+    def _parse_xml_tool_calls(self, text: str, tools: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """Parse XML format tool calls from text (GLM format).
+        
+        Format: tool_name <arg_key>key</arg_key> <arg_value>value</arg_value>
+        
+        Args:
+            text: The text response from the model
+            tools: List of available tools
+            
+        Returns:
+            List of tool call dicts if parsed successfully, empty list otherwise
+        """
+        if not text or not tools:
+            return []
+        
+        # Create a mapping of tool names
+        tool_map = {}
+        for tool in tools:
+            if isinstance(tool, dict) and "function" in tool:
+                func = tool["function"]
+                tool_name = func.get("name", "")
+                tool_map[tool_name.lower()] = tool_name
+        
+        tool_calls = []
+        
+        # Pattern to match: tool_name <arg_key>key</arg_key> <arg_value>value</arg_value>
+        # Match tool name followed by XML tags
+        pattern = r'([a-z_]+)\s+<arg_key>([^<]+)</arg_key>\s*<arg_value>([^<]+)</arg_value>'
+        
+        matches = re.finditer(pattern, text, re.IGNORECASE | re.DOTALL)
+        
+        for match in matches:
+            tool_name_candidate = match.group(1).lower()
+            arg_key = match.group(2).strip()
+            arg_value = match.group(3).strip()
+            
+            # Check if this is a valid tool name
+            if tool_name_candidate in tool_map:
+                tool_name = tool_map[tool_name_candidate]
+                
+                # Try to find all arguments for this tool call
+                # Look for more arg_key/arg_value pairs after the first one
+                tool_call_start = match.start()
+                tool_call_text = text[tool_call_start:]
+                
+                # Extract all arguments
+                args = {}
+                args[arg_key] = arg_value
+                
+                # Find more arguments (they might be on the same line or next lines)
+                arg_pattern = r'<arg_key>([^<]+)</arg_key>\s*<arg_value>([^<]+)</arg_value>'
+                arg_matches = re.finditer(arg_pattern, tool_call_text)
+                
+                for arg_match in arg_matches:
+                    if arg_match.start() > 0:  # Skip the first match we already processed
+                        key = arg_match.group(1).strip()
+                        value = arg_match.group(2).strip()
+                        args[key] = value
+                
+                # Create tool call structure
+                tool_call = {
+                    "id": f"call_{tool_name}_{hash(tool_call_text[:100]) % 100000}",
+                    "type": "function",
+                    "function": {
+                        "name": tool_name,
+                        "arguments": json.dumps(args, ensure_ascii=False)
+                    }
+                }
+                
+                tool_calls.append(tool_call)
+                logger.info(f"Parsed XML tool call: {tool_name} with args: {args}")
+        
+        return tool_calls
+    
     @staticmethod
     def _parse_tool_call_from_text(text: str, tools: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
         """Try to parse tool call from text response (fallback for models that don't support tool_calls format).
@@ -296,7 +370,17 @@ class LLMClient:
                 content = message.get("content", "")
                 combined_text = (reasoning + "\n" + content).strip()
                 
-                # Try to extract tool call intent from text
+                # First try to parse XML format tool calls (GLM format: tool_name <arg_key>...</arg_key>)
+                xml_tool_calls = self._parse_xml_tool_calls(combined_text, tools)
+                if xml_tool_calls:
+                    logger.info(f"Parsed {len(xml_tool_calls)} XML format tool call(s) from text")
+                    return {
+                        "type": "tool_calls",
+                        "tool_calls": xml_tool_calls,
+                        "content": content
+                    }
+                
+                # Try to extract tool call intent from text (fallback)
                 # This is a fallback for models that don't support tool_calls format
                 tool_call_match = self._parse_tool_call_from_text(combined_text, tools)
                 if tool_call_match:

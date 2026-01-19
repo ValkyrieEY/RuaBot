@@ -115,9 +115,13 @@ class AIManager:
         
         return success
     
-    async def list_group_configs(self) -> List[Dict[str, Any]]:
-        """List all group configurations."""
-        configs = await self.db_manager.list_ai_configs('group')
+    async def list_group_configs(self, exclude_left: bool = True) -> List[Dict[str, Any]]:
+        """List all group configurations.
+        
+        Args:
+            exclude_left: If True, exclude groups that have been left (default: True)
+        """
+        configs = await self.db_manager.list_ai_configs('group', exclude_left=exclude_left)
         return [config.to_dict() for config in configs]
     
     async def batch_update_groups(

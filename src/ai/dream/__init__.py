@@ -8,13 +8,14 @@ Inspired by RuaBot's dream system, this module provides:
 """
 
 from .dream_agent import run_dream_agent_once, run_dream_cycle_once
-from .dream_scheduler import start_dream_scheduler, DreamScheduler
+from .dream_scheduler import start_dream_scheduler, init_dream_scheduler, DreamScheduler
 from .dream_generator import generate_dream_summary
 
 __all__ = [
     'run_dream_agent_once',
     'run_dream_cycle_once',
     'start_dream_scheduler',
+    'init_dream_scheduler',
     'DreamScheduler',
     'generate_dream_summary'
 ]

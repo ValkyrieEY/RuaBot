@@ -26,6 +26,10 @@ class AIConfig(Base):
     # Statistics
     message_count = Column(Integer, nullable=False, default=0)  # 对话量
     
+    # Group status (for config_type='group')
+    is_left = Column(Boolean, nullable=False, default=False)  # 是否已退出群聊
+    left_at = Column(DateTime, nullable=True)  # 退出时间
+    
     # Additional config
     config = Column(JSON, nullable=False, default=dict)
     
@@ -45,6 +49,8 @@ class AIConfig(Base):
             'model_uuid': self.model_uuid,
             'preset_uuid': self.preset_uuid,
             'message_count': self.message_count,
+            'is_left': self.is_left,
+            'left_at': self.left_at.isoformat() if self.left_at else None,
             'config': self.config,
             'created_at': self.created_at.isoformat() if self.created_at else None,
             'updated_at': self.updated_at.isoformat() if self.updated_at else None,

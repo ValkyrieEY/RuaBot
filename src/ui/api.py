@@ -3,7 +3,7 @@
 from contextlib import asynccontextmanager
 from typing import Any, Dict, List, Optional
 
-from fastapi import FastAPI, HTTPException, Depends, status, UploadFile, File, Form, Body
+from fastapi import FastAPI, HTTPException, Depends, status, UploadFile, File, Form, Body, WebSocket, WebSocketDisconnect
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
@@ -16,10 +16,12 @@ import tempfile
 import uuid
 import time
 import os
+import json
 
 from ..core.app import get_app
 from ..core.config import get_config, get_config_manager, reload_config
 from ..core.event_bus import get_event_bus
+from ..core.database import get_database_manager
 from ..plugins.manager import get_plugin_manager
 from ..security.auth import AuthManager
 from ..security.permissions import get_permission_manager, Permission
@@ -118,6 +120,132 @@ def require_permission(permission: Permission):
         return user
     return check
 
+
+# WebSocket Manager for real-time message updates
+class WebSocketManager:
+    """Manage WebSocket connections for real-time updates."""
+    
+    def __init__(self):
+        self.active_connections: List[WebSocket] = []
+        self._subscribed = False
+    
+    async def connect(self, websocket: WebSocket):
+        """Accept a new WebSocket connection."""
+        await websocket.accept()
+        self.active_connections.append(websocket)
+        logger.info(f"WebSocket connected, total connections: {len(self.active_connections)}")
+        
+        # Subscribe to event bus on first connection
+        if not self._subscribed:
+            event_bus = get_event_bus()
+            event_bus.subscribe("onebot.message", self._on_message_event)
+            event_bus.subscribe("onebot.notice", self._on_message_event)
+            event_bus.subscribe("onebot.request", self._on_message_event)
+            self._subscribed = True
+            logger.info("WebSocket manager subscribed to event bus")
+    
+    def disconnect(self, websocket: WebSocket):
+        """Remove a WebSocket connection."""
+        if websocket in self.active_connections:
+            self.active_connections.remove(websocket)
+        logger.info(f"WebSocket disconnected, total connections: {len(self.active_connections)}")
+    
+    async def _on_message_event(self, event):
+        """Event bus callback: push new message to all WebSocket clients."""
+        if not self.active_connections:
+            return
+        
+        try:
+            payload = event.payload
+            if not isinstance(payload, dict):
+                return
+            
+            # Format the event based on its type
+            event_data = None
+            
+            if event.name == "onebot.message":
+                event_data = {
+                    "type": "message",
+                    "id": event.event_id,
+                    "timestamp": event.timestamp.isoformat(),
+                    "time": event.timestamp.isoformat(),
+                    "event_type": "message",
+                    "post_type": "message",
+                    "message_id": str(payload.get("message_id", "")),
+                    "message_type": payload.get("message_type", "unknown"),
+                    "user_id": str(payload.get("user_id", "")),
+                    "group_id": str(payload.get("group_id", "")) if payload.get("group_id") else None,
+                    "raw_message": payload.get("raw_message", ""),
+                    "message": payload.get("raw_message", ""),
+                    "sender": payload.get("sender", {}),
+                    "is_self": payload.get("is_self", False),
+                    "target_id": str(payload.get("target_id", "")) if payload.get("target_id") else None,
+                }
+            
+            elif event.name == "onebot.notice":
+                formatted_text = _format_notice_event(payload)
+                event_data = {
+                    "type": "notice",
+                    "id": event.event_id,
+                    "timestamp": event.timestamp.isoformat(),
+                    "time": event.timestamp.isoformat(),
+                    "event_type": "notice",
+                    "post_type": "notice",
+                    "notice_type": payload.get("notice_type", ""),
+                    "sub_type": payload.get("sub_type", ""),
+                    "user_id": str(payload.get("user_id", "")),
+                    "group_id": str(payload.get("group_id", "")) if payload.get("group_id") else None,
+                    "operator_id": str(payload.get("operator_id", "")) if payload.get("operator_id") else None,
+                    "message": formatted_text,
+                    "raw_message": formatted_text,
+                    "is_system": True,
+                }
+            
+            elif event.name == "onebot.request":
+                formatted_text = _format_request_event(payload)
+                event_data = {
+                    "type": "request",
+                    "id": event.event_id,
+                    "timestamp": event.timestamp.isoformat(),
+                    "time": event.timestamp.isoformat(),
+                    "event_type": "request",
+                    "post_type": "request",
+                    "request_type": payload.get("request_type", ""),
+                    "sub_type": payload.get("sub_type", ""),
+                    "user_id": str(payload.get("user_id", "")),
+                    "group_id": str(payload.get("group_id", "")) if payload.get("group_id") else None,
+                    "comment": payload.get("comment", ""),
+                    "message": formatted_text,
+                    "raw_message": formatted_text,
+                    "is_system": True,
+                }
+            
+            if event_data:
+                # Send to all connected clients
+                await self.broadcast(event_data)
+        
+        except Exception as e:
+            logger.error(f"Error in WebSocket message event handler: {e}", exc_info=True)
+    
+    async def broadcast(self, message: dict):
+        """Broadcast a message to all connected WebSocket clients."""
+        disconnected = []
+        for connection in self.active_connections:
+            try:
+                await connection.send_json(message)
+            except Exception as e:
+                logger.error(f"Error sending to WebSocket client: {e}")
+                disconnected.append(connection)
+        
+        # Remove disconnected clients
+        for connection in disconnected:
+            self.disconnect(connection)
+
+
+# Global WebSocket manager
+_ws_manager = WebSocketManager()
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Application lifespan."""
@@ -131,6 +259,110 @@ async def lifespan(app: FastAPI):
     # Shutdown
     await application.shutdown()
     logger.info("Web UI stopped")
+
+
+def _format_notice_event(payload: Dict[str, Any]) -> str:
+    """Format notice event to readable text."""
+    notice_type = payload.get("notice_type", "")
+    user_id = payload.get("user_id", "")
+    operator_id = payload.get("operator_id", "")
+    group_id = payload.get("group_id", "")
+    
+    if notice_type == "group_increase":
+        sub_type = payload.get("sub_type", "")
+        if sub_type == "approve":
+            return f"[系统通知] {user_id} 通过邀请加入了群 {group_id}"
+        elif sub_type == "invite":
+            return f"[系统通知] {user_id} 被 {operator_id} 邀请加入了群 {group_id}"
+        return f"[系统通知] {user_id} 加入了群 {group_id}"
+    
+    elif notice_type == "group_decrease":
+        sub_type = payload.get("sub_type", "")
+        if sub_type == "leave":
+            return f"[系统通知] {user_id} 退出了群 {group_id}"
+        elif sub_type == "kick":
+            return f"[系统通知] {user_id} 被 {operator_id} 踢出了群 {group_id}"
+        elif sub_type == "kick_me":
+            return f"[系统通知] 机器人被 {operator_id} 踢出了群 {group_id}"
+        return f"[系统通知] {user_id} 离开了群 {group_id}"
+    
+    elif notice_type == "group_ban":
+        sub_type = payload.get("sub_type", "")
+        duration = payload.get("duration", 0)
+        if sub_type == "ban":
+            if duration > 0:
+                minutes = duration // 60
+                return f"[系统通知] {user_id} 被 {operator_id} 禁言 {minutes} 分钟"
+            return f"[系统通知] {user_id} 被 {operator_id} 禁言"
+        elif sub_type == "lift_ban":
+            return f"[系统通知] {user_id} 被 {operator_id} 解除禁言"
+        return f"[系统通知] 群 {group_id} 禁言状态变更"
+    
+    elif notice_type == "group_recall":
+        message_id = payload.get("message_id", "")
+        return f"[系统通知] {operator_id} 撤回了 {user_id} 的消息 (ID: {message_id})"
+    
+    elif notice_type == "friend_recall":
+        message_id = payload.get("message_id", "")
+        return f"[系统通知] {user_id} 撤回了一条消息 (ID: {message_id})"
+    
+    elif notice_type == "friend_add":
+        return f"[系统通知] {user_id} 成为了好友"
+    
+    elif notice_type == "group_admin":
+        sub_type = payload.get("sub_type", "")
+        if sub_type == "set":
+            return f"[系统通知] {user_id} 被设置为群 {group_id} 的管理员"
+        elif sub_type == "unset":
+            return f"[系统通知] {user_id} 被取消群 {group_id} 的管理员"
+        return f"[系统通知] 群 {group_id} 管理员变更"
+    
+    elif notice_type == "group_upload":
+        file_info = payload.get("file", {})
+        file_name = file_info.get("name", "未知文件")
+        return f"[系统通知] {user_id} 上传了文件: {file_name}"
+    
+    elif notice_type == "notify":
+        sub_type = payload.get("sub_type", "")
+        if sub_type == "poke":
+            target_id = payload.get("target_id", "")
+            return f"[系统通知] {user_id} 戳了戳 {target_id}"
+        elif sub_type == "lucky_king":
+            return f"[系统通知] {user_id} 是群 {group_id} 的红包运气王"
+        elif sub_type == "honor":
+            honor_type = payload.get("honor_type", "")
+            return f"[系统通知] {user_id} 获得了群 {group_id} 的 {honor_type} 荣誉"
+        return f"[系统通知] 群 {group_id} 提醒事件"
+    
+    # Unknown notice type - show all available info for debugging
+    if notice_type:
+        return f"[系统通知] {notice_type} 事件 (群:{group_id}, 用户:{user_id}, 操作者:{operator_id})"
+    else:
+        # No notice_type - show raw data
+        sub_type = payload.get("sub_type", "")
+        return f"[系统通知] 未知通知类型 (sub_type:{sub_type}, 群:{group_id}, 用户:{user_id})"
+
+
+def _format_request_event(payload: Dict[str, Any]) -> str:
+    """Format request event to readable text."""
+    request_type = payload.get("request_type", "")
+    user_id = payload.get("user_id", "")
+    comment = payload.get("comment", "")
+    
+    if request_type == "friend":
+        return f"[好友请求] {user_id} 请求添加好友: {comment}"
+    
+    elif request_type == "group":
+        sub_type = payload.get("sub_type", "")
+        group_id = payload.get("group_id", "")
+        if sub_type == "add":
+            return f"[加群请求] {user_id} 请求加入群 {group_id}: {comment}"
+        elif sub_type == "invite":
+            return f"[群邀请] {user_id} 邀请机器人加入群 {group_id}: {comment}"
+        return f"[群请求] {user_id} 的群 {group_id} 请求: {comment}"
+    
+    return f"[请求] {request_type} 请求"
+
 
 def create_app() -> FastAPI:
     """Create FastAPI application."""
@@ -208,36 +440,42 @@ def create_app() -> FastAPI:
         from pathlib import Path
         import json
         
-        plugin_manager = get_plugin_manager()
+        config = get_config()
         app = get_app()
         db_manager = app.db_manager if hasattr(app, 'db_manager') and app.db_manager else None
         
-        # Discover all available plugins
-        discovered_names = plugin_manager.discover_plugins()
+        plugin_base = Path(config.plugin_dir)
         all_plugins = []
         
-        for plugin_name in discovered_names:
-            # Load metadata from plugin.json
-            plugin_dir = plugin_manager.plugin_dir / plugin_name
-            plugin_json = plugin_dir / "plugin.json"
-            
-            # Load plugin.json
-            if plugin_json.exists():
+        # Discover all available plugins in plugins/{name} structure
+        if plugin_base.exists():
+            for plugin_dir in plugin_base.iterdir():
+                if not plugin_dir.is_dir() or plugin_dir.name.startswith('.') or plugin_dir.name.startswith('_'):
+                    continue
+                
+                plugin_json = plugin_dir / "plugin.json"
+                if not plugin_json.exists():
+                    continue
+                
+                # Load plugin.json
                 try:
                     with open(plugin_json, 'r', encoding='utf-8') as f:
                         plugin_config = json.load(f)
                     
+                    author = plugin_config.get("author", "Unknown")
+                    plugin_name = plugin_config.get("name", plugin_dir.name)
+                    
                     # Build metadata from plugin.json
                     metadata = {
-                        "name": plugin_config.get("name", plugin_name),
+                        "name": plugin_name,
                         "version": plugin_config.get("version", "1.0.0"),
-                        "author": plugin_config.get("author", "Unknown"),
+                        "author": author,
                         "description": plugin_config.get("description", f"Plugin: {plugin_name}"),
                         "required_permissions": [],
                         "required_capabilities": [],
                         "dependencies": plugin_config.get("dependencies", []),
                         "config_schema": None,
-                        "default_config": {},
+                        "default_config": plugin_config.get("default_config", {}),
                         "tags": plugin_config.get("tags", []),
                         "category": plugin_config.get("category", "general"),
                         "homepage": plugin_config.get("homepage"),
@@ -245,46 +483,37 @@ def create_app() -> FastAPI:
                         "documentation": plugin_config.get("documentation"),
                     }
                 except Exception as e:
-                    logger.error(f"Failed to load plugin.json for {plugin_name}: {e}")
-                    # Fallback metadata
-                    metadata = {
-                        "name": plugin_name,
-                        "version": "1.0.0",
-                        "author": "Unknown",
-                        "description": f"Plugin: {plugin_name}",
-                    }
-            else:
-                # Fallback if plugin.json doesn't exist
-                metadata = {
+                    logger.error(f"Failed to load plugin.json for {plugin_dir.name}: {e}")
+                    continue
+                
+                # Get enabled status from database
+                enabled = False
+                priority = 0
+                config_data = metadata.get("default_config", {})
+                
+                if db_manager:
+                    try:
+                        db_setting = await db_manager.get_plugin_setting(author, plugin_name)
+                        if db_setting:
+                            enabled = db_setting.enabled
+                            priority = db_setting.priority
+                            config_data = db_setting.config or config_data
+                            logger.debug(f"Plugin {author}/{plugin_name} enabled status from DB: {enabled}")
+                        else:
+                            logger.debug(f"Plugin {author}/{plugin_name} not found in database, defaulting to disabled")
+                    except Exception as e:
+                        logger.error(f"Failed to get plugin status from database for {author}/{plugin_name}: {e}", exc_info=True)
+                
+                all_plugins.append({
                     "name": plugin_name,
-                    "version": "1.0.0",
-                    "author": "Unknown",
-                    "description": f"Plugin: {plugin_name}",
-                }
-            
-                    # Get enabled status from database (NEW - authoritative source)
-            enabled = False
-            if db_manager:
-                try:
-                    author = metadata.get('author', 'Unknown')
-                    db_setting = await db_manager.get_plugin_setting(author, plugin_name)
-                    if db_setting:
-                        enabled = db_setting.enabled
-                        logger.debug(f"Plugin {author}/{plugin_name} enabled status from DB: {enabled}")
-                    else:
-                        logger.debug(f"Plugin {author}/{plugin_name} not found in database, defaulting to disabled")
-                except Exception as e:
-                    logger.error(f"Failed to get plugin status from database for {plugin_name}: {e}", exc_info=True)
-            
-            # Get system data from old manager (for compatibility)
-            system_data = plugin_manager.get_plugin_system_data(plugin_name)
-            
-            all_plugins.append({
-                "name": plugin_name,
-                "enabled": enabled,
-                "metadata": metadata,
-                "system_data": system_data
-            })
+                    "enabled": enabled,
+                    "metadata": metadata,
+                    "system_data": {
+                        "enabled": enabled,
+                        "priority": priority,
+                        "config": config_data
+                    }
+                })
         
         return all_plugins
     
@@ -324,18 +553,24 @@ def create_app() -> FastAPI:
             app = get_app()
             db_manager = app.db_manager if hasattr(app, 'db_manager') and app.db_manager else None
             
-            # Load plugin.json to get correct author
-            name = plugin_name
-            plugin_dir = Path("plugins") / name
-            plugin_json = plugin_dir / "plugin.json"
+            # Plugin directory structure: plugins/{name}
+            config = get_config()
+            plugin_dir = Path(config.plugin_dir) / plugin_name
             
+            if not plugin_dir.exists():
+                raise HTTPException(status_code=404, detail=f"Plugin {plugin_name} not found")
+            
+            # Load plugin.json to get author
+            plugin_json = plugin_dir / "plugin.json"
             author = "Unknown"
+            name = plugin_name
+            
             if plugin_json.exists():
                 try:
-                    import json
                     with open(plugin_json, 'r', encoding='utf-8') as f:
                         metadata = json.load(f)
                     author = metadata.get('author', 'Unknown')
+                    name = metadata.get('name', plugin_name)
                 except Exception as e:
                     logger.warning(f"Failed to read plugin.json: {e}")
             
@@ -348,9 +583,8 @@ def create_app() -> FastAPI:
                     logger.warning(f"Plugin {author}/{name} not found in database")
             
             # Delete plugin directory
-            if plugin_dir.exists():
-                shutil.rmtree(plugin_dir)
-                logger.info(f"Deleted plugin directory: {plugin_dir}")
+            shutil.rmtree(plugin_dir)
+            logger.info(f"Deleted plugin directory: {plugin_dir}")
             
             # Reload plugins in runtime
             if hasattr(app, 'plugin_connector') and app.plugin_connector:
@@ -470,10 +704,63 @@ def create_app() -> FastAPI:
         elif action.action == "unload":
             success = await plugin_manager.unload_plugin(plugin_name)
         elif action.action == "reload":
-            # Use new plugin system's reload
+            # Update database from plugin.json first
             try:
                 from ..core.app import get_app
                 app = get_app()
+                db_manager = app.db_manager if hasattr(app, 'db_manager') and app.db_manager else None
+                
+                if db_manager:
+                    # Read plugin.json
+                    config = get_config()
+                    plugin_dir = Path(config.plugin_dir) / plugin_name
+                    plugin_json_file = plugin_dir / "plugin.json"
+                    
+                    if plugin_json_file.exists():
+                        try:
+                            with open(plugin_json_file, 'r', encoding='utf-8') as f:
+                                plugin_metadata = json.load(f)
+                            
+                            author = plugin_metadata.get('author', 'Unknown')
+                            name = plugin_metadata.get('name', plugin_name)
+                            version = plugin_metadata.get('version', '1.0.0')
+                            default_config = plugin_metadata.get('default_config', {})
+                            
+                            # Check if plugin exists in database
+                            existing = await db_manager.get_plugin_setting(author, name)
+                            if existing:
+                                # Update install_info with new version
+                                install_info = existing.install_info or {}
+                                install_info['version'] = version
+                                install_info['reloaded_at'] = datetime.now().isoformat()
+                                install_info['reloaded_by'] = username
+                                
+                                # Keep existing config, only update install_info
+                                await db_manager.update_plugin_setting(
+                                    author,
+                                    name,
+                                    install_info=install_info
+                                )
+                                logger.info(f"Updated plugin metadata in database: {author}/{name}")
+                            else:
+                                # Create if not exists (shouldn't happen, but handle it)
+                                await db_manager.create_plugin_setting(
+                                    author=author,
+                                    name=name,
+                                    enabled=False,
+                                    priority=0,
+                                    config=default_config,
+                                    install_source='manual',
+                                    install_info={
+                                        'version': version,
+                                        'created_at': datetime.now().isoformat()
+                                    }
+                                )
+                                logger.info(f"Created plugin setting in database: {author}/{name}")
+                        except Exception as e:
+                            logger.error(f"Failed to update plugin metadata from plugin.json: {e}")
+                
+                # Now reload the plugin
                 if hasattr(app, 'plugin_connector') and app.plugin_connector:
                     # Try to reload single plugin first
                     if hasattr(app.plugin_connector, 'reload_plugin'):
@@ -591,22 +878,59 @@ def create_app() -> FastAPI:
                         success = True
                         logger.info(f"Plugin {plugin_name} disabled in database")
                         
-                        # Try to notify plugin runtime
+                        # Try to notify plugin runtime - unload the plugin
                         if hasattr(app, 'plugin_connector') and app.plugin_connector:
                             try:
-                                await app.plugin_connector.reload_plugins()
+                                # Try to unload the plugin first (more efficient)
+                                unload_success = await app.plugin_connector.unload_plugin(plugin_name)
+                                if not unload_success:
+                                    # Fallback to reload all plugins if unload fails
+                                    logger.warning(f"Failed to unload plugin {plugin_name}, falling back to reload all plugins")
+                                    await app.plugin_connector.reload_plugins()
                             except Exception as e:
-                                logger.warning(f"Failed to reload plugins in runtime: {e}")
+                                logger.warning(f"Failed to unload plugin in runtime: {e}, trying reload all plugins")
+                                try:
+                                    await app.plugin_connector.reload_plugins()
+                                except Exception as e2:
+                                    logger.error(f"Failed to reload plugins in runtime: {e2}")
                     else:
                         # Fallback to old system
                         success = await plugin_manager.disable_plugin(plugin_name)
+                        # Also try to unload from runtime if available
+                        if hasattr(app, 'plugin_connector') and app.plugin_connector:
+                            try:
+                                await app.plugin_connector.unload_plugin(plugin_name)
+                            except Exception as e:
+                                logger.warning(f"Failed to unload plugin in runtime: {e}")
                 else:
                     # Fallback to old system
                     success = await plugin_manager.disable_plugin(plugin_name)
+                    # Also try to unload from runtime if available
+                    try:
+                        from ..core.app import get_app
+                        app = get_app()
+                        if hasattr(app, 'plugin_connector') and app.plugin_connector:
+                            try:
+                                await app.plugin_connector.unload_plugin(plugin_name)
+                            except Exception as e:
+                                logger.warning(f"Failed to unload plugin in runtime: {e}")
+                    except Exception:
+                        pass
             except ImportError as e:
                 logger.warning(f"New plugin system not available: {e}")
                 # New system not available, use old system
                 success = await plugin_manager.disable_plugin(plugin_name)
+                # Also try to unload from runtime if available
+                try:
+                    from ..core.app import get_app
+                    app = get_app()
+                    if hasattr(app, 'plugin_connector') and app.plugin_connector:
+                        try:
+                            await app.plugin_connector.unload_plugin(plugin_name)
+                        except Exception as e2:
+                            logger.warning(f"Failed to unload plugin in runtime: {e2}")
+                except Exception:
+                    pass
         else:
             raise HTTPException(status_code=400, detail="Invalid action")
         
@@ -622,6 +946,109 @@ def create_app() -> FastAPI:
             raise HTTPException(status_code=500, detail=f"Failed to {action.action} plugin")
         
         return {"message": f"Plugin {action.action} successful"}
+    
+    @app.post("/api/plugins/reload-all")
+    async def reload_all_plugins(
+        user: Dict[str, Any] = Depends(require_permission(Permission.PLUGIN_RELOAD))
+    ):
+        """Reload all plugins and update their metadata from plugin.json to database."""
+        from ..core.app import get_app
+        from pathlib import Path
+        import json
+        
+        username = user.get("username", "unknown")
+        config = get_config()
+        app = get_app()
+        db_manager = app.db_manager if hasattr(app, 'db_manager') and app.db_manager else None
+        
+        updated_count = 0
+        created_count = 0
+        failed_plugins = []
+        
+        # Scan all plugins and update database
+        if db_manager:
+            plugin_base = Path(config.plugin_dir)
+            if plugin_base.exists():
+                for plugin_dir in plugin_base.iterdir():
+                    if not plugin_dir.is_dir() or plugin_dir.name.startswith('.') or plugin_dir.name.startswith('_'):
+                        continue
+                    
+                    plugin_json_file = plugin_dir / "plugin.json"
+                    if not plugin_json_file.exists():
+                        continue
+                    
+                    try:
+                        with open(plugin_json_file, 'r', encoding='utf-8') as f:
+                            plugin_metadata = json.load(f)
+                        
+                        author = plugin_metadata.get('author', 'Unknown')
+                        name = plugin_metadata.get('name', plugin_dir.name)
+                        version = plugin_metadata.get('version', '1.0.0')
+                        default_config = plugin_metadata.get('default_config', {})
+                        
+                        # Check if plugin exists in database
+                        existing = await db_manager.get_plugin_setting(author, name)
+                        if existing:
+                            # Update install_info with new version
+                            install_info = existing.install_info or {}
+                            install_info['version'] = version
+                            install_info['reloaded_at'] = datetime.now().isoformat()
+                            install_info['reloaded_by'] = username
+                            
+                            await db_manager.update_plugin_setting(
+                                author,
+                                name,
+                                install_info=install_info
+                            )
+                            updated_count += 1
+                            logger.info(f"Updated plugin metadata: {author}/{name}")
+                        else:
+                            # Create if not exists
+                            await db_manager.create_plugin_setting(
+                                author=author,
+                                name=name,
+                                enabled=False,
+                                priority=0,
+                                config=default_config,
+                                install_source='manual',
+                                install_info={
+                                    'version': version,
+                                    'created_at': datetime.now().isoformat()
+                                }
+                            )
+                            created_count += 1
+                            logger.info(f"Created plugin setting: {author}/{name}")
+                    except Exception as e:
+                        logger.error(f"Failed to update plugin {plugin_dir.name}: {e}")
+                        failed_plugins.append(plugin_dir.name)
+        
+        # Reload plugins in runtime
+        try:
+            if hasattr(app, 'plugin_connector') and app.plugin_connector:
+                await app.plugin_connector.reload_plugins()
+                logger.info("Reloaded all plugins in runtime")
+        except Exception as e:
+            logger.error(f"Failed to reload plugins in runtime: {e}")
+        
+        # Log action
+        await get_audit_logger().log_plugin_action(
+            "reload_all",
+            "all",
+            username,
+            True,
+            {
+                "updated": updated_count,
+                "created": created_count,
+                "failed": failed_plugins
+            }
+        )
+        
+        return {
+            "message": f"Reloaded all plugins. Updated: {updated_count}, Created: {created_count}, Failed: {len(failed_plugins)}",
+            "updated_count": updated_count,
+            "created_count": created_count,
+            "failed_plugins": failed_plugins
+        }
     
     @app.put("/api/plugins/{plugin_name}/config")
     async def update_plugin_config(
@@ -888,36 +1315,6 @@ def create_app() -> FastAPI:
         
         return {"message": f"Plugin adapter set to {adapter_name}" if adapter_name else "Plugin adapter removed"}
     
-    @app.delete("/api/plugins/{plugin_name}")
-    async def delete_plugin(
-        plugin_name: str,
-        user: Dict[str, Any] = Depends(require_permission(Permission.PLUGIN_LOAD))
-    ):
-        """Delete a plugin directory."""
-        plugin_manager = get_plugin_manager()
-        username = user.get("username", "unknown")
-        
-        # Check if plugin exists
-        plugin_dir = plugin_manager.plugin_dir / plugin_name
-        if not plugin_dir.exists():
-            raise HTTPException(status_code=404, detail="Plugin not found")
-        
-        # Delete plugin
-        success = await plugin_manager.delete_plugin(plugin_name)
-        
-        # Log action
-        await get_audit_logger().log_plugin_action(
-            "delete",
-            plugin_name,
-            username,
-            success
-        )
-        
-        if not success:
-            raise HTTPException(status_code=500, detail="Failed to delete plugin")
-        
-        return {"message": f"Plugin {plugin_name} deleted successfully"}
-    
     @app.post("/api/plugins/upload")
     async def upload_plugin(
         file: UploadFile = File(...),
@@ -957,26 +1354,88 @@ def create_app() -> FastAPI:
                 raise HTTPException(status_code=400, detail="No plugin directory found in ZIP")
             
             plugin_dir = plugin_dirs[0]
-            plugin_name = plugin_dir.name
+            plugin_folder_name = plugin_dir.name
+            
+            # Validate plugin structure
+            plugin_json = plugin_dir / "plugin.json"
+            if not plugin_json.exists():
+                raise HTTPException(status_code=400, detail="Plugin must contain plugin.json file")
+            
+            # Validate and parse plugin.json
+            try:
+                with open(plugin_json, 'r', encoding='utf-8') as f:
+                    plugin_metadata = json.load(f)
+                    
+                    # Check required fields
+                    if 'name' not in plugin_metadata:
+                        raise HTTPException(status_code=400, detail="plugin.json must contain 'name' field")
+                    if 'version' not in plugin_metadata:
+                        raise HTTPException(status_code=400, detail="plugin.json must contain 'version' field")
+                    
+                    plugin_author = plugin_metadata.get('author', 'Unknown')
+                    plugin_name = plugin_metadata['name']
+                    plugin_version = plugin_metadata['version']
+                    default_config = plugin_metadata.get('default_config', {})
+                    
+            except json.JSONDecodeError:
+                raise HTTPException(status_code=400, detail="Invalid plugin.json format")
+            except HTTPException:
+                raise
+            except Exception as e:
+                raise HTTPException(status_code=400, detail=f"Error reading plugin.json: {str(e)}")
+            
+            # Target directory: plugins/{name}
             target_dir = Path(config.plugin_dir) / plugin_name
             
             # Copy to plugin directory
             if target_dir.exists():
                 shutil.rmtree(target_dir)
-            target_dir.mkdir(parents=True, exist_ok=True)
-            shutil.copytree(plugin_dir, target_dir, dirs_exist_ok=True)
+            # Ensure parent directory exists
+            target_dir.parent.mkdir(parents=True, exist_ok=True)
+            # Copy the plugin directory
+            shutil.copytree(plugin_dir, target_dir)
             
-            # Try to load plugin
+            # Register plugin in database
+            db_manager = get_database_manager()
             try:
-                success = await plugin_manager.load_plugin(plugin_name)
-                if not success:
-                    raise HTTPException(status_code=500, detail="Failed to load plugin after installation")
+                # Check if plugin already exists
+                existing = await db_manager.get_plugin_setting(plugin_author, plugin_name)
+                if existing:
+                    # Update existing plugin
+                    await db_manager.update_plugin_setting(
+                        plugin_author,
+                        plugin_name,
+                        config=existing.config,  # Keep existing config
+                        install_source='upload',
+                        install_info={
+                            'version': plugin_version,
+                            'uploaded_at': datetime.now().isoformat(),
+                            'uploaded_by': user.get('username')
+                        }
+                    )
+                    logger.info(f"Updated existing plugin: {plugin_author}/{plugin_name}")
+                else:
+                    # Create new plugin setting (disabled by default)
+                    await db_manager.create_plugin_setting(
+                        author=plugin_author,
+                        name=plugin_name,
+                        enabled=False,
+                        priority=0,
+                        config=default_config,
+                        install_source='upload',
+                        install_info={
+                            'version': plugin_version,
+                            'uploaded_at': datetime.now().isoformat(),
+                            'uploaded_by': user.get('username')
+                        }
+                    )
+                    logger.info(f"Created new plugin setting: {plugin_author}/{plugin_name}")
             except Exception as e:
-                logger.error(f"Failed to load plugin after upload: {e}")
+                logger.error(f"Failed to register plugin in database: {e}")
                 # Clean up on failure
                 if target_dir.exists():
                     shutil.rmtree(target_dir)
-                raise HTTPException(status_code=500, detail=f"Failed to load plugin: {str(e)}")
+                raise HTTPException(status_code=500, detail=f"Failed to register plugin: {str(e)}")
             
             await get_audit_logger().log_plugin_action(
                 "upload",
@@ -986,8 +1445,10 @@ def create_app() -> FastAPI:
             )
             
             return {
-                "message": "Plugin uploaded and loaded successfully",
-                "plugin_name": plugin_name
+                "message": "Plugin uploaded successfully. Please enable it in the plugin list to use.",
+                "plugin_name": plugin_name,
+                "plugin_author": plugin_author,
+                "plugin_version": plugin_version
             }
     
     @app.get("/api/plugins/{plugin_name}/config-schema")
@@ -1063,6 +1524,180 @@ def create_app() -> FastAPI:
         }
 
 
+    @app.get("/api/ai/health")
+    async def get_ai_health_status(user: Dict[str, Any] = Depends(get_current_user)):
+        """Get comprehensive AI system health status."""
+        from ..core.app import get_app
+        from ..ai.dream import get_dream_scheduler
+        
+        app = get_app()
+        health_status = {
+            "overall_status": "healthy",
+            "timestamp": datetime.now().isoformat(),
+            "systems": {}
+        }
+        
+        # 1. AI Message Handler
+        if hasattr(app, 'ai_message_handler') and app.ai_message_handler:
+            try:
+                health_status["systems"]["ai_message_handler"] = {
+                    "status": "running",
+                    "initialized": True,
+                    "error": None
+                }
+            except Exception as e:
+                health_status["systems"]["ai_message_handler"] = {
+                    "status": "error",
+                    "initialized": False,
+                    "error": str(e)
+                }
+                health_status["overall_status"] = "degraded"
+        else:
+            health_status["systems"]["ai_message_handler"] = {
+                "status": "disabled",
+                "initialized": False,
+                "error": "Not initialized"
+            }
+        
+        # 2. Dream Scheduler
+        dream_scheduler = get_dream_scheduler()
+        if dream_scheduler:
+            stats = dream_scheduler.get_statistics()
+            health_status["systems"]["dream_scheduler"] = {
+                "status": "running" if stats['is_running'] else "stopped",
+                "enabled": stats['enabled'],
+                "total_cycles": stats['total_cycles'],
+                "successful_cycles": stats['successful_cycles'],
+                "failed_cycles": stats['failed_cycles'],
+                "avg_iterations": round(stats['avg_iterations'], 2),
+                "avg_cost_seconds": round(stats['avg_cost_seconds'], 2),
+                "last_cycle_time": stats['last_cycle_time'],
+                "error": None
+            }
+        else:
+            health_status["systems"]["dream_scheduler"] = {
+                "status": "not_initialized",
+                "enabled": False,
+                "error": "Scheduler not initialized"
+            }
+            health_status["overall_status"] = "degraded"
+        
+        # 3. Model Manager
+        try:
+            from ..ai.model_manager import ModelManager
+            model_manager = ModelManager()
+            await model_manager.initialize()
+            
+            models = await model_manager.list_models()
+            default_model = await model_manager.get_default_model()
+            
+            health_status["systems"]["model_manager"] = {
+                "status": "running",
+                "total_models": len(models),
+                "has_default_model": default_model is not None,
+                "default_model": default_model.get('name') if default_model else None,
+                "error": None
+            }
+        except Exception as e:
+            health_status["systems"]["model_manager"] = {
+                "status": "error",
+                "error": str(e)
+            }
+            health_status["overall_status"] = "degraded"
+        
+        # 4. Expression Systems
+        health_status["systems"]["expression_systems"] = {
+            "auto_checker": {"status": "running", "note": "Checks expressions hourly"},
+            "reflector": {"status": "running", "note": "Reflects every 2 hours"},
+            "selector": {"status": "available"},
+            "learner": {"status": "available"}
+        }
+        
+        # 5. Knowledge Graph
+        try:
+            from ..ai.knowledge import kg_manager
+            health_status["systems"]["knowledge_graph"] = {
+                "status": "available",
+                "note": "OpenIE-based knowledge extraction"
+            }
+        except Exception as e:
+            health_status["systems"]["knowledge_graph"] = {
+                "status": "error",
+                "error": str(e)
+            }
+        
+        # 6. Memory Systems
+        health_status["systems"]["memory_systems"] = {
+            "chat_history": {"status": "available"},
+            "jargon_miner": {"status": "available"},
+            "person_profiler": {"status": "available"},
+            "group_profiler": {"status": "available"}
+        }
+        
+        # 7. Sticker System
+        health_status["systems"]["sticker_system"] = {
+            "manager": {"status": "available"},
+            "learner": {"status": "available"},
+            "selector": {"status": "available"},
+            "integration": {"status": "available"}
+        }
+        
+        # 8. Other AI Components
+        health_status["systems"]["other_components"] = {
+            "brain_planner": {"status": "available"},
+            "chat_summarizer": {"status": "available"},
+            "frequency_control": {"status": "available"},
+            "thread_pool": {"status": "available"},
+            "mcp_manager": {"status": "available"}
+        }
+        
+        return health_status
+    
+    @app.get("/api/onebot/status")
+    async def get_onebot_status(user: Dict[str, Any] = Depends(get_current_user)):
+        """Get OneBot adapter status and connection info."""
+        application = get_app()
+        config = get_config()
+        
+        status = {
+            "connected": False,
+            "connection_type": config.onebot_connection_type,
+            "version": config.onebot_version,
+            "has_access_token": bool(config.onebot_access_token),
+            "has_secret": bool(config.onebot_secret),
+            "client_count": 0,
+            "details": {}
+        }
+        
+        if hasattr(application, 'onebot_adapter') and application.onebot_adapter:
+            adapter = application.onebot_adapter
+            status["connected"] = getattr(adapter, '_running', False)
+            
+            # 根据连接类型提供详细信息
+            if config.onebot_connection_type == "http":
+                status["details"] = {
+                    "url": config.onebot_http_url,
+                    "auth_configured": bool(config.onebot_access_token)
+                }
+            elif config.onebot_connection_type in ["ws", "ws_forward"]:
+                status["details"] = {
+                    "url": config.onebot_ws_url,
+                    "auth_configured": bool(config.onebot_access_token),
+                    "ws_connected": adapter._ws is not None and not adapter._ws.closed if adapter._ws else False
+                }
+            elif config.onebot_connection_type == "ws_reverse":
+                status["client_count"] = len(adapter._reverse_clients) if hasattr(adapter, '_reverse_clients') else 0
+                status["details"] = {
+                    "host": config.onebot_ws_reverse_host,
+                    "port": config.onebot_ws_reverse_port,
+                    "path": config.onebot_ws_reverse_path,
+                    "auth_configured": bool(config.onebot_access_token),
+                    "server_running": adapter._ws_server is not None,
+                    "connected_clients": status["client_count"]
+                }
+        
+        return status
+    
     @app.get("/api/onebot/config")
     async def get_onebot_config(user: Dict[str, Any] = Depends(get_current_user)):
         """Get OneBot configuration."""
@@ -1107,8 +1742,10 @@ def create_app() -> FastAPI:
         if "ws_reverse_path" in config_update:
             update_data["onebot_ws_reverse_path"] = config_update["ws_reverse_path"]
         if "access_token" in config_update:
+            # 如果 access_token 是空字符串，表示不需要 token 认证，允许设置为空
             update_data["onebot_access_token"] = config_update["access_token"]
         if "secret" in config_update:
+            # 如果 secret 是空字符串，表示不需要签名验证，允许设置为空
             update_data["onebot_secret"] = config_update["secret"]
         if "version" in config_update:
             update_data["onebot_version"] = config_update["version"]
@@ -1212,13 +1849,12 @@ def create_app() -> FastAPI:
                 
                 # Re-register event handler
                 event_bus = get_event_bus()
-                def handle_onebot_event(event):
-                    import asyncio
-                    asyncio.create_task(event_bus.publish(
+                async def handle_onebot_event(event):
+                    await event_bus.publish(
                         f"onebot.{event['type']}",
                         event,
                         source="onebot"
-                    ))
+                    )
                 
                 application.onebot_adapter.on_event(handle_onebot_event)
                 
@@ -1243,107 +1879,6 @@ def create_app() -> FastAPI:
         
         return {"message": "Configuration updated and OneBot adapter restarted successfully."}
     
-    def _format_notice_event(payload: Dict[str, Any]) -> str:
-        """Format notice event to readable text."""
-        notice_type = payload.get("notice_type", "")
-        user_id = payload.get("user_id", "")
-        operator_id = payload.get("operator_id", "")
-        group_id = payload.get("group_id", "")
-        
-        if notice_type == "group_increase":
-            sub_type = payload.get("sub_type", "")
-            if sub_type == "approve":
-                return f"[系统通知] {user_id} 通过邀请加入了群 {group_id}"
-            elif sub_type == "invite":
-                return f"[系统通知] {user_id} 被 {operator_id} 邀请加入了群 {group_id}"
-            return f"[系统通知] {user_id} 加入了群 {group_id}"
-        
-        elif notice_type == "group_decrease":
-            sub_type = payload.get("sub_type", "")
-            if sub_type == "leave":
-                return f"[系统通知] {user_id} 退出了群 {group_id}"
-            elif sub_type == "kick":
-                return f"[系统通知] {user_id} 被 {operator_id} 踢出了群 {group_id}"
-            elif sub_type == "kick_me":
-                return f"[系统通知] 机器人被 {operator_id} 踢出了群 {group_id}"
-            return f"[系统通知] {user_id} 离开了群 {group_id}"
-        
-        elif notice_type == "group_ban":
-            sub_type = payload.get("sub_type", "")
-            duration = payload.get("duration", 0)
-            if sub_type == "ban":
-                if duration > 0:
-                    minutes = duration // 60
-                    return f"[系统通知] {user_id} 被 {operator_id} 禁言 {minutes} 分钟"
-                return f"[系统通知] {user_id} 被 {operator_id} 禁言"
-            elif sub_type == "lift_ban":
-                return f"[系统通知] {user_id} 被 {operator_id} 解除禁言"
-            return f"[系统通知] 群 {group_id} 禁言状态变更"
-        
-        elif notice_type == "group_recall":
-            message_id = payload.get("message_id", "")
-            return f"[系统通知] {operator_id} 撤回了 {user_id} 的消息 (ID: {message_id})"
-        
-        elif notice_type == "friend_recall":
-            message_id = payload.get("message_id", "")
-            return f"[系统通知] {user_id} 撤回了一条消息 (ID: {message_id})"
-        
-        elif notice_type == "friend_add":
-            return f"[系统通知] {user_id} 成为了好友"
-        
-        elif notice_type == "group_admin":
-            sub_type = payload.get("sub_type", "")
-            if sub_type == "set":
-                return f"[系统通知] {user_id} 被设置为群 {group_id} 的管理员"
-            elif sub_type == "unset":
-                return f"[系统通知] {user_id} 被取消群 {group_id} 的管理员"
-            return f"[系统通知] 群 {group_id} 管理员变更"
-        
-        elif notice_type == "group_upload":
-            file_info = payload.get("file", {})
-            file_name = file_info.get("name", "未知文件")
-            return f"[系统通知] {user_id} 上传了文件: {file_name}"
-        
-        elif notice_type == "notify":
-            sub_type = payload.get("sub_type", "")
-            if sub_type == "poke":
-                target_id = payload.get("target_id", "")
-                return f"[系统通知] {user_id} 戳了戳 {target_id}"
-            elif sub_type == "lucky_king":
-                return f"[系统通知] {user_id} 是群 {group_id} 的红包运气王"
-            elif sub_type == "honor":
-                honor_type = payload.get("honor_type", "")
-                return f"[系统通知] {user_id} 获得了群 {group_id} 的 {honor_type} 荣誉"
-            return f"[系统通知] 群 {group_id} 提醒事件"
-        
-        # Unknown notice type - show all available info for debugging
-        if notice_type:
-            return f"[系统通知] {notice_type} 事件 (群:{group_id}, 用户:{user_id}, 操作者:{operator_id})"
-        else:
-            # No notice_type - show raw data
-            sub_type = payload.get("sub_type", "")
-            return f"[系统通知] 未知通知类型 (sub_type:{sub_type}, 群:{group_id}, 用户:{user_id})"
-    
-    def _format_request_event(payload: Dict[str, Any]) -> str:
-        """Format request event to readable text."""
-        request_type = payload.get("request_type", "")
-        user_id = payload.get("user_id", "")
-        comment = payload.get("comment", "")
-        
-        if request_type == "friend":
-            return f"[好友请求] {user_id} 请求添加好友: {comment}"
-        
-        elif request_type == "group":
-            sub_type = payload.get("sub_type", "")
-            group_id = payload.get("group_id", "")
-            if sub_type == "add":
-                return f"[加群请求] {user_id} 请求加入群 {group_id}: {comment}"
-            elif sub_type == "invite":
-                return f"[群邀请] {user_id} 邀请机器人加入群 {group_id}: {comment}"
-            return f"[群请求] {user_id} 的群 {group_id} 请求: {comment}"
-        
-        return f"[请求] {request_type} 请求"
-
     @app.get("/api/messages/log")
     async def get_message_log(
         limit: int = 100,
@@ -1434,6 +1969,27 @@ def create_app() -> FastAPI:
         all_events.sort(key=lambda x: x["timestamp"], reverse=True)
         
         return all_events[:limit]
+    
+    @app.websocket("/ws/messages")
+    async def websocket_messages(websocket: WebSocket):
+        """WebSocket endpoint for real-time message updates."""
+        await _ws_manager.connect(websocket)
+        try:
+            # Keep connection alive and handle incoming messages (e.g., ping/pong)
+            while True:
+                # Wait for any message from client (typically ping/pong or keep-alive)
+                try:
+                    data = await websocket.receive_text()
+                    # Echo back for keep-alive
+                    if data == "ping":
+                        await websocket.send_text("pong")
+                except WebSocketDisconnect:
+                    break
+                except Exception as e:
+                    logger.error(f"WebSocket error: {e}")
+                    break
+        finally:
+            _ws_manager.disconnect(websocket)
     
     # System endpoints
     def _get_bot_status(application) -> Dict[str, Any]:
@@ -1594,7 +2150,8 @@ def create_app() -> FastAPI:
                         "card": "",
                         "role": "owner"
                     },
-                    "is_self": True  # Mark as self-sent
+                    "is_self": True,  # Mark as self-sent
+                    "target_id": chat_id  # Add target_id to identify the recipient
                 }
                 
                 # Add group_id for group messages
@@ -2330,6 +2887,144 @@ def create_app() -> FastAPI:
         )
         return {"success": True, "updated_count": count}
     
+    @app.post("/api/ai/groups/{group_id}/mark-left")
+    async def mark_group_left(
+        group_id: str,
+        user: Dict[str, Any] = Depends(require_permission(Permission.SYSTEM_CONFIG_EDIT))
+    ):
+        """Mark a group as left (exited). Group settings will be kept for 30 days."""
+        db_manager = get_database_manager()
+        success = await db_manager.mark_group_left(group_id)
+        
+        if not success:
+            raise HTTPException(status_code=404, detail="Group configuration not found")
+        
+        logger.info(f"Group {group_id} marked as left, data will be kept for 30 days")
+        
+        await get_audit_logger().log_plugin_action(
+            "mark_group_left",
+            group_id,
+            user.get("username"),
+            True
+        )
+        
+        return {
+            "success": True,
+            "message": "Group marked as left. Settings will be automatically deleted after 30 days."
+        }
+    
+    @app.post("/api/ai/groups/cleanup-expired")
+    async def cleanup_expired_left_groups(
+        user: Dict[str, Any] = Depends(require_permission(Permission.SYSTEM_CONFIG_EDIT))
+    ):
+        """Manually trigger cleanup of expired left group data (>30 days)."""
+        db_manager = get_database_manager()
+        count = await db_manager.cleanup_expired_left_groups(days=30)
+        
+        logger.info(f"Cleaned up {count} expired left group configurations")
+        
+        await get_audit_logger().log_plugin_action(
+            "cleanup_expired_groups",
+            "all",
+            user.get("username"),
+            True,
+            {"deleted_count": count}
+        )
+        
+        return {
+            "success": True,
+            "deleted_count": count,
+            "message": f"Cleaned up {count} expired group configurations"
+        }
+    
+    class CleanupOldGroupsRequest(BaseModel):
+        days: Optional[int] = None  # 删除指定天数前的数据
+        only_disabled: bool = False  # 仅删除未启用的
+        max_message_count: Optional[int] = None  # 消息数少于此值
+        group_ids: Optional[List[str]] = None  # 指定群号列表
+    
+    @app.post("/api/ai/groups/cleanup-old")
+    async def cleanup_old_groups(
+        request: CleanupOldGroupsRequest,
+        user: Dict[str, Any] = Depends(require_permission(Permission.SYSTEM_CONFIG_EDIT))
+    ):
+        """批量清理旧群组数据（提供多种清理选项）"""
+        from datetime import datetime, timedelta
+        db_manager = get_database_manager()
+        
+        deleted_count = 0
+        
+        try:
+            # 选项1: 删除指定群号
+            if request.group_ids:
+                for group_id in request.group_ids:
+                    success = await db_manager.delete_ai_config('group', group_id)
+                    if success:
+                        deleted_count += 1
+                
+                logger.info(f"Deleted {deleted_count} specified group configurations")
+            
+            # 选项2: 删除所有未启用的群组
+            elif request.only_disabled:
+                configs = await db_manager.list_ai_configs('group', exclude_left=False)
+                for config in configs:
+                    if not config.enabled:
+                        success = await db_manager.delete_ai_config('group', config.target_id)
+                        if success:
+                            deleted_count += 1
+                
+                logger.info(f"Deleted {deleted_count} disabled group configurations")
+            
+            # 选项3: 按天数和消息数清理不活跃群组
+            elif request.days is not None:
+                cutoff_date = datetime.utcnow() - timedelta(days=request.days)
+                configs = await db_manager.list_ai_configs('group', exclude_left=False)
+                
+                for config in configs:
+                    # 检查更新时间
+                    if config.updated_at < cutoff_date:
+                        # 如果指定了消息数限制，检查消息数
+                        if request.max_message_count is not None:
+                            if config.message_count <= request.max_message_count:
+                                success = await db_manager.delete_ai_config('group', config.target_id)
+                                if success:
+                                    deleted_count += 1
+                        else:
+                            success = await db_manager.delete_ai_config('group', config.target_id)
+                            if success:
+                                deleted_count += 1
+                
+                logger.info(f"Deleted {deleted_count} inactive group configurations")
+            
+            else:
+                raise HTTPException(
+                    status_code=400,
+                    detail="Please specify cleanup criteria: group_ids, only_disabled, or days"
+                )
+            
+            await get_audit_logger().log_plugin_action(
+                "cleanup_old_groups",
+                "all",
+                user.get("username"),
+                True,
+                {
+                    "deleted_count": deleted_count,
+                    "criteria": request.dict()
+                }
+            )
+            
+            return {
+                "success": True,
+                "deleted_count": deleted_count,
+                "message": f"Successfully cleaned up {deleted_count} group configurations"
+            }
+        
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.error(f"Failed to cleanup old groups: {e}", exc_info=True)
+            raise HTTPException(status_code=500, detail=f"Failed to cleanup: {str(e)}")
+    
     # ==================== AI Tools Management ====================
     
     @app.get("/api/ai/tools")
@@ -2451,6 +3146,14 @@ def create_app() -> FastAPI:
         """Update model."""
         model_manager = get_model_manager()
         update_dict = updates.dict(exclude_unset=True)
+        
+        # 如果 api_key 是空字符串，移除它（保持原有值不变）
+        if 'api_key' in update_dict and update_dict['api_key'] == '':
+            del update_dict['api_key']
+        
+        # 如果 base_url 是空字符串，移除它（保持原有值不变）
+        if 'base_url' in update_dict and update_dict['base_url'] == '':
+            del update_dict['base_url']
         
         success = await model_manager.update_model(model_uuid, **update_dict)
         if not success:

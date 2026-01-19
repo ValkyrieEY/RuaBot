@@ -461,6 +461,35 @@ class PluginRuntimeConnector:
         logger.info(f"Uninstalling plugin: {author}/{name}")
         pass
     
+    async def unload_plugin(self, plugin_name: str) -> bool:
+        """Unload a single plugin without reloading.
+        
+        Args:
+            plugin_name: Plugin name (format: author/name or just name)
+            
+        Returns:
+            True if unloaded successfully
+        """
+        logger.info(f"Unloading plugin: {plugin_name}")
+        
+        try:
+            # Send unload message to runtime
+            await self._send_to_runtime({
+                'type': 'unload_plugin',
+                'data': {
+                    'plugin_name': plugin_name
+                }
+            })
+            
+            # Wait a bit for the unload to complete
+            await asyncio.sleep(0.3)
+            
+            logger.info(f"Plugin {plugin_name} unloaded successfully")
+            return True
+        except Exception as e:
+            logger.error(f"Failed to unload plugin {plugin_name}: {e}", exc_info=True)
+            return False
+    
     async def reload_plugin(self, plugin_name: str) -> bool:
         """Reload a single plugin.
         
@@ -473,11 +502,42 @@ class PluginRuntimeConnector:
         logger.info(f"Reloading single plugin: {plugin_name}")
         
         try:
-            # Send reload message to runtime
+            # Get fresh config from database to pass to runtime
+            # This avoids SQLite cross-process caching issues
+            plugin_config = None
+            
+            if self.db_manager:
+                # Parse plugin name to get author/name
+                if '/' in plugin_name:
+                    author, name = plugin_name.split('/', 1)
+                else:
+                    # Try to get author from plugin.json
+                    from ...core.config import get_config
+                    config = get_config()
+                    plugin_path = Path(config.plugin_dir) / plugin_name
+                    plugin_json = plugin_path / "plugin.json"
+                    if plugin_json.exists():
+                        import json
+                        with open(plugin_json, 'r', encoding='utf-8') as f:
+                            metadata = json.load(f)
+                        author = metadata.get('author', 'Unknown')
+                        name = plugin_name
+                    else:
+                        author = 'Unknown'
+                        name = plugin_name
+                
+                # Get latest config from database
+                setting = await self.db_manager.get_plugin_setting(author, name)
+                if setting and setting.config:
+                    plugin_config = setting.config
+                    logger.debug(f"Loaded fresh config from database for {plugin_name}: {plugin_config}")
+            
+            # Send reload message to runtime with fresh config
             await self._send_to_runtime({
                 'type': 'reload_plugin',
                 'data': {
-                    'plugin_name': plugin_name
+                    'plugin_name': plugin_name,
+                    'config': plugin_config  # Pass config directly to avoid cross-process cache issues
                 }
             })
             
@@ -565,4 +625,49 @@ class PluginRuntimeConnector:
         self.runtime_stdout = None
         
         logger.info("Plugin runtime disposed")
+    
+    async def cleanup_orphan_processes(self) -> int:
+        """Manually cleanup orphaned plugin runtime processes.
+        
+        Returns:
+            Number of processes cleaned up
+        """
+        logger.info("Manually cleaning up orphaned plugin runtime processes...")
+        cleaned_count = 0
+        
+        try:
+            import psutil
+            current_pid = os.getpid()
+            runtime_script_str = str(self.runtime_script)
+            
+            for proc in psutil.process_iter(['pid', 'name', 'cmdline']):
+                try:
+                    if proc.info['pid'] == current_pid:
+                        continue
+                    
+                    cmdline = proc.info.get('cmdline', [])
+                    if cmdline and runtime_script_str in ' '.join(cmdline):
+                        logger.info(f"Found orphaned plugin runtime process: PID {proc.info['pid']}, terminating...")
+                        try:
+                            proc_obj = psutil.Process(proc.info['pid'])
+                            proc_obj.terminate()
+                            proc_obj.wait(timeout=2)
+                            logger.info(f"Orphaned process {proc.info['pid']} terminated")
+                            cleaned_count += 1
+                        except (psutil.NoSuchProcess, psutil.TimeoutExpired):
+                            try:
+                                proc_obj.kill()
+                                logger.info(f"Orphaned process {proc.info['pid']} killed")
+                                cleaned_count += 1
+                            except psutil.NoSuchProcess:
+                                pass
+                except (psutil.NoSuchProcess, psutil.AccessDenied):
+                    continue
+        except ImportError:
+            logger.warning("psutil not available, cannot cleanup orphaned processes")
+        except Exception as e:
+            logger.error(f"Error cleaning up orphaned processes: {e}", exc_info=True)
+        
+        logger.info(f"Cleaned up {cleaned_count} orphaned plugin runtime process(es)")
+        return cleaned_count
 

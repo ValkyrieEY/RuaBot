@@ -89,6 +89,16 @@ class Application:
             return
 
         logger.info("Starting application...")
+        
+        # Initialize plugin thread pool early (before plugins load)
+        if getattr(self.config, 'plugin_thread_pool_enabled', True):
+            try:
+                from ..plugins.thread_pool import get_plugin_thread_pool_manager
+                max_workers = getattr(self.config, 'plugin_thread_pool_workers', 3)
+                self.plugin_thread_pool = get_plugin_thread_pool_manager(max_workers=max_workers)
+                logger.info(f"Plugin thread pool initialized with {max_workers} workers")
+            except Exception as e:
+                logger.warning(f"Failed to initialize plugin thread pool: {e}")
 
         # Initialize event bus
         self.event_bus = get_event_bus()

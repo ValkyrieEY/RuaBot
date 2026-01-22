@@ -1,14 +1,35 @@
 """Authentication and token management."""
 
 import warnings
+import sys
+import logging
 from datetime import datetime, timedelta
 from typing import Any, Dict, Optional
 
 from jose import jwt, JWTError
-from passlib.context import CryptContext
 
-# Suppress passlib bcrypt version warning for Python 3.13 compatibility
+# Fix passlib bcrypt version reading issue for Python 3.13 + bcrypt 4.2.1+
+# bcrypt 4.2.1 changed __about__ location, passlib 1.7.4 tries old location
+# Workaround: Monkey patch bcrypt to provide __about__ for passlib
+try:
+    import bcrypt
+    if not hasattr(bcrypt, '__about__'):
+        # Create a mock __about__ module for passlib compatibility
+        class MockAbout:
+            __version__ = getattr(bcrypt, '__version__', '4.2.1')
+        bcrypt.__about__ = MockAbout()
+except (ImportError, AttributeError):
+    pass
+
+# Suppress all passlib-related warnings and errors
 warnings.filterwarnings("ignore", message=".*error reading bcrypt version.*")
+warnings.filterwarnings("ignore", message=".*trapped.*error reading bcrypt version.*")
+
+# Suppress stderr output from passlib
+logging.getLogger("passlib").setLevel(logging.CRITICAL)
+
+# Import passlib (errors should be suppressed now)
+from passlib.context import CryptContext
 
 from ..core.config import get_config
 from ..core.logger import get_logger

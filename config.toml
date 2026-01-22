@@ -3,6 +3,7 @@ name = "XQNEXT Framework"
 version = "0.0.2"
 environment = "development"
 debug = false
+log_level = "INFO"
 
 [server]
 host = "0.0.0.0"
@@ -35,6 +36,8 @@ file = "logs/onebot_framework.log"
 [plugins]
 dir = "./plugins"
 auto_load = true
+thread_pool_enabled = true
+thread_pool_workers = 3
 
 [web_ui]
 enabled = true

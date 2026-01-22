@@ -754,13 +754,14 @@ def create_app() -> FastAPI:
                 setting = await db_manager.get_plugin_setting(author, name)
                 if not setting:
                     # Create new setting
-                    success = await db_manager.create_plugin_setting(
+                    result = await db_manager.create_plugin_setting(
                         author=author,
                         name=name,
                         enabled=True,
                         config={},
                         install_source='local'
                     )
+                    success = result is not None
                 else:
                     # Update existing setting
                     success = await db_manager.update_plugin_setting(author, name, enabled=True)
@@ -2289,6 +2290,32 @@ def create_app() -> FastAPI:
         
         safe_config["tencent_cloud"] = tencent_config
         return safe_config
+    
+    @app.get("/api/system/threadpool-stats")
+    async def get_threadpool_stats(user: Dict[str, Any] = Depends(get_current_user)):
+        """Get thread pool statistics."""
+        stats = {
+            "ai_threadpool": None,
+            "plugin_threadpool": None
+        }
+        
+        # Try to get AI thread pool stats
+        try:
+            from ..ai.thread_pool import _thread_pool_manager
+            if _thread_pool_manager:
+                stats["ai_threadpool"] = _thread_pool_manager.get_stats()
+        except Exception as e:
+            logger.warning(f"Failed to get AI thread pool stats: {e}")
+        
+        # Try to get plugin thread pool stats  
+        try:
+            from ..plugins.thread_pool import _plugin_thread_pool_manager
+            if _plugin_thread_pool_manager:
+                stats["plugin_threadpool"] = _plugin_thread_pool_manager.get_stats()
+        except Exception as e:
+            logger.warning(f"Failed to get plugin thread pool stats: {e}")
+        
+        return stats
     
     @app.post("/api/system/config")
     async def update_system_config(

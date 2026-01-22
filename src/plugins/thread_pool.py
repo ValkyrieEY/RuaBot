@@ -1,4 +1,4 @@
-"""Thread pool manager for AI message processing."""
+"""Thread pool manager for plugin system."""
 
 import asyncio
 import threading
@@ -10,15 +10,15 @@ from ..core.logger import get_logger
 logger = get_logger(__name__)
 
 
-class ThreadPoolManager:
-    """Thread pool manager for CPU-bound or blocking operations."""
+class PluginThreadPoolManager:
+    """Thread pool manager for plugin operations."""
     
-    def __init__(self, max_workers: int = 5):
+    def __init__(self, max_workers: int = 3):
         """
-        Initialize thread pool manager.
+        Initialize plugin thread pool manager.
         
         Args:
-            max_workers: Maximum number of worker threads (default: 5)
+            max_workers: Maximum number of worker threads (default: 3)
         """
         self.max_workers = max_workers
         self._executor: Optional[ThreadPoolExecutor] = None
@@ -38,11 +38,11 @@ class ThreadPoolManager:
             if not self._initialized:
                 self._executor = ThreadPoolExecutor(
                     max_workers=self.max_workers,
-                    thread_name_prefix="ai_worker"
+                    thread_name_prefix="plugin_worker"
                 )
                 self._initialized = True
                 self._init_time = time.time()
-                logger.info(f"Thread pool initialized with {self.max_workers} workers")
+                logger.info(f"Plugin thread pool initialized with {self.max_workers} workers")
     
     def shutdown(self, wait: bool = True):
         """Shutdown the thread pool executor."""
@@ -51,7 +51,7 @@ class ThreadPoolManager:
                 self._executor.shutdown(wait=wait)
                 self._executor = None
                 self._initialized = False
-                logger.info("Thread pool shutdown")
+                logger.info("Plugin thread pool shutdown")
     
     async def run_in_executor(self, func, *args, **kwargs):
         """
@@ -81,7 +81,7 @@ class ThreadPoolManager:
         except Exception as e:
             with self._lock:
                 self._failed_tasks += 1
-            logger.error(f"Thread pool task failed: {e}")
+            logger.error(f"Plugin thread pool task failed: {e}")
             raise
         finally:
             with self._lock:
@@ -103,32 +103,28 @@ class ThreadPoolManager:
             }
     
     @property
-    def executor(self) -> Optional[ThreadPoolExecutor]:
-        """Get the thread pool executor."""
-        return self._executor
-    
-    @property
     def is_initialized(self) -> bool:
         """Check if thread pool is initialized."""
         return self._initialized
 
 
-# Global thread pool manager instance
-_thread_pool_manager: Optional[ThreadPoolManager] = None
+# Global plugin thread pool manager instance
+_plugin_thread_pool_manager: Optional[PluginThreadPoolManager] = None
 
 
-def get_thread_pool_manager(max_workers: int = 5) -> ThreadPoolManager:
-    """Get or create the global thread pool manager."""
-    global _thread_pool_manager
-    if _thread_pool_manager is None:
-        _thread_pool_manager = ThreadPoolManager(max_workers=max_workers)
-        _thread_pool_manager.initialize()
-    return _thread_pool_manager
+def get_plugin_thread_pool_manager(max_workers: int = 3) -> PluginThreadPoolManager:
+    """Get or create the global plugin thread pool manager."""
+    global _plugin_thread_pool_manager
+    if _plugin_thread_pool_manager is None:
+        _plugin_thread_pool_manager = PluginThreadPoolManager(max_workers=max_workers)
+        _plugin_thread_pool_manager.initialize()
+    return _plugin_thread_pool_manager
 
 
-def shutdown_thread_pool(wait: bool = True):
-    """Shutdown the global thread pool manager."""
-    global _thread_pool_manager
-    if _thread_pool_manager:
-        _thread_pool_manager.shutdown(wait=wait)
-        _thread_pool_manager = None
+def shutdown_plugin_thread_pool(wait: bool = True):
+    """Shutdown the global plugin thread pool manager."""
+    global _plugin_thread_pool_manager
+    if _plugin_thread_pool_manager:
+        _plugin_thread_pool_manager.shutdown(wait=wait)
+        _plugin_thread_pool_manager = None
+

@@ -1,14 +1,14 @@
 import { useEffect, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { api } from '@/utils/api'
+import { CircularProgress } from '@/components/CircularProgress'
+import { ThreadPoolMonitor } from '@/components/ThreadPoolMonitor'
 import { 
   Activity, 
   MessageSquare, 
   Puzzle, 
   Clock,
   Server,
-  Cpu,
-  HardDrive,
   Code,
   Package,
   Inbox,
@@ -17,7 +17,9 @@ import {
   Database,
   Wifi,
   Upload,
-  Download
+  Download,
+  Zap,
+  HardDrive
 } from 'lucide-react'
 
 interface SystemStatus {
@@ -97,14 +99,26 @@ export default function Dashboard() {
   const { t } = useTranslation()
   const [status, setStatus] = useState<SystemStatus | null>(null)
   const [loginInfo, setLoginInfo] = useState<LoginInfo | null>(null)
+  const [threadPoolStats, setThreadPoolStats] = useState<any>(null)
   const [loading, setLoading] = useState(true)
+  
+  // 历史数据数组，用于图表显示（最多保留 12 个数据点，即 1 分钟）
+  const [threadPoolHistory, setThreadPoolHistory] = useState<{
+    ai: Array<{ time: string; tasks: number; timestamp: number }>
+    plugin: Array<{ time: string; tasks: number; timestamp: number }>
+  }>({
+    ai: [],
+    plugin: []
+  })
 
   useEffect(() => {
     loadStatus()
     loadLoginInfo()
+    loadThreadPoolStats()
     const interval = setInterval(() => {
       loadStatus()
       loadLoginInfo()
+      loadThreadPoolStats()
     }, 5000) // Refresh every 5 seconds
     return () => clearInterval(interval)
   }, [])
@@ -132,6 +146,91 @@ export default function Dashboard() {
       }
     } catch (error) {
       console.error('Failed to load login info:', error)
+    }
+  }
+
+  const loadThreadPoolStats = async () => {
+    try {
+      const data = await api.getThreadPoolStats()
+      setThreadPoolStats(data)
+      
+      // 更新历史数据数组（用于图表显示）
+      const now = Date.now()
+      setThreadPoolHistory(prev => {
+        const newHistory = { ...prev }
+        
+        // AI 线程池历史数据
+        if (data.ai_threadpool) {
+          const aiActiveTasks = data.ai_threadpool.active_tasks || 0
+          newHistory.ai = [
+            ...prev.ai,
+            {
+              time: 'Now',
+              tasks: aiActiveTasks,
+              timestamp: now
+            }
+          ].slice(-12) // 只保留最近 12 个数据点（1分钟，每5秒一个）
+          
+          // 更新时间标签（只显示部分标签，避免拥挤）
+          newHistory.ai = newHistory.ai.map((item, index) => {
+            const totalPoints = newHistory.ai.length
+            const position = totalPoints - 1 - index
+            let timeLabel = ''
+            if (index === totalPoints - 1) {
+              timeLabel = 'Now'
+            } else if (position % 2 === 0 || position === 0) {
+              // 每两个点显示一个标签，或者显示第一个
+              const seconds = position * 5
+              if (seconds >= 60) {
+                timeLabel = `-${Math.floor(seconds / 60)}m`
+              } else {
+                timeLabel = `-${seconds}s`
+              }
+            } else {
+              timeLabel = '' // 不显示标签，避免拥挤
+            }
+            return { ...item, time: timeLabel }
+          })
+        }
+        
+        // 插件线程池历史数据
+        if (data.plugin_threadpool) {
+          const pluginActiveTasks = data.plugin_threadpool.active_tasks || 0
+          newHistory.plugin = [
+            ...prev.plugin,
+            {
+              time: 'Now',
+              tasks: pluginActiveTasks,
+              timestamp: now
+            }
+          ].slice(-12) // 只保留最近 12 个数据点
+          
+          // 更新时间标签（只显示部分标签，避免拥挤）
+          newHistory.plugin = newHistory.plugin.map((item, index) => {
+            const totalPoints = newHistory.plugin.length
+            const position = totalPoints - 1 - index
+            let timeLabel = ''
+            if (index === totalPoints - 1) {
+              timeLabel = 'Now'
+            } else if (position % 2 === 0 || position === 0) {
+              // 每两个点显示一个标签，或者显示第一个
+              const seconds = position * 5
+              if (seconds >= 60) {
+                timeLabel = `-${Math.floor(seconds / 60)}m`
+              } else {
+                timeLabel = `-${seconds}s`
+              }
+            } else {
+              timeLabel = '' // 不显示标签，避免拥挤
+            }
+            return { ...item, time: timeLabel }
+          })
+        }
+        
+        return newHistory
+      })
+    } catch (error) {
+      console.error('Failed to load thread pool stats:', error)
     }
   }
 
@@ -302,77 +401,128 @@ export default function Dashboard() {
         </div>
       </div>
 
+      {/* Thread Pool Monitoring */}
+      {threadPoolStats && (
+        <>
+          <h2 className="text-lg font-semibold text-gray-900 mb-4">线程池监控</h2>
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+            {/* AI Message Processing Thread Pool */}
+            {threadPoolStats.ai_threadpool ? (
+              <ThreadPoolMonitor
+                stats={threadPoolStats.ai_threadpool}
+                title="AI 消息处理"
+                color="#3b82f6"
+                icon={<Zap className="w-5 h-5 text-blue-500" />}
+              />
+            ) : (
+              <div className="card">
+                <div className="flex items-center gap-2 mb-4">
+                  <Zap className="w-5 h-5 text-gray-400" />
+                  <h3 className="font-semibold text-gray-900">AI 消息处理</h3>
+                </div>
+                <div className="text-center py-8">
+                  <Activity className="w-12 h-12 mx-auto mb-3 text-gray-300" />
+                  <p className="text-gray-500 text-sm">AI 系统未加载</p>
+                  <p className="text-gray-400 text-xs mt-1">
+                    线程池不可用
+                  </p>
+                </div>
+              </div>
+            )}
+
+            {/* Framework Connector Thread Pool */}
+            {threadPoolStats.plugin_threadpool ? (
+              <ThreadPoolMonitor
+                stats={threadPoolStats.plugin_threadpool}
+                title="框架连接器"
+                color="#f59e0b"
+                icon={<Puzzle className="w-5 h-5 text-orange-500" />}
+                historyData={threadPoolHistory.plugin}
+              />
+            ) : (
+              <div className="card">
+                <div className="flex items-center gap-2 mb-4">
+                  <Puzzle className="w-5 h-5 text-gray-400" />
+                  <h3 className="font-semibold text-gray-900">框架连接器</h3>
+                </div>
+                <div className="text-center py-8">
+                  <Activity className="w-12 h-12 mx-auto mb-3 text-gray-300" />
+                  <p className="text-gray-500 text-sm">线程池未初始化</p>
+                  <p className="text-gray-400 text-xs mt-1">
+                    用于框架层面的插件管理操作
+                  </p>
+                </div>
+              </div>
+            )}
+          </div>
+        </>
+      )}
+
       {/* System Resources and Version Information */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        {/* System Resources */}
+        {/* System Resources - Circular Progress */}
         <div className="card">
-          <div className="flex items-center gap-2 mb-4">
+          <div className="flex items-center gap-2 mb-6">
             <Server className="w-5 h-5 text-blue-500" />
             <span className="font-medium text-gray-900">系统资源</span>
           </div>
 
-          {/* CPU Usage */}
-          {status?.cpu && (
-            <div className="mb-4">
-              <div className="flex items-center justify-between mb-2">
-                <div className="flex items-center gap-2">
-                  <Cpu className="w-4 h-4 text-gray-500" />
-                  <span className="text-sm text-gray-600">CPU 使用率</span>
+          {/* CPU and Memory - Circular Display */}
+          <div className="grid grid-cols-2 gap-6 mb-6">
+            {/* CPU Usage */}
+            {status?.cpu && (
+              <div className="flex flex-col items-center">
+                <CircularProgress
+                  percentage={cpuPercent}
+                  size={120}
+                  strokeWidth={8}
+                  color="#3b82f6"
+                  label="CPU"
+                  sublabel={`${status.cpu.cores} 核心`}
+                />
+                <div className="text-xs text-gray-500 mt-2 text-center">
+                  {status.cpu.frequency}
                 </div>
-                <span className="text-sm font-medium text-gray-900">{cpuPercent.toFixed(1)}%</span>
               </div>
-              <div className="w-full bg-gray-200 rounded-full h-2">
-                <div
-                  className="bg-blue-500 h-2 rounded-full transition-all duration-300"
-                  style={{ width: `${cpuPercent}%` }}
-                ></div>
-              </div>
-              <div className="text-xs text-gray-500 mt-1">
-                {status.cpu.cores} 核心 · {status.cpu.frequency}
-              </div>
-            </div>
-          )}
+            )}
 
-          {/* Memory Usage */}
-          {status?.memory && (
-            <div className="mb-4">
-              <div className="flex items-center justify-between mb-2">
-                <div className="flex items-center gap-2">
-                  <HardDrive className="w-4 h-4 text-gray-500" />
-                  <span className="text-sm text-gray-600">内存使用率</span>
+            {/* Memory Usage */}
+            {status?.memory && (
+              <div className="flex flex-col items-center">
+                <CircularProgress
+                  percentage={memoryPercent}
+                  size={120}
+                  strokeWidth={8}
+                  color="#a855f7"
+                  label="内存"
+                  sublabel={`${status.memory.used.toFixed(0)} MB`}
+                />
+                <div className="text-xs text-gray-500 mt-2 text-center">
+                  共 {status.memory.total.toFixed(0)} MB
                 </div>
-                <span className="text-sm font-medium text-gray-900">{memoryPercent.toFixed(1)}%</span>
               </div>
-              <div className="w-full bg-gray-200 rounded-full h-2">
-                <div
-                  className="bg-purple-500 h-2 rounded-full transition-all duration-300"
-                  style={{ width: `${memoryPercent}%` }}
-                ></div>
-              </div>
-              <div className="text-xs text-gray-500 mt-1">
-                {status.memory.used.toFixed(0)} MB / {status.memory.total.toFixed(0)} MB
-              </div>
-            </div>
-          )}
+            )}
+          </div>
 
-          {/* Disk Usage */}
+          {/* Disk Usage - Circular */}
           {status?.disk && (
-            <div className="mb-4">
-              <div className="flex items-center justify-between mb-2">
-                <div className="flex items-center gap-2">
-                  <Database className="w-4 h-4 text-gray-500" />
-                  <span className="text-sm text-gray-600">磁盘使用率</span>
-                </div>
-                <span className="text-sm font-medium text-gray-900">{(status.disk.percent || 0).toFixed(1)}%</span>
+            <div className="mb-6">
+              <div className="flex items-center gap-2 mb-3">
+                <Database className="w-4 h-4 text-gray-500" />
+                <span className="text-sm text-gray-600">磁盘使用</span>
               </div>
-              <div className="w-full bg-gray-200 rounded-full h-2">
-                <div
-                  className="bg-orange-500 h-2 rounded-full transition-all duration-300"
-                  style={{ width: `${status.disk.percent || 0}%` }}
-                ></div>
+              <div className="flex justify-center">
+                <CircularProgress
+                  percentage={status.disk.percent || 0}
+                  size={100}
+                  strokeWidth={6}
+                  color="#f59e0b"
+                  label="磁盘"
+                  sublabel={`${status.disk.used.toFixed(1)} GB`}
+                />
               </div>
-              <div className="text-xs text-gray-500 mt-1">
-                {status.disk.used.toFixed(1)} GB / {status.disk.total.toFixed(1)} GB (可用: {status.disk.free.toFixed(1)} GB)
+              <div className="text-xs text-gray-500 mt-2 text-center">
+                总容量 {status.disk.total.toFixed(1)} GB · 可用 {status.disk.free.toFixed(1)} GB
               </div>
             </div>
           )}

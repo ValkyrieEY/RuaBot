@@ -133,6 +133,11 @@ class ApiClient {
     return response.data
   }
 
+  async getThreadPoolStats(): Promise<any> {
+    const response = await this.client.get('/system/threadpool-stats')
+    return response.data
+  }
+
   async getSystemConfig(): Promise<any> {
     const response = await this.client.get('/system/config')
     return response.data

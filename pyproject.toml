@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "xiaoyi-qq-framework"
-version = "0.0.1"
+version = "0.0.2"
 description = "Xiaoyi_QQ - A modern, extensible OneBot protocol framework with Web UI and plugin system"
 authors = ["ValkyrieEY <2477194503@qq.com>"]
 license = "MIT"

@@ -1,0 +1,54 @@
+# Docker Compose 开发环境配置
+# 使用方式: docker-compose -f docker-compose.yml -f docker-compose.dev.yml up
+
+version: '3.8'
+
+services:
+  xqnext:
+    # 开发环境使用本地代码（无需重新构建）
+    volumes:
+      - ../src:/app/src
+      - ../webui:/app/webui
+      - ../plugins:/app/plugins
+      - ../config.toml:/app/config.toml
+      - ../data:/app/data
+      - ../logs:/app/logs
+    
+    environment:
+      - ENVIRONMENT=development
+      - LOG_LEVEL=DEBUG
+      - DEBUG=true
+    
+    # 开发环境不需要重启策略
+    restart: "no"
+    
+    # 开发环境使用更短的健康检查间隔
+    healthcheck:
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    
+    # 开发时可以使用 host 网络模式方便调试
+    # network_mode: "host"
+    
+    # 开发环境移除资源限制
+    deploy:
+      resources: {}
+    
+    # 启用热重载（如果支持）
+    command: ["python", "-m", "src.main", "--reload"]
+
+  # 开发环境数据库可视化工具
+  adminer:
+    image: adminer:latest
+    container_name: xqnext-adminer
+    restart: "no"
+    ports:
+      - "8080:8080"
+    networks:
+      - xqnext-network
+    environment:
+      - ADMINER_DEFAULT_SERVER=sqlite
+      - ADMINER_DESIGN=nette
+

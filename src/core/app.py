@@ -11,6 +11,7 @@ from .logger import setup_logger, get_logger
 from .event_bus import EventBus, get_event_bus
 from .storage import Storage, init_storage
 from .database import DatabaseManager, get_database_manager
+from .ai_detector import is_ai_available
 
 logger = get_logger(__name__)
 
@@ -145,15 +146,18 @@ class Application:
         # Start adapter
         await self.onebot_adapter.start()
         
-        # Initialize AI message handler
-        try:
-            from ..ai.message_handler import AIMessageHandler
-            self.ai_message_handler = AIMessageHandler()
-            await self.ai_message_handler.initialize()
-            logger.info("AI message handler initialized successfully")
-        except Exception as e:
-            logger.error(f"Failed to initialize AI message handler: {e}", exc_info=True)
-            logger.info("AI message handler disabled due to initialization error")
+        # Initialize AI message handler (only if AI system is available)
+        if is_ai_available():
+            try:
+                from ..ai.message_handler import AIMessageHandler
+                self.ai_message_handler = AIMessageHandler()
+                await self.ai_message_handler.initialize()
+                logger.info("AI message handler initialized successfully")
+            except Exception as e:
+                logger.error(f"Failed to initialize AI message handler: {e}", exc_info=True)
+                logger.info("AI message handler disabled due to initialization error")
+        else:
+            logger.info("AI system not available, skipping AI message handler initialization")
         
         # Initialize plugin system
         try:
@@ -169,60 +173,63 @@ class Application:
             logger.error(f"Failed to initialize plugin system: {e}", exc_info=True)
             logger.info("Plugin system disabled due to initialization error")
 
-        # Initialize and start maintenance tasks (Dream, Expression Check)
-        try:
-            from ..ai.model_manager import ModelManager
-            from ..ai.dream import init_dream_scheduler
-            from ..ai.expression_auto_checker import start_expression_auto_check_scheduler
-            
-            model_manager = ModelManager()
-            await model_manager.initialize()
-            
-            # Get default model for maintenance tasks
-            default_model = await model_manager.get_default_model()
-            if default_model:
-                model_with_secret = await model_manager.get_model_with_secret(default_model['uuid'])
-                if model_with_secret:
-                    from ..ai.llm_client import LLMClient
-                    llm_client = LLMClient(
-                        api_key=model_with_secret.get('api_key', ''),
-                        base_url=model_with_secret.get('base_url', ''),
-                        model_name=model_with_secret.get('model_name', ''),
-                        provider=model_with_secret.get('provider', 'openai')
-                    )
-                    
-                    # Start Dream Scheduler
-                    try:
-                        dream_scheduler = init_dream_scheduler(
-                            llm_client=llm_client,
-                            bot_name="AI助手",
-                            enabled=True,
-                            first_delay_seconds=300,  # 5分钟后首次运行
-                            interval_minutes=30  # 每30分钟运行一次
+        # Initialize and start maintenance tasks (Dream, Expression Check) - only if AI available
+        if is_ai_available():
+            try:
+                from ..ai.model_manager import ModelManager
+                from ..ai.dream import init_dream_scheduler
+                from ..ai.expression_auto_checker import start_expression_auto_check_scheduler
+                
+                model_manager = ModelManager()
+                await model_manager.initialize()
+                
+                # Get default model for maintenance tasks
+                default_model = await model_manager.get_default_model()
+                if default_model:
+                    model_with_secret = await model_manager.get_model_with_secret(default_model['uuid'])
+                    if model_with_secret:
+                        from ..ai.llm_client import LLMClient
+                        llm_client = LLMClient(
+                            api_key=model_with_secret.get('api_key', ''),
+                            base_url=model_with_secret.get('base_url', ''),
+                            model_name=model_with_secret.get('model_name', ''),
+                            provider=model_with_secret.get('provider', 'openai')
                         )
-                        # start_background() returns a Task, store it directly
-                        self._tasks.append(dream_scheduler.start_background())
-                        logger.info("Dream scheduler started")
-                    except Exception as e:
-                        logger.error(f"Failed to start dream scheduler: {e}", exc_info=True)
-                    
-                    # Start Expression Auto Check Scheduler
-                    try:
-                        self.add_task(start_expression_auto_check_scheduler(
-                            llm_client=llm_client,
-                            interval_minutes=60,  # 每小时检查一次
-                            batch_size=10
-                        ))
-                        logger.info("Expression auto check scheduler started")
-                    except Exception as e:
-                        logger.error(f"Failed to start expression auto check: {e}", exc_info=True)
+                        
+                        # Start Dream Scheduler
+                        try:
+                            dream_scheduler = init_dream_scheduler(
+                                llm_client=llm_client,
+                                bot_name="AI助手",
+                                enabled=True,
+                                first_delay_seconds=300,  # 5分钟后首次运行
+                                interval_minutes=30  # 每30分钟运行一次
+                            )
+                            # start_background() returns a Task, store it directly
+                            self._tasks.append(dream_scheduler.start_background())
+                            logger.info("Dream scheduler started")
+                        except Exception as e:
+                            logger.error(f"Failed to start dream scheduler: {e}", exc_info=True)
+                        
+                        # Start Expression Auto Check Scheduler
+                        try:
+                            self.add_task(start_expression_auto_check_scheduler(
+                                llm_client=llm_client,
+                                interval_minutes=60,  # 每小时检查一次
+                                batch_size=10
+                            ))
+                            logger.info("Expression auto check scheduler started")
+                        except Exception as e:
+                            logger.error(f"Failed to start expression auto check: {e}", exc_info=True)
+                    else:
+                        logger.warning("Default model not found with secret, maintenance tasks disabled")
                 else:
-                    logger.warning("Default model not found with secret, maintenance tasks disabled")
-            else:
-                logger.warning("No default model configured, maintenance tasks disabled")
-        except Exception as e:
-            logger.error(f"Failed to start maintenance tasks: {e}", exc_info=True)
-            logger.info("Maintenance tasks disabled due to error")
+                    logger.warning("No default model configured, maintenance tasks disabled")
+            except Exception as e:
+                logger.error(f"Failed to start maintenance tasks: {e}", exc_info=True)
+                logger.info("Maintenance tasks disabled due to error")
+        else:
+            logger.info("AI system not available, skipping maintenance tasks initialization")
         
         # Start group data cleanup scheduler (runs daily)
         try:

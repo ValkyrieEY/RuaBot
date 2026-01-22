@@ -1,16 +1,18 @@
-"""Plugin system with hot-reloading and permission management."""
+"""Plugin system with independent process runtime."""
 
-from .interface import PluginInterface, PluginMetadata, PluginPermission
-from .manager import PluginManager, get_plugin_manager
-from .capability_registry import CapabilityRegistry, Capability
+from .interceptor import (
+    InterceptorRegistry,
+    MessageInterceptor,
+    EventInterceptor,
+    InterceptorType,
+    InterceptorResult
+)
 
 __all__ = [
-    "PluginInterface",
-    "PluginMetadata",
-    "PluginPermission",
-    "PluginManager",
-    "get_plugin_manager",
-    "CapabilityRegistry",
-    "Capability",
+    "InterceptorRegistry",
+    "MessageInterceptor",
+    "EventInterceptor",
+    "InterceptorType",
+    "InterceptorResult",
 ]
 

@@ -197,6 +197,11 @@ class ApiClient {
   }
 
   // AI APIs
+  async checkAIAvailability(): Promise<{ available: boolean; message: string; module_path?: string }> {
+    const response = await this.client.get('/ai/availability')
+    return response.data
+  }
+  
   async getAIConfig(configType: string, targetId?: string): Promise<any> {
     const response = await this.client.get('/ai/config', { params: { config_type: configType, target_id: targetId } })
     return response.data

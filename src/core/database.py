@@ -25,17 +25,23 @@ Base = declarative_base()
 
 
 class DatabaseManager:
-    """Database manager for plugin system.
+    """Database manager for framework system.
     
     Manages SQLAlchemy connections and provides high-level API
-    for plugin settings and binary storage.
+    for plugin settings, binary storage, AI config, and knowledge graph.
+    
+    This database stores all framework data including:
+    - Plugin settings and configurations
+    - Binary storage
+    - AI configurations (models, presets, memories, MCP)
+    - Knowledge graph data
     """
     
-    def __init__(self, db_path: str = "./data/plugins.db"):
+    def __init__(self, db_path: str = "./data/framework.db"):
         """Initialize database manager.
         
         Args:
-            db_path: Path to SQLite database file
+            db_path: Path to SQLite database file (default: framework.db)
         """
         self.db_path = Path(db_path)
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
@@ -69,14 +75,22 @@ class DatabaseManager:
             from .models.ai import Base as AIBase
             from .models.tool_permission import Base as ToolPermissionBase
             
-            # Create tables
+            # Create tables for all subsystems
             await conn.run_sync(PluginBase.metadata.create_all)
             await conn.run_sync(StorageBase.metadata.create_all)
             await conn.run_sync(AIBase.metadata.create_all)
             await conn.run_sync(ToolPermissionBase.metadata.create_all)
+            
+            # Try to import and create knowledge graph tables (if AI is available)
+            try:
+                from ..ai.knowledge.kg_storage import Base as KGBase
+                await conn.run_sync(KGBase.metadata.create_all)
+                logger.info("Knowledge graph tables initialized")
+            except ImportError:
+                logger.info("Knowledge graph module not available, skipping KG tables")
         
         self._initialized = True
-        logger.info(f"Database initialized", db_path=str(self.db_path))
+        logger.info(f"Framework database initialized", db_path=str(self.db_path))
     
     @asynccontextmanager
     async def session(self):

@@ -1,39 +1,91 @@
-# Dockerfile for Xiaoyi_QQ Framework
+# XQNEXT Framework Dockerfile
+# Multi-stage build for optimal image size and faster builds
 
-FROM python:3.11-slim
+# Stage 1: Build frontend
+FROM node:20-alpine AS frontend-builder
 
-# Set working directory
-WORKDIR /app
+WORKDIR /build/webui
 
-# Install system dependencies
+# Copy package files
+COPY webui/package*.json ./
+
+# Install dependencies
+RUN npm ci --prefer-offline --no-audit
+
+# Copy frontend source
+COPY webui/ ./
+
+# Build frontend for production
+RUN npm run build
+
+# Stage 2: Python dependencies
+FROM python:3.11-slim AS python-builder
+
+WORKDIR /build
+
+# Install build dependencies
 RUN apt-get update && apt-get install -y \
     gcc \
+    g++ \
+    curl \
     && rm -rf /var/lib/apt/lists/*
 
-# Copy requirements
-COPY requirements.txt .
+# Install Poetry
+RUN curl -sSL https://install.python-poetry.org | python3 - \
+    && ln -s /root/.local/bin/poetry /usr/local/bin/poetry
 
-# Install Python dependencies
-RUN pip install --no-cache-dir -r requirements.txt
+# Copy poetry configuration
+COPY pyproject.toml poetry.lock ./
+
+# Configure Poetry and install dependencies
+RUN poetry config virtualenvs.create false \
+    && poetry install --no-dev --no-interaction --no-ansi --no-root
+
+# Stage 3: Final runtime image
+FROM python:3.11-slim
+
+LABEL maintainer="XQNEXT Team"
+LABEL description="XQNEXT OneBot Framework - AI-powered QQ bot framework"
+LABEL version="0.0.2"
+
+WORKDIR /app
+
+# Install runtime dependencies (including fonts for image generation)
+RUN apt-get update && apt-get install -y \
+    curl \
+    fonts-noto-cjk \
+    fonts-liberation \
+    libjpeg62-turbo \
+    libpng16-16 \
+    && rm -rf /var/lib/apt/lists/*
+
+# Copy Python packages from builder
+COPY --from=python-builder /usr/local/lib/python3.11/site-packages /usr/local/lib/python3.11/site-packages
+COPY --from=python-builder /usr/local/bin /usr/local/bin
 
 # Copy application code
-COPY . .
+COPY src/ ./src/
+COPY config.toml ./config.toml
 
-# Create necessary directories
-RUN mkdir -p logs data plugins
+# Copy built frontend from frontend-builder
+COPY --from=frontend-builder /build/webui/dist ./webui/dist
 
-# Expose port
-EXPOSE 8000
+# Create necessary directories with proper permissions
+RUN mkdir -p data logs plugins && \
+    chmod 755 data logs plugins
 
 # Set environment variables
 ENV PYTHONUNBUFFERED=1
-ENV HOST=0.0.0.0
-ENV PORT=8000
+ENV PYTHONPATH=/app
+ENV TZ=Asia/Shanghai
 
 # Health check
-HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
-    CMD python -c "import requests; requests.get('http://localhost:8000/health')"
+HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \
+    CMD curl -f http://localhost:8000/health || exit 1
 
-# Run application
+# Expose ports
+EXPOSE 8000 8080
+
+# Run the application
 CMD ["python", "-m", "src.main"]
 

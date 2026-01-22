@@ -1,7 +1,7 @@
 """AI dedicated database manager.
 
-Manages a separate SQLite database for AI learning features, completely independent
-from the main plugins.db database.
+Manages RuaBot.db - a separate SQLite database for all AI learning features,
+completely independent from the main framework.db database.
 """
 
 import os
@@ -22,14 +22,15 @@ class AIDatabase:
     """AI dedicated database manager.
     
     Handles all database operations for RuaBot-style learning features.
-    Uses a separate SQLite database (ai_learning.db) from main framework database.
+    Uses RuaBot.db for all AI learning data including expressions, jargons,
+    chat history, message records, person/group info, and stickers.
     """
     
-    def __init__(self, db_path: str = "data/ai_learning.db"):
+    def __init__(self, db_path: str = "data/RuaBot.db"):
         """Initialize AI database.
         
         Args:
-            db_path: Path to SQLite database file (default: data/ai_learning.db)
+            db_path: Path to SQLite database file (default: data/RuaBot.db)
         """
         self.db_path = db_path
         self.engine = None
@@ -447,6 +448,51 @@ class AIDatabase:
                 
                 # Return in chronological order (oldest first)
                 return list(reversed(messages))
+            finally:
+                session.close()
+        
+        loop = asyncio.get_event_loop()
+        return await loop.run_in_executor(None, _query)
+    
+    async def get_messages_since(
+        self,
+        chat_id: str,
+        since_time: float,
+        exclude_bot: bool = True,
+        limit: Optional[int] = None
+    ) -> List[MessageRecord]:
+        """Get messages since a specific timestamp.
+        
+        Args:
+            chat_id: Chat ID
+            since_time: Timestamp to get messages after
+            exclude_bot: Whether to exclude bot messages
+            limit: Optional maximum number of messages
+            
+        Returns:
+            List of MessageRecord objects in chronological order
+        """
+        def _query():
+            session = self.get_session()
+            try:
+                query = session.query(MessageRecord).filter(
+                    and_(
+                        MessageRecord.chat_id == chat_id,
+                        MessageRecord.time > since_time
+                    )
+                )
+                
+                if exclude_bot:
+                    query = query.filter(MessageRecord.is_bot_message == False)
+                
+                # Order by time ascending (chronological)
+                query = query.order_by(asc(MessageRecord.time))
+                
+                if limit:
+                    query = query.limit(limit)
+                
+                messages = query.all()
+                return messages
             finally:
                 session.close()
         

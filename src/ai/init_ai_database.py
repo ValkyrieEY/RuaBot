@@ -1,6 +1,6 @@
 """Initialize AI Learning Database.
 
-This module provides automatic initialization of ai_learning.db database.
+This module provides automatic initialization of RuaBot.db database.
 It will be called automatically on system startup.
 """
 
@@ -13,11 +13,11 @@ from .ai_database import AIDatabase
 logger = get_logger(__name__)
 
 
-def init_ai_learning_database(db_path: str = "data/ai_learning.db") -> bool:
-    """Initialize AI learning database.
+def init_ai_learning_database(db_path: str = "data/RuaBot.db") -> bool:
+    """Initialize RuaBot AI learning database.
     
     Args:
-        db_path: Path to database file
+        db_path: Path to database file (default: data/RuaBot.db)
         
     Returns:
         True if initialized successfully
@@ -25,15 +25,15 @@ def init_ai_learning_database(db_path: str = "data/ai_learning.db") -> bool:
     try:
         # Check if database already exists
         if os.path.exists(db_path):
-            logger.info(f"AI learning database already exists at: {db_path}")
+            logger.info(f"RuaBot database already exists at: {db_path}")
             # Verify it's accessible
             ai_db = AIDatabase(db_path=db_path)
             ai_db.initialize()
             ai_db.close()
-            logger.info("AI learning database verified and ready")
+            logger.info("RuaBot database verified and ready")
             return True
         
-        logger.info(f"Creating AI learning database at: {db_path}")
+        logger.info(f"Creating RuaBot database at: {db_path}")
         
         # Ensure data directory exists
         os.makedirs(os.path.dirname(db_path), exist_ok=True)
@@ -69,16 +69,16 @@ def init_ai_learning_database(db_path: str = "data/ai_learning.db") -> bool:
         # Close connection
         ai_db.close()
         
-        logger.info(f"AI learning database created successfully with {len(tables)} tables")
+        logger.info(f"RuaBot database created successfully with {len(tables)} tables")
         return True
         
     except Exception as e:
-        logger.error(f"Failed to initialize AI learning database: {e}", exc_info=True)
+        logger.error(f"Failed to initialize RuaBot database: {e}", exc_info=True)
         return False
 
 
 def ensure_ai_database_initialized() -> bool:
-    """Ensure AI database is initialized (called on system startup).
+    """Ensure RuaBot database is initialized (called on system startup).
     
     Returns:
         True if database is ready

@@ -169,6 +169,88 @@ class PluginAPI:
         """
         return await self.send_message('group', group_id, message, auto_escape)
     
+    async def send_forward_msg(
+        self,
+        message_type: str,
+        target_id: int,
+        nodes: List[Dict[str, Any]]
+    ) -> Dict[str, Any]:
+        """Send forward message (合并转发).
+        
+        Args:
+            message_type: 'private' or 'group'
+            target_id: User ID or Group ID
+            nodes: List of forward nodes
+        
+        Returns:
+            Response dict with message_id
+        
+        Example:
+            nodes = [
+                {
+                    "type": "node",
+                    "data": {
+                        "name": "张三",
+                        "uin": "10001",
+                        "content": "第一条消息"
+                    }
+                }
+            ]
+            await api.send_forward_msg('group', 123456, nodes)
+        """
+        try:
+            # Get OneBot adapter
+            if hasattr(self.connector, 'app') and hasattr(self.connector.app, 'onebot_adapter'):
+                onebot = self.connector.app.onebot_adapter
+            elif hasattr(self.connector, 'onebot_adapter'):
+                onebot = self.connector.onebot_adapter
+            else:
+                logger.error("OneBot adapter not available")
+                return {'success': False, 'error': 'OneBot adapter not available'}
+            
+            # Call forward message API
+            result = await onebot.send_forward_msg(
+                target=str(target_id),
+                messages=nodes,
+                message_type=message_type
+            )
+            
+            logger.info(
+                f"[Plugin:{self.plugin_name}] Sent forward message",
+                message_type=message_type,
+                target_id=target_id,
+                node_count=len(nodes)
+            )
+            return {'success': True, 'data': result}
+            
+        except Exception as e:
+            logger.error(f"[Plugin:{self.plugin_name}] Failed to send forward message: {e}", exc_info=True)
+            return {'success': False, 'error': str(e)}
+    
+    async def send_group_forward_msg(self, group_id: int, nodes: List[Dict[str, Any]]) -> Dict[str, Any]:
+        """Send group forward message (shortcut).
+        
+        Args:
+            group_id: Group ID
+            nodes: List of forward nodes
+        
+        Returns:
+            Response dict
+        """
+        return await self.send_forward_msg('group', group_id, nodes)
+    
+    async def send_private_forward_msg(self, user_id: int, nodes: List[Dict[str, Any]]) -> Dict[str, Any]:
+        """Send private forward message (shortcut).
+        
+        Args:
+            user_id: User ID
+            nodes: List of forward nodes
+        
+        Returns:
+            Response dict
+        """
+        return await self.send_forward_msg('private', user_id, nodes)
+    
     async def delete_msg(self, message_id: int) -> Dict[str, Any]:
         """Delete a message.
         

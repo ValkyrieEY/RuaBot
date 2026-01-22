@@ -381,18 +381,18 @@ class AIMessageHandler:
                 has_sentences = len(sentences) > 1
                 
                 if has_sentences:
-                for i in range(0, len(sentences), 2):
-                    sentence = sentences[i]
-                    punctuation = sentences[i+1] if i+1 < len(sentences) else ""
-                    full_sentence = sentence + punctuation
+                    for i in range(0, len(sentences), 2):
+                        sentence = sentences[i]
+                        punctuation = sentences[i+1] if i+1 < len(sentences) else ""
+                        full_sentence = sentence + punctuation
+                        
+                        if temp_part and len(temp_part) + len(full_sentence) > max_length:
+                            parts.append(temp_part.strip())
+                            temp_part = full_sentence
+                        else:
+                            temp_part += full_sentence
                     
-                    if temp_part and len(temp_part) + len(full_sentence) > max_length:
-                        parts.append(temp_part.strip())
-                        temp_part = full_sentence
-                    else:
-                        temp_part += full_sentence
-                
-                current_part = temp_part
+                    current_part = temp_part
                 else:
                     # No sentence delimiters found, split by character count
                     # Try to split at word boundaries (spaces, Chinese punctuation)
@@ -1318,7 +1318,7 @@ class AIMessageHandler:
                             tool_name = None
                             if function:
                                 # Standard format: function.name
-                            tool_name = function.get("name")
+                                tool_name = function.get("name")
                                 # Alternative: function.name might be at top level
                                 if not tool_name:
                                     tool_name = tool_call.get("name")

@@ -1,11 +1,8 @@
 [app]
-name = "Xiaoyi_QQ Framework"
-version = "0.0.1"
+name = "XQNEXT Framework"
+version = "0.0.2"
 environment = "development"
 debug = false
-web_ui_password = "admin123"
-web_ui_enabled = true
-log_level = "INFO"
 
 [server]
 host = "0.0.0.0"
@@ -21,9 +18,11 @@ ws_reverse_port = 8080
 ws_reverse_path = "/onebot/v11/ws"
 access_token = ""
 secret = ""
+http_timeout = 120.0
+ws_api_timeout = 60.0
 
 [database]
-url = "sqlite+aiosqlite:///./data/onebot_framework.db"
+url = "sqlite+aiosqlite:///./data/framework.db"
 
 [security]
 secret_key = "your-secret-key-change-this-in-production"

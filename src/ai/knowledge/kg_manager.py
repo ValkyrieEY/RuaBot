@@ -24,7 +24,7 @@ logger = get_logger(__name__)
 class KGManager:
     """Knowledge Graph Manager."""
     
-    def __init__(self, db_path: str = "data/knowledge_graph.db"):
+    def __init__(self, db_path: str = "data/RuaBot.db"):
         """Initialize KG manager.
         
         Args:
@@ -358,7 +358,7 @@ class KGManager:
 _kg_manager: Optional[KGManager] = None
 
 
-def get_kg_manager(db_path: str = "data/knowledge_graph.db") -> KGManager:
+def get_kg_manager(db_path: str = "data/RuaBot.db") -> KGManager:
     """Get global KG manager instance.
     
     Args:

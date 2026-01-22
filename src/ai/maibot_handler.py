@@ -94,10 +94,9 @@ class RuaBotHandler:
             # Step 1: Record incoming message
             await self._record_message(chat_id, message, bot_name)
             
-            # Step 1.5: Track message for learning scheduler
+            # Step 1.5: Track message and trigger learning if threshold met
+            # (Similar to MaiBot's extract_and_distribute_messages)
             self.learning_scheduler.record_message(chat_id)
-            
-            # Trigger learning if threshold reached (async, don't wait)
             if self.learning_scheduler.should_trigger_learning(chat_id):
                 asyncio.create_task(self.learning_scheduler.trigger_learning(
                     chat_id=chat_id,

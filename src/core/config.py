@@ -9,6 +9,7 @@ from functools import lru_cache
 
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
+from .version import get_version
 
 
 class Config(BaseSettings):
@@ -16,7 +17,7 @@ class Config(BaseSettings):
 
     # Application
     app_name: str = Field(default="OneBot Framework", alias="APP_NAME")
-    app_version: str = Field(default="0.0.1", alias="APP_VERSION")
+    app_version: str = Field(default_factory=get_version, alias="APP_VERSION")
     environment: str = Field(default="development", alias="ENVIRONMENT")
     debug: bool = Field(default=False, alias="DEBUG")
 
@@ -37,7 +38,7 @@ class Config(BaseSettings):
 
     # Database
     database_url: str = Field(
-        default="sqlite+aiosqlite:///./data/onebot_framework.db",
+        default="sqlite+aiosqlite:///./data/framework.db",
         alias="DATABASE_URL"
     )
 

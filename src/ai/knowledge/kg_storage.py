@@ -142,13 +142,16 @@ class Relationship(Base):
 
 
 class KGStorage:
-    """Storage manager for knowledge graph."""
+    """Storage manager for knowledge graph.
     
-    def __init__(self, db_path: str = "data/knowledge_graph.db"):
+    Knowledge graph data is stored in RuaBot.db along with other AI learning data.
+    """
+    
+    def __init__(self, db_path: str = "data/RuaBot.db"):
         """Initialize KG storage.
         
         Args:
-            db_path: Path to SQLite database
+            db_path: Path to SQLite database (default: data/RuaBot.db)
         """
         self.engine = create_engine(f"sqlite:///{db_path}")
         Base.metadata.create_all(self.engine)
@@ -425,11 +428,11 @@ class KGStorage:
 _kg_storage: Optional[KGStorage] = None
 
 
-def get_kg_storage(db_path: str = "data/knowledge_graph.db") -> KGStorage:
+def get_kg_storage(db_path: str = "data/RuaBot.db") -> KGStorage:
     """Get global KG storage instance.
     
     Args:
-        db_path: Path to database
+        db_path: Path to database (default: data/RuaBot.db)
         
     Returns:
         KGStorage instance

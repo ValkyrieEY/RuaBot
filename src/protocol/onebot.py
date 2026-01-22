@@ -65,6 +65,10 @@ class OneBotAdapter(ProtocolAdapter):
         self._api_responses: Dict[str, asyncio.Future] = {}
         self._echo_counter = 0
         
+        # Timeout 配置
+        self.http_timeout = config.get("http_timeout", 120.0)  # HTTP 请求超时（发送消息、上传文件等）
+        self.ws_api_timeout = config.get("ws_api_timeout", 60.0)  # WebSocket API 调用超时
+        
         # Event handlers
         self._event_handlers: List = []
 
@@ -103,7 +107,7 @@ class OneBotAdapter(ProtocolAdapter):
         self._http_client = httpx.AsyncClient(
             base_url=self.http_url,
             headers=headers,
-            timeout=30.0
+            timeout=self.http_timeout
         )
 
         # Start connection based on type
@@ -554,6 +558,96 @@ class OneBotAdapter(ProtocolAdapter):
                 logger.error("Failed to send message", result=result)
                 raise RuntimeError(f"Failed to send message: {result}")
 
+    async def send_forward_msg(
+        self,
+        target: str,
+        messages: List[Dict[str, Any]],
+        message_type: str = "group"
+    ) -> Dict[str, Any]:
+        """Send forward message (合并转发).
+        
+        Args:
+            target: Group ID or User ID
+            messages: List of node messages
+            message_type: 'group' or 'private'
+        
+        Returns:
+            Response dict with message_id
+        
+        Example nodes format:
+            [
+                {
+                    "type": "node",
+                    "data": {
+                        "name": "发送者昵称",
+                        "uin": "10001",
+                        "content": "消息内容1"
+                    }
+                },
+                {
+                    "type": "node",
+                    "data": {
+                        "name": "发送者昵称2",
+                        "uin": "10002",
+                        "content": [
+                            {"type": "text", "data": {"text": "消息内容2"}},
+                            {"type": "image", "data": {"file": "xxx.jpg"}}
+                        ]
+                    }
+                }
+            ]
+        """
+        endpoint = f"send_{message_type}_forward_msg"
+        payload = {"messages": messages}
+        
+        if message_type == "private":
+            payload["user_id"] = int(target)
+        elif message_type == "group":
+            payload["group_id"] = int(target)
+        else:
+            raise ValueError(f"Unknown message type: {message_type}")
+        
+        logger.debug(
+            "Sending forward message",
+            endpoint=endpoint,
+            target=target,
+            message_type=message_type,
+            node_count=len(messages)
+        )
+        
+        # Send via WebSocket or HTTP
+        if self.connection_type in ("ws", "ws_forward") and self._ws:
+            await self._ws.send(json.dumps({
+                "action": endpoint,
+                "params": payload,
+                "echo": None
+            }))
+            return {"message_id": None}
+        elif self.connection_type == "ws_reverse" and self._reverse_clients:
+            for client in self._reverse_clients:
+                await client.send(json.dumps({
+                    "action": endpoint,
+                    "params": payload,
+                    "echo": None
+                }))
+            return {"message_id": None}
+        else:
+            # Send via HTTP
+            if not self._http_client:
+                raise RuntimeError("HTTP client not initialized")
+            
+            response = await self._http_client.post(f"/{endpoint}", json=payload)
+            response.raise_for_status()
+            
+            result = response.json()
+            
+            if result.get("status") == "ok":
+                logger.info("Forward message sent", message_id=result.get("data", {}).get("message_id"))
+                return result.get("data", {})
+            else:
+                logger.error("Failed to send forward message", result=result)
+                raise RuntimeError(f"Failed to send forward message: {result}")
+    
     async def delete_message(self, message_id: str) -> bool:
         """Delete a message."""
         if not self._http_client:
@@ -614,9 +708,9 @@ class OneBotAdapter(ProtocolAdapter):
                 await self._ws.send(json.dumps(payload))
                 logger.debug(f"WebSocket message sent, waiting for response (echo={echo})")
                 
-                # Wait for response (timeout: 10 seconds)
+                # Wait for response (使用配置的超时时间)
                 try:
-                    result = await asyncio.wait_for(future, timeout=10.0)
+                    result = await asyncio.wait_for(future, timeout=self.ws_api_timeout)
                     logger.debug(f"Received API response: {result}")
                     if result.get("status") == "ok":
                         return result.get("data", {})
@@ -649,9 +743,9 @@ class OneBotAdapter(ProtocolAdapter):
                         "echo": echo
                     }))
                     
-                    # Wait for response (timeout: 10 seconds)
+                    # Wait for response (使用配置的超时时间)
                     try:
-                        result = await asyncio.wait_for(future, timeout=10.0)
+                        result = await asyncio.wait_for(future, timeout=self.ws_api_timeout)
                         if result.get("status") == "ok":
                             return result.get("data", {})
                         else:

@@ -1,6 +1,6 @@
 import { Link, useNavigate, useLocation } from 'react-router-dom'
 import { useTranslation } from 'react-i18next'
-import { useMemo } from 'react'
+import { useMemo, useEffect, useState } from 'react'
 import { useAuthStore } from '@/store/authStore'
 import { useAppStore } from '@/store/appStore'
 import {
@@ -19,6 +19,7 @@ import {
   Bot,
 } from 'lucide-react'
 import { cn } from '@/utils/cn'
+import { api } from '@/utils/api'
 
 interface LayoutProps {
   children: React.ReactNode
@@ -30,6 +31,21 @@ export default function Layout({ children }: LayoutProps) {
   const { t, i18n } = useTranslation()
   const { logout } = useAuthStore()
   const { sidebarOpen, setSidebarOpen } = useAppStore()
+  const [aiAvailable, setAiAvailable] = useState<boolean | null>(null)
+
+  // 检测AI系统是否可用
+  useEffect(() => {
+    const checkAIAvailability = async () => {
+      try {
+        const response = await api.checkAIAvailability()
+        setAiAvailable(response.available)
+      } catch (error) {
+        console.error('Failed to check AI availability:', error)
+        setAiAvailable(false)
+      }
+    }
+    checkAIAvailability()
+  }, [])
 
   const handleLogout = () => {
     logout()
@@ -45,17 +61,17 @@ export default function Layout({ children }: LayoutProps) {
   // 使用 useMemo 确保在 i18n 准备好后才计算 navItems
   const navItems = useMemo(() => {
     return [
-      { path: '/dashboard', icon: LayoutDashboard, label: t('nav.dashboard') },
-      { path: '/onebot', icon: Radio, label: t('nav.onebot') },
-      { path: '/chat', icon: MessagesSquare, label: '消息发送' },
-      { path: '/messages', icon: MessageSquare, label: t('nav.messages') },
-      { path: '/plugins', icon: Puzzle, label: t('nav.plugins') },
-      { path: '/ai', icon: Bot, label: '人工智能' },
-      { path: '/security', icon: Shield, label: t('nav.security') },
-      { path: '/audit', icon: FileText, label: t('nav.audit') },
-      { path: '/system', icon: Settings, label: t('nav.system') },
+      { path: '/dashboard', icon: LayoutDashboard, label: t('nav.dashboard'), enabled: true },
+      { path: '/onebot', icon: Radio, label: t('nav.onebot'), enabled: true },
+      { path: '/chat', icon: MessagesSquare, label: '消息发送', enabled: true },
+      { path: '/messages', icon: MessageSquare, label: t('nav.messages'), enabled: true },
+      { path: '/plugins', icon: Puzzle, label: t('nav.plugins'), enabled: true },
+      { path: '/ai', icon: Bot, label: '人工智能', enabled: aiAvailable === true },
+      { path: '/security', icon: Shield, label: t('nav.security'), enabled: true },
+      { path: '/audit', icon: FileText, label: t('nav.audit'), enabled: true },
+      { path: '/system', icon: Settings, label: t('nav.system'), enabled: true },
     ]
-  }, [t, i18n.language])
+  }, [t, i18n.language, aiAvailable])
 
   return (
     <div className="min-h-screen bg-gray-50 overflow-x-hidden">
@@ -111,6 +127,24 @@ export default function Layout({ children }: LayoutProps) {
             {navItems.map((item) => {
               const Icon = item.icon
               const isActive = location.pathname === item.path
+              const isDisabled = !item.enabled
+              
+              if (isDisabled) {
+                return (
+                  <div
+                    key={item.path}
+                    className={cn(
+                      'flex items-center gap-3 px-4 py-3 rounded-lg',
+                      'text-gray-400 cursor-not-allowed opacity-50'
+                    )}
+                    title="AI系统未安装或不可用"
+                  >
+                    <Icon className="w-5 h-5" />
+                    <span>{item.label}</span>
+                  </div>
+                )
+              }
+              
               return (
                 <Link
                   key={item.path}

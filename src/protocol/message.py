@@ -57,6 +57,22 @@ class Message:
         self.segments.append(MessageSegment("reply", {"id": message_id}))
         return self
     
+    def node(self, name: str, uin: str, content: Any) -> "Message":
+        """Add forward node segment.
+        
+        Args:
+            name: Sender name
+            uin: Sender QQ number
+            content: Message content (string or message array)
+        """
+        data = {
+            "name": name,
+            "uin": str(uin),
+            "content": content
+        }
+        self.segments.append(MessageSegment("node", data))
+        return self
+    
     def to_array(self) -> List[Dict[str, Any]]:
         """Convert to OneBot array format."""
         return [seg.to_dict() for seg in self.segments]

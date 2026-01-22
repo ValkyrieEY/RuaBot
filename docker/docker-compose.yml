@@ -1,57 +1,143 @@
-# Docker Compose for Xiaoyi_QQ Framework
+# Docker Compose for XQNEXT Framework
 version: '3.8'
 
 services:
-  xiaoyi_qq:
+  xqnext:
     build:
       context: ..
       dockerfile: docker/Dockerfile
-    container_name: xiaoyi_qq_framework
+      args:
+        - BUILDKIT_INLINE_CACHE=1
+    image: xqnext-framework:0.0.2
+    container_name: xqnext-framework
+    restart: unless-stopped
+    
     ports:
-      - "8000:8000"
-    environment:
-      - ENVIRONMENT=production
-      - DATABASE_URL=sqlite+aiosqlite:///./data/onebot_framework.db
-      - LOG_LEVEL=INFO
-      - SECRET_KEY=${SECRET_KEY:-change-this-secret-key}
-      - WEB_UI_USERNAME=${WEB_UI_USERNAME:-admin}
-      - WEB_UI_PASSWORD=${WEB_UI_PASSWORD:-admin123}
+      - "${API_PORT:-8000}:8000"      # WebUI & REST API
+      - "${ONEBOT_PORT:-8080}:8080"   # OneBot WebSocket
+    
     volumes:
+      # 持久化数据（使用绑定挂载）
       - ../data:/app/data
       - ../logs:/app/logs
       - ../plugins:/app/plugins
-    restart: unless-stopped
+      
+      # 配置文件（只读）
+      - ../config.toml:/app/config.toml:ro
+    
+    environment:
+      # 时区
+      - TZ=Asia/Shanghai
+      
+      # Python 配置
+      - PYTHONUNBUFFERED=1
+      - PYTHONPATH=/app
+      
+      # 应用配置（可通过环境变量覆盖 config.toml）
+      - ENVIRONMENT=${ENVIRONMENT:-production}
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+      
+      # 安全配置
+      - SECRET_KEY=${SECRET_KEY:-change-this-secret-key-in-production}
+      - WEB_UI_USERNAME=${WEB_UI_USERNAME:-admin}
+      - WEB_UI_PASSWORD=${WEB_UI_PASSWORD:-admin123}
+      
+      # OneBot 配置
+      - ONEBOT_WS_URL=${ONEBOT_WS_URL:-ws://localhost:3001}
+      - ONEBOT_ACCESS_TOKEN=${ONEBOT_ACCESS_TOKEN:-}
+      
+      # AI 配置（可选）
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      - OPENAI_BASE_URL=${OPENAI_BASE_URL:-}
+    
     networks:
-      - xiaoyi_network
+      - xqnext-network
+    
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    
+    # 资源限制（可选，防止容器占用过多资源）
+    deploy:
+      resources:
+        limits:
+          cpus: '2'
+          memory: 2G
+        reservations:
+          cpus: '0.5'
+          memory: 512M
+    
+    # 日志配置
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
 
-  # PostgreSQL database (optional, for production)
+  # PostgreSQL 数据库（可选，用于大规模部署）
   # postgres:
   #   image: postgres:15-alpine
-  #   container_name: xiaoyi_postgres
+  #   container_name: xqnext-postgres
+  #   restart: unless-stopped
   #   environment:
-  #     - POSTGRES_DB=xiaoyi_qq
-  #     - POSTGRES_USER=xiaoyi
-  #     - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-xiaoyi123}
+  #     - POSTGRES_DB=xqnext
+  #     - POSTGRES_USER=xqnext
+  #     - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-xqnext123}
   #   volumes:
   #     - postgres_data:/var/lib/postgresql/data
   #   ports:
   #     - "5432:5432"
   #   networks:
-  #     - xiaoyi_network
+  #     - xqnext-network
 
-  # Redis cache (optional, for distributed deployment)
+  # Redis 缓存（可选，用于分布式部署）
   # redis:
   #   image: redis:7-alpine
-  #   container_name: xiaoyi_redis
+  #   container_name: xqnext-redis
+  #   restart: unless-stopped
+  #   command: redis-server --appendonly yes
+  #   volumes:
+  #     - redis_data:/data
   #   ports:
   #     - "6379:6379"
   #   networks:
-  #     - xiaoyi_network
+  #     - xqnext-network
+
+  # Prometheus 监控（可选）
+  # prometheus:
+  #   image: prom/prometheus:latest
+  #   container_name: xqnext-prometheus
+  #   restart: unless-stopped
+  #   volumes:
+  #     - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+  #     - prometheus_data:/prometheus
+  #   ports:
+  #     - "9090:9090"
+  #   networks:
+  #     - xqnext-network
+
+  # Grafana 仪表板（可选）
+  # grafana:
+  #   image: grafana/grafana:latest
+  #   container_name: xqnext-grafana
+  #   restart: unless-stopped
+  #   volumes:
+  #     - grafana_data:/var/lib/grafana
+  #   ports:
+  #     - "3000:3000"
+  #   networks:
+  #     - xqnext-network
 
 networks:
-  xiaoyi_network:
+  xqnext-network:
     driver: bridge
 
 # volumes:
 #   postgres_data:
+#   redis_data:
+#   prometheus_data:
+#   grafana_data:
 

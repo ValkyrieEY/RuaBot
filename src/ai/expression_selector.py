@@ -124,20 +124,12 @@ class ExpressionSelector:
             current_time = time.time()
             context_str = f"chat_id={chat_id}, reason={reply_reason[:50] if reply_reason else 'none'}"
             
-            # Record usage for reflection
+            # Record usage (expression_reflector removed, just update last_active_time)
             try:
-                from .expression_reflector import get_expression_reflector
-                reflector = get_expression_reflector()
                 for expr in selected:
                     await self.ai_db.update_expression(
                         expr.id,
                         last_active_time=current_time
-                    )
-                    # Record usage for reflection
-                    reflector.usage_tracker.record_usage(
-                        expression_id=expr.id,
-                        context=context_str,
-                        success=True
                     )
             except Exception as e:
                 logger.warning(f"Failed to record expression usage: {e}")
@@ -293,20 +285,12 @@ class ExpressionSelector:
             current_time = time.time()
             context_str = f"chat_id={chat_id}, reason={reply_reason[:50] if reply_reason else 'none'}"
             
-            # Record usage for reflection
+            # Record usage (expression_reflector removed, just update last_active_time)
             try:
-                from .expression_reflector import get_expression_reflector
-                reflector = get_expression_reflector()
                 for expr in selected_exprs:
                     await self.ai_db.update_expression(
                         expr.id,
                         last_active_time=current_time
-                    )
-                    # Record usage for reflection
-                    reflector.usage_tracker.record_usage(
-                        expression_id=expr.id,
-                        context=context_str,
-                        success=True  # Will be updated after reply generation if needed
                     )
             except Exception as e:
                 logger.warning(f"Failed to record expression usage: {e}")

@@ -10,6 +10,7 @@ import httpx
 import uuid as uuid_lib
 
 from ..core.logger import get_logger
+from ..core.version import get_version
 
 logger = get_logger(__name__)
 
@@ -82,7 +83,7 @@ class MCPClient:
                 },
                 'clientInfo': {
                     'name': 'Xiaoyi_QQ',
-                    'version': '0.0.1'
+                    'version': get_version()
                 }
             })
             
@@ -123,7 +124,7 @@ class MCPClient:
                 },
                 'clientInfo': {
                     'name': 'Xiaoyi_QQ',
-                    'version': '0.0.1'
+                    'version': get_version()
                 }
             }, url)
             

@@ -22,21 +22,22 @@ from ..core.app import get_app
 from ..core.config import get_config, get_config_manager, reload_config
 from ..core.event_bus import get_event_bus
 from ..core.database import get_database_manager
-from ..plugins.manager import get_plugin_manager
 from ..security.auth import AuthManager
 from ..security.permissions import get_permission_manager, Permission
 from ..security.audit import get_audit_logger, AuditEventType, AuditEvent
 from ..core.logger import get_logger
-from ..ai import ModelManager, AIManager, MCPManager
+from ..core.ai_detector import is_ai_available, get_ai_detector
+from ..core.version import get_version
 from datetime import datetime
 
 logger = get_logger(__name__)
 security = HTTPBearer()
 
-# Global AI managers (module-level)
+# Global AI managers (module-level) - Only initialized if AI is available
 _model_manager = None
 _ai_manager = None
 _mcp_manager = None
+_ai_available = None
 
 # Request/Response Models
 class LoginRequest(BaseModel):
@@ -371,7 +372,7 @@ def create_app() -> FastAPI:
     app = FastAPI(
         title="Xiaoyi_QQ Framework",
         description="OneBot protocol framework with plugin system",
-        version="0.0.1",
+        version=get_version(),
         lifespan=lifespan
     )
     
@@ -523,18 +524,71 @@ def create_app() -> FastAPI:
         user: Dict[str, Any] = Depends(require_permission(Permission.PLUGIN_VIEW))
     ):
         """Get specific plugin information."""
-        plugin_manager = get_plugin_manager()
-        plugin = plugin_manager.get_plugin(plugin_name)
+        from ..core.app import get_app
+        from pathlib import Path
+        import json
         
-        if not plugin:
+        config = get_config()
+        app = get_app()
+        db_manager = app.db_manager if hasattr(app, 'db_manager') and app.db_manager else None
+        
+        # Find plugin directory
+        plugin_base = Path(config.plugin_dir)
+        plugin_dir = plugin_base / plugin_name
+        
+        if not plugin_dir.exists():
             raise HTTPException(status_code=404, detail="Plugin not found")
         
-        metadata = plugin.get_metadata()
+        plugin_json = plugin_dir / "plugin.json"
+        if not plugin_json.exists():
+            raise HTTPException(status_code=404, detail="Plugin metadata not found")
+        
+        # Load plugin.json
+        try:
+            with open(plugin_json, 'r', encoding='utf-8') as f:
+                plugin_config = json.load(f)
+            
+            author = plugin_config.get("author", "Unknown")
+            name = plugin_config.get("name", plugin_name)
+            
+            metadata = {
+                "name": name,
+                "version": plugin_config.get("version", "1.0.0"),
+                "author": author,
+                "description": plugin_config.get("description", ""),
+                "required_permissions": [],
+                "required_capabilities": [],
+                "dependencies": plugin_config.get("dependencies", []),
+                "config_schema": plugin_config.get("config_schema"),
+                "default_config": plugin_config.get("default_config", {}),
+                "tags": plugin_config.get("tags", []),
+                "category": plugin_config.get("category", "general"),
+                "homepage": plugin_config.get("homepage"),
+                "repository": plugin_config.get("repository"),
+                "documentation": plugin_config.get("documentation"),
+            }
+        except Exception as e:
+            logger.error(f"Failed to load plugin.json: {e}")
+            raise HTTPException(status_code=500, detail="Failed to load plugin metadata")
+        
+        # Get status from database
+        enabled = False
+        config_data = metadata.get("default_config", {})
+        
+        if db_manager:
+            try:
+                db_setting = await db_manager.get_plugin_setting(author, name)
+                if db_setting:
+                    enabled = db_setting.enabled
+                    config_data = db_setting.config or config_data
+            except Exception as e:
+                logger.error(f"Failed to get plugin status: {e}")
+        
         return {
-            "name": plugin_name,
-            "enabled": plugin.is_enabled(),
-            "metadata": metadata.to_dict(),
-            "config": plugin.get_config()
+            "name": name,
+            "enabled": enabled,
+            "metadata": metadata,
+            "config": config_data
         }
     
     @app.delete("/api/plugins/{plugin_name}")
@@ -576,11 +630,28 @@ def create_app() -> FastAPI:
             
             # Delete from database
             if db_manager:
+                # 1. Delete plugin settings
                 deleted = await db_manager.delete_plugin_setting(author, name)
                 if deleted:
-                    logger.info(f"Deleted plugin {author}/{name} from database")
+                    logger.info(f"Deleted plugin {author}/{name} settings from database")
                 else:
-                    logger.warning(f"Plugin {author}/{name} not found in database")
+                    logger.warning(f"Plugin {author}/{name} settings not found in database")
+                
+                # 2. Delete all binary storage data for this plugin
+                try:
+                    # Get all storage keys for this plugin
+                    storage_keys = await db_manager.list_binary_keys('plugin', f"{author}/{name}")
+                    deleted_count = 0
+                    for key in storage_keys:
+                        if await db_manager.delete_binary('plugin', f"{author}/{name}", key):
+                            deleted_count += 1
+                    
+                    if deleted_count > 0:
+                        logger.info(f"Deleted {deleted_count} binary storage entries for plugin {author}/{name}")
+                    else:
+                        logger.debug(f"No binary storage data found for plugin {author}/{name}")
+                except Exception as e:
+                    logger.error(f"Failed to delete binary storage for plugin {author}/{name}: {e}")
             
             # Delete plugin directory
             shutil.rmtree(plugin_dir)
@@ -620,18 +691,25 @@ def create_app() -> FastAPI:
         action: PluginAction,
         user: Dict[str, Any] = Depends(get_current_user)
     ):
-        """Perform action on plugin."""
+        """Perform action on plugin (new system)."""
+        from ..core.app import get_app
         from pathlib import Path
         import json
         
-        plugin_manager = get_plugin_manager()
+        app = get_app()
+        db_manager = app.db_manager if hasattr(app, 'db_manager') and app.db_manager else None
+        plugin_connector = app.plugin_connector if hasattr(app, 'plugin_connector') and app.plugin_connector else None
         perm_manager = get_permission_manager()
         username = user.get("username")
+        
+        if not db_manager:
+            raise HTTPException(status_code=500, detail="Database manager not available")
         
         # Helper function to get author from plugin.json
         def get_plugin_author(plugin_name: str) -> tuple[str, str]:
             """Get author and name from plugin.json. Returns (author, name)."""
-            plugin_dir = Path("plugins") / plugin_name
+            config = get_config()
+            plugin_dir = Path(config.plugin_dir) / plugin_name
             plugin_json = plugin_dir / "plugin.json"
             
             if plugin_json.exists():
@@ -639,7 +717,8 @@ def create_app() -> FastAPI:
                     with open(plugin_json, 'r', encoding='utf-8') as f:
                         metadata = json.load(f)
                     author = metadata.get('author', 'Unknown')
-                    return author, plugin_name
+                    name = metadata.get('name', plugin_name)
+                    return author, name
                 except Exception as e:
                     logger.warning(f"Failed to read plugin.json for {plugin_name}: {e}")
             
@@ -664,275 +743,72 @@ def create_app() -> FastAPI:
             )
             raise HTTPException(status_code=403, detail="Insufficient permissions")
         
+        # Get plugin author and name
+        author, name = get_plugin_author(plugin_name)
+        
         # Perform action
         success = False
-        if action.action == "load":
-            # If adapter is specified, load via adapter
-            if action.adapter_name:
-                adapter_manager = get_adapter_manager()
-                adapter = adapter_manager.get_adapter(action.adapter_name)
-                if not adapter:
-                    raise HTTPException(status_code=404, detail=f"Adapter {action.adapter_name} not found")
+        try:
+            if action.action in ["load", "enable"]:
+                # Enable plugin in database
+                setting = await db_manager.get_plugin_setting(author, name)
+                if not setting:
+                    # Create new setting
+                    success = await db_manager.create_plugin_setting(
+                        author=author,
+                        name=name,
+                        enabled=True,
+                        config={},
+                        install_source='local'
+                    )
+                else:
+                    # Update existing setting
+                    success = await db_manager.update_plugin_setting(author, name, enabled=True)
                 
-                # Load plugin via adapter
-                plugin_file = plugin_manager.plugin_dir / f"{plugin_name}.py"
-                plugin_pkg_dir = plugin_manager.plugin_dir / plugin_name
-                
-                if not plugin_file.exists() and plugin_pkg_dir.exists():
-                    plugin_file = plugin_pkg_dir / "__init__.py"
-                    if not plugin_file.exists():
-                        plugin_file = plugin_pkg_dir / "main.py"
-                
-                if not plugin_file.exists():
-                    raise HTTPException(status_code=404, detail=f"Plugin file not found: {plugin_name}")
-                
-                try:
-                    plugin_path = str(plugin_file.parent if plugin_pkg_dir.exists() else plugin_file)
-                    plugin_config = plugin_manager.get_plugin_config(plugin_name) if hasattr(plugin_manager, 'get_plugin_config') else {}
-                    adapter_config = adapter.get_config()
+                # Reload plugins in runtime
+                if success and plugin_connector:
+                    await plugin_connector.reload_plugins()
+                    logger.info(f"Plugin {plugin_name} enabled and loaded")
+            
+            elif action.action in ["unload", "disable"]:
+                # Disable plugin in database
+                setting = await db_manager.get_plugin_setting(author, name)
+                if setting:
+                    success = await db_manager.update_plugin_setting(author, name, enabled=False)
+                    logger.info(f"Plugin {plugin_name} disabled in database")
                     
-                    plugin_instance = await adapter.load_plugin(plugin_path, plugin_config, adapter_config)
-                    
-                    # Store in plugin manager
-                    plugin_manager._plugins[plugin_name] = plugin_instance
+                    # Reload plugins in runtime (will unload disabled plugins)
+                    if success and plugin_connector:
+                        await plugin_connector.reload_plugins()
+                        logger.info(f"Plugin {plugin_name} unloaded from runtime")
+                else:
+                    success = False
+                    raise HTTPException(status_code=404, detail="Plugin not found in database")
+            
+            elif action.action == "reload":
+                # Reload plugin: reload from file and restart in runtime
+                if plugin_connector:
+                    await plugin_connector.reload_plugins()
                     success = True
-                except Exception as e:
-                    logger.error(f"Failed to load plugin {plugin_name} via adapter {action.adapter_name}: {e}", exc_info=True)
-                    raise HTTPException(status_code=500, detail=f"Failed to load plugin via adapter: {str(e)}")
+                    logger.info(f"Plugin {plugin_name} reloaded")
+                else:
+                    raise HTTPException(status_code=500, detail="Plugin connector not available")
+            
             else:
-                success = await plugin_manager.load_plugin(plugin_name)
-        elif action.action == "unload":
-            success = await plugin_manager.unload_plugin(plugin_name)
-        elif action.action == "reload":
-            # Update database from plugin.json first
-            try:
-                from ..core.app import get_app
-                app = get_app()
-                db_manager = app.db_manager if hasattr(app, 'db_manager') and app.db_manager else None
-                
-                if db_manager:
-                    # Read plugin.json
-                    config = get_config()
-                    plugin_dir = Path(config.plugin_dir) / plugin_name
-                    plugin_json_file = plugin_dir / "plugin.json"
-                    
-                    if plugin_json_file.exists():
-                        try:
-                            with open(plugin_json_file, 'r', encoding='utf-8') as f:
-                                plugin_metadata = json.load(f)
-                            
-                            author = plugin_metadata.get('author', 'Unknown')
-                            name = plugin_metadata.get('name', plugin_name)
-                            version = plugin_metadata.get('version', '1.0.0')
-                            default_config = plugin_metadata.get('default_config', {})
-                            
-                            # Check if plugin exists in database
-                            existing = await db_manager.get_plugin_setting(author, name)
-                            if existing:
-                                # Update install_info with new version
-                                install_info = existing.install_info or {}
-                                install_info['version'] = version
-                                install_info['reloaded_at'] = datetime.now().isoformat()
-                                install_info['reloaded_by'] = username
-                                
-                                # Keep existing config, only update install_info
-                                await db_manager.update_plugin_setting(
-                                    author,
-                                    name,
-                                    install_info=install_info
-                                )
-                                logger.info(f"Updated plugin metadata in database: {author}/{name}")
-                            else:
-                                # Create if not exists (shouldn't happen, but handle it)
-                                await db_manager.create_plugin_setting(
-                                    author=author,
-                                    name=name,
-                                    enabled=False,
-                                    priority=0,
-                                    config=default_config,
-                                    install_source='manual',
-                                    install_info={
-                                        'version': version,
-                                        'created_at': datetime.now().isoformat()
-                                    }
-                                )
-                                logger.info(f"Created plugin setting in database: {author}/{name}")
-                        except Exception as e:
-                            logger.error(f"Failed to update plugin metadata from plugin.json: {e}")
-                
-                # Now reload the plugin
-                if hasattr(app, 'plugin_connector') and app.plugin_connector:
-                    # Try to reload single plugin first
-                    if hasattr(app.plugin_connector, 'reload_plugin'):
-                        success = await app.plugin_connector.reload_plugin(plugin_name)
-                    else:
-                        # Fallback: reload all plugins (current behavior)
-                        logger.warning(f"Single plugin reload not supported, reloading all plugins")
-                        await app.plugin_connector.reload_plugins()
-                        success = True
-                else:
-                    # Fallback to old system
-                    success = await plugin_manager.reload_plugin(plugin_name)
-            except Exception as e:
-                logger.error(f"Failed to reload plugin {plugin_name}: {e}", exc_info=True)
-                raise HTTPException(status_code=500, detail=f"Failed to reload plugin: {str(e)}")
-        elif action.action == "enable":
-            # Use new database system if available
-            try:
-                from ..core.app import get_app
-                
-                app = get_app()
-                db_manager = app.db_manager if hasattr(app, 'db_manager') and app.db_manager else None
-                
-                if db_manager:
-                    # Get author from plugin.json
-                    author, name = get_plugin_author(plugin_name)
-                    
-                    # Load full metadata
-                    plugin_dir = Path("plugins") / plugin_name
-                    plugin_json = plugin_dir / "plugin.json"
-                    metadata = {}
-                    
-                    if plugin_json.exists():
-                        try:
-                            with open(plugin_json, 'r', encoding='utf-8') as f:
-                                metadata = json.load(f)
-                        except Exception as e:
-                            logger.warning(f"Failed to read plugin.json for {plugin_name}: {e}")
-                    
-                    # Now check database with correct author
-                    setting = await db_manager.get_plugin_setting(author, name)
-                    
-                    if not setting:
-                        # Register plugin
-                        await db_manager.create_plugin_setting(
-                            author=author,
-                            name=name,
-                            enabled=True,
-                            priority=0,
-                            config=metadata.get('default_config', {}),
-                            install_source='local',
-                            install_info={
-                                'version': metadata.get('version', '1.0.0'),
-                                'description': metadata.get('description', ''),
-                                'entry': metadata.get('entry', 'main.py')
-                            }
-                        )
-                        logger.info(f"Auto-registered and enabled plugin {plugin_name}")
-                    else:
-                        # Update existing record
-                        await db_manager.update_plugin_setting(
-                            author=author,
-                            name=name,
-                            enabled=True
-                        )
-                        logger.info(f"Enabled plugin {plugin_name} in database")
-                    
-                    success = True
-                    
-                    # Also try to notify plugin runtime if it's running
-                    if hasattr(app, 'plugin_connector') and app.plugin_connector:
-                        try:
-                            await app.plugin_connector.reload_plugins()
-                        except Exception as e:
-                            logger.warning(f"Failed to reload plugins in runtime: {e}")
-                else:
-                    # Fallback to old system
-                    if plugin_name not in plugin_manager.get_all_plugins():
-                        logger.info(f"Plugin {plugin_name} not loaded, loading it first")
-                        load_success = await plugin_manager.load_plugin(plugin_name)
-                        
-                        if not load_success:
-                            raise HTTPException(status_code=500, detail=f"Failed to load plugin {plugin_name} before enabling")
-                    success = await plugin_manager.enable_plugin(plugin_name)
-            except ImportError as e:
-                logger.warning(f"New plugin system not available: {e}")
-                # New system not available, use old system
-                if plugin_name not in plugin_manager.get_all_plugins():
-                    logger.info(f"Plugin {plugin_name} not loaded, loading it first")
-                    load_success = await plugin_manager.load_plugin(plugin_name)
-                    
-                    if not load_success:
-                        raise HTTPException(status_code=500, detail=f"Failed to load plugin {plugin_name} before enabling")
-                success = await plugin_manager.enable_plugin(plugin_name)
-        elif action.action == "disable":
-            # Use new database system if available
-            try:
-                from ..core.app import get_app
-                
-                app = get_app()
-                db_manager = app.db_manager if hasattr(app, 'db_manager') and app.db_manager else None
-                
-                if db_manager:
-                    # Get author from plugin.json
-                    author, name = get_plugin_author(plugin_name)
-                    
-                    setting = await db_manager.get_plugin_setting(author, name)
-                    if setting:
-                        # Update database record
-                        await db_manager.update_plugin_setting(
-                            author=author,
-                            name=name,
-                            enabled=False
-                        )
-                        success = True
-                        logger.info(f"Plugin {plugin_name} disabled in database")
-                        
-                        # Try to notify plugin runtime - unload the plugin
-                        if hasattr(app, 'plugin_connector') and app.plugin_connector:
-                            try:
-                                # Try to unload the plugin first (more efficient)
-                                unload_success = await app.plugin_connector.unload_plugin(plugin_name)
-                                if not unload_success:
-                                    # Fallback to reload all plugins if unload fails
-                                    logger.warning(f"Failed to unload plugin {plugin_name}, falling back to reload all plugins")
-                                    await app.plugin_connector.reload_plugins()
-                            except Exception as e:
-                                logger.warning(f"Failed to unload plugin in runtime: {e}, trying reload all plugins")
-                                try:
-                                    await app.plugin_connector.reload_plugins()
-                                except Exception as e2:
-                                    logger.error(f"Failed to reload plugins in runtime: {e2}")
-                    else:
-                        # Fallback to old system
-                        success = await plugin_manager.disable_plugin(plugin_name)
-                        # Also try to unload from runtime if available
-                        if hasattr(app, 'plugin_connector') and app.plugin_connector:
-                            try:
-                                await app.plugin_connector.unload_plugin(plugin_name)
-                            except Exception as e:
-                                logger.warning(f"Failed to unload plugin in runtime: {e}")
-                else:
-                    # Fallback to old system
-                    success = await plugin_manager.disable_plugin(plugin_name)
-                    # Also try to unload from runtime if available
-                    try:
-                        from ..core.app import get_app
-                        app = get_app()
-                        if hasattr(app, 'plugin_connector') and app.plugin_connector:
-                            try:
-                                await app.plugin_connector.unload_plugin(plugin_name)
-                            except Exception as e:
-                                logger.warning(f"Failed to unload plugin in runtime: {e}")
-                    except Exception:
-                        pass
-            except ImportError as e:
-                logger.warning(f"New plugin system not available: {e}")
-                # New system not available, use old system
-                success = await plugin_manager.disable_plugin(plugin_name)
-                # Also try to unload from runtime if available
-                try:
-                    from ..core.app import get_app
-                    app = get_app()
-                    if hasattr(app, 'plugin_connector') and app.plugin_connector:
-                        try:
-                            await app.plugin_connector.unload_plugin(plugin_name)
-                        except Exception as e2:
-                            logger.warning(f"Failed to unload plugin in runtime: {e2}")
-                except Exception:
-                    pass
-        else:
-            raise HTTPException(status_code=400, detail="Invalid action")
+                raise HTTPException(status_code=400, detail=f"Invalid action: {action.action}")
+        
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.error(f"Failed to {action.action} plugin {plugin_name}: {e}", exc_info=True)
+            await get_audit_logger().log_plugin_action(
+                action.action,
+                plugin_name,
+                username,
+                False,
+                {"error": str(e)}
+            )
+            raise HTTPException(status_code=500, detail=f"Failed to {action.action} plugin: {str(e)}")
         
         # Log action
         await get_audit_logger().log_plugin_action(
@@ -1056,12 +932,17 @@ def create_app() -> FastAPI:
         config_update: ConfigUpdate,
         user: Dict[str, Any] = Depends(require_permission(Permission.PLUGIN_CONFIGURE))
     ):
-        """Update plugin configuration and save to plugin's data directory."""
+        """Update plugin configuration and save to database."""
+        from ..core.app import get_app
         from pathlib import Path
         import json
         
-        plugin_manager = get_plugin_manager()
-        plugin = plugin_manager.get_plugin(plugin_name)
+        app = get_app()
+        db_manager = app.db_manager if hasattr(app, 'db_manager') and app.db_manager else None
+        plugin_connector = app.plugin_connector if hasattr(app, 'plugin_connector') and app.plugin_connector else None
+        
+        if not db_manager:
+            raise HTTPException(status_code=500, detail="Database manager not available")
         
         # Get plugin directory
         config = get_config()
@@ -1075,40 +956,34 @@ def create_app() -> FastAPI:
         if not plugin_path.exists():
             raise HTTPException(status_code=404, detail="Plugin not found")
         
-        # Get plugin metadata to normalize config format
-        plugin_metadata = None
-        if plugin:
-            plugin_metadata = plugin.get_metadata()
-        else:
-            # Try to get metadata from plugin.json or by loading temporarily
-            try:
-                plugin_json = plugin_path / "plugin.json"
-                if plugin_json.exists():
-                    with open(plugin_json, 'r', encoding='utf-8') as f:
-                        plugin_data = json.load(f)
-                        # Create a minimal metadata object
-                        from ..plugins.interface import PluginMetadata
-                        plugin_metadata = PluginMetadata(
-                            name=plugin_data.get("name", plugin_name),
-                            version=plugin_data.get("version", "1.0.0"),
-                            author=plugin_data.get("author", ""),
-                            description=plugin_data.get("description", ""),
-                            config_schema=plugin_data.get("config_schema", {}),
-                            default_config=plugin_data.get("default_config", {})
-                        )
-            except Exception as e:
-                logger.debug(f"Could not load plugin metadata: {e}")
+        # Load plugin metadata from plugin.json
+        plugin_metadata = {}
+        config_schema = {}
+        default_config = {}
+        author = "Unknown"
+        name = plugin_name
+        
+        try:
+            plugin_json = plugin_path / "plugin.json"
+            if plugin_json.exists():
+                with open(plugin_json, 'r', encoding='utf-8') as f:
+                    plugin_metadata = json.load(f)
+                author = plugin_metadata.get("author", "Unknown")
+                name = plugin_metadata.get("name", plugin_name)
+                config_schema = plugin_metadata.get("config_schema", {})
+                default_config = plugin_metadata.get("default_config", {})
+        except Exception as e:
+            logger.warning(f"Failed to load plugin metadata: {e}")
         
         # Normalize config: ensure array fields are arrays, merge with defaults
-        normalized_config = {}
-        if plugin_metadata:
-            # Start with default config
-            normalized_config = plugin_metadata.default_config.copy() if plugin_metadata.default_config else {}
-            # Merge with provided config
+        normalized_config = default_config.copy()
+        
+        # Merge with provided config
+        if config_schema:
+            # Have schema, process according to field types
             for key, value in config_update.config.items():
-                # Check if this field should be an array
-                if plugin_metadata.config_schema and key in plugin_metadata.config_schema:
-                    field_schema = plugin_metadata.config_schema[key]
+                if key in config_schema:
+                    field_schema = config_schema[key]
                     field_type = field_schema.get("type")
                     
                     if field_type == "array":
@@ -1150,6 +1025,7 @@ def create_app() -> FastAPI:
                         # For string, textarea, select, etc., use value as-is
                         normalized_config[key] = value
                 else:
+                    # Key not in schema, use value as-is
                     normalized_config[key] = value
         else:
             # No metadata, use config as-is but ensure arrays are arrays
@@ -1163,86 +1039,44 @@ def create_app() -> FastAPI:
                     else:
                         normalized_config[key] = []
         
-        # Create data directory if it doesn't exist
+        # Save config to database
+        try:
+            setting = await db_manager.get_plugin_setting(author, name)
+            if not setting:
+                # Create new setting
+                await db_manager.create_plugin_setting(
+                    author=author,
+                    name=name,
+                    enabled=False,
+                    config=normalized_config,
+                    install_source='local'
+                )
+            else:
+                # Update existing setting
+                await db_manager.update_plugin_setting(author, name, config=normalized_config)
+            
+            logger.info(f"Updated config for plugin {author}/{name}")
+            
+            # Reload plugin in runtime if it's running
+            if plugin_connector:
+                try:
+                    await plugin_connector.reload_plugins()
+                except Exception as e:
+                    logger.warning(f"Failed to reload plugins after config update: {e}")
+        except Exception as e:
+            logger.error(f"Failed to save plugin config: {e}")
+            raise HTTPException(status_code=500, detail=f"Failed to save plugin config: {str(e)}")
+        
+        # Also save to data/config.json for backwards compatibility (optional)
         data_dir = plugin_path / "data"
         data_dir.mkdir(exist_ok=True)
-        
-        # Save normalized config to data/config.json (legacy support)
         config_file = data_dir / "config.json"
         try:
             with open(config_file, 'w', encoding='utf-8') as f:
                 json.dump(normalized_config, f, indent=2, ensure_ascii=False)
-            logger.info(f"Saved plugin config to {config_file}: {normalized_config}")
+            logger.debug(f"Saved plugin config to {config_file}")
         except Exception as e:
-            logger.error(f"Failed to save plugin config to {config_file}: {e}", exc_info=True)
-            raise HTTPException(status_code=500, detail=f"Failed to save config: {str(e)}")
-        
-        # Also save to database for new plugin system
-        try:
-            from ..core.app import get_app
-            app = get_app()
-            if hasattr(app, 'db_manager') and app.db_manager:
-                # Get author from plugin.json
-                author = "Unknown"
-                name = plugin_name
-                
-                plugin_json_path = plugin_path / "plugin.json"
-                if plugin_json_path.exists():
-                    try:
-                        with open(plugin_json_path, 'r', encoding='utf-8') as f:
-                            metadata = json.load(f)
-                        author = metadata.get('author', 'Unknown')
-                    except Exception:
-                        pass
-                
-                # Update config in database
-                setting = await app.db_manager.get_plugin_setting(author, name)
-                if setting:
-                    await app.db_manager.update_plugin_setting(
-                        author=author,
-                        name=name,
-                        config=normalized_config
-                    )
-                    logger.info(f"Updated plugin config in database for {author}/{name}")
-                else:
-                    # Create new setting with config
-                    await app.db_manager.create_plugin_setting(
-                        author=author,
-                        name=name,
-                        enabled=True,
-                        config=normalized_config
-                    )
-                    logger.info(f"Created plugin setting in database for {author}/{name}")
-                
-                # Reload specific plugin in runtime to pick up new config
-                if hasattr(app, 'plugin_connector') and app.plugin_connector:
-                    try:
-                        # Try to reload just this plugin
-                        if hasattr(app.plugin_connector, 'reload_plugin'):
-                            await app.plugin_connector.reload_plugin(plugin_name)
-                            logger.info(f"Reloaded plugin {plugin_name} after config update")
-                        else:
-                            # Fallback to reload all plugins
-                            await app.plugin_connector.reload_plugins()
-                            logger.info("Reloaded all plugins after config update")
-                    except Exception as e:
-                        logger.warning(f"Failed to reload plugins after config update: {e}")
-        except Exception as e:
-            logger.warning(f"Failed to save config to database: {e}", exc_info=True)
-        
-        # If plugin is loaded, update its in-memory config and notify it
-        if plugin:
-            old_config = plugin.get_config().copy()
-            # 完全替换配置，而不是合并
-            plugin._config = normalized_config.copy()
-            logger.info(f"Updated plugin {plugin_name} in-memory config: {plugin._config}")
-            
-            # Call plugin's on_config_update if it exists
-            if hasattr(plugin, 'on_config_update'):
-                try:
-                    await plugin.on_config_update(old_config, normalized_config)
-                except Exception as e:
-                    logger.warning(f"Plugin {plugin_name} on_config_update failed: {e}", exc_info=True)
+            logger.warning(f"Failed to save plugin config to file: {e}")
         
         await get_audit_logger().log_plugin_action(
             "configure",
@@ -1254,66 +1088,8 @@ def create_app() -> FastAPI:
         
         return {"message": "Configuration updated and saved to plugin data directory"}
     
-    @app.put("/api/plugins/{plugin_name}/adapter")
-    async def set_plugin_adapter(
-        plugin_name: str,
-        request: Dict[str, Any],
-        user: Dict[str, Any] = Depends(require_permission(Permission.PLUGIN_CONFIGURE))
-    ):
-        """Set or change plugin adapter binding."""
-        plugin_manager = get_plugin_manager()
-        adapter_manager = get_adapter_manager()
-        
-        adapter_name = request.get("adapter_name")
-        
-        # Validate adapter exists
-        if adapter_name:
-            adapter = adapter_manager.get_adapter(adapter_name)
-            if not adapter:
-                # Try to discover
-                discovered = adapter_manager.discover_adapters()
-                if adapter_name not in discovered:
-                    raise HTTPException(status_code=404, detail=f"Adapter {adapter_name} not found")
-                # Try to load it
-                app = get_app()
-                success = await adapter_manager.load_adapter(adapter_name, {
-                    "event_bus": get_event_bus(),
-                    "adapter_manager": adapter_manager,
-                    "app": app,
-                })
-                if not success:
-                    raise HTTPException(status_code=500, detail=f"Failed to load adapter {adapter_name}")
-        
-        # Unload plugin if currently loaded
-        if plugin_name in plugin_manager.get_all_plugins():
-            await plugin_manager.unload_plugin(plugin_name)
-        
-        # Set adapter binding
-        success = plugin_manager.set_plugin_adapter(plugin_name, adapter_name)
-        
-        if not success:
-            raise HTTPException(status_code=500, detail="Failed to set plugin adapter")
-        
-        # If adapter is set and plugin is not enabled, try to enable it
-        if adapter_name:
-            system_data = plugin_manager.get_plugin_system_data(plugin_name)
-            if not system_data.get("enabled", False):
-                # Auto-enable plugin after setting adapter
-                enable_success = await plugin_manager.enable_plugin(plugin_name)
-                if enable_success:
-                    logger.info(f"Plugin {plugin_name} auto-enabled after adapter binding")
-                else:
-                    logger.warning(f"Failed to auto-enable plugin {plugin_name} after adapter binding")
-        
-        await get_audit_logger().log_plugin_action(
-            "set_adapter",
-            plugin_name,
-            user.get("username"),
-            True,
-            {"adapter": adapter_name}
-        )
-        
-        return {"message": f"Plugin adapter set to {adapter_name}" if adapter_name else "Plugin adapter removed"}
+    # Note: Plugin adapter endpoint removed - new system uses independent process runtime
+    # All plugins are loaded directly without adapters
     
     @app.post("/api/plugins/upload")
     async def upload_plugin(
@@ -1324,7 +1100,10 @@ def create_app() -> FastAPI:
         if not file.filename.endswith('.zip'):
             raise HTTPException(status_code=400, detail="Only ZIP files are supported")
         
-        plugin_manager = get_plugin_manager()
+        from ..core.app import get_app
+        app = get_app()
+        db_manager = app.db_manager if hasattr(app, 'db_manager') and app.db_manager else None
+        plugin_connector = app.plugin_connector if hasattr(app, 'plugin_connector') and app.plugin_connector else None
         config = get_config()
         
         # Create temporary directory for extraction
@@ -1504,19 +1283,7 @@ def create_app() -> FastAPI:
         except Exception as e:
             logger.warning(f"Failed to get config from new system: {e}")
         
-        # Fall back to old plugin manager
-        plugin_manager = get_plugin_manager()
-        plugin = plugin_manager.get_plugin(plugin_name)
-        
-        if plugin:
-            metadata = plugin.get_metadata()
-            return {
-                "config_schema": metadata.config_schema,
-                "default_config": metadata.default_config,
-                "current_config": plugin.get_config()
-            }
-        
-        # Plugin not loaded, return empty schema
+        # If new system failed, return empty schema
         return {
             "config_schema": None,
             "default_config": {},
@@ -2267,6 +2034,22 @@ def create_app() -> FastAPI:
                 "data": None
             }
     
+    async def _get_plugin_stats(db_manager) -> Dict[str, int]:
+        """Get plugin statistics from database."""
+        if not db_manager:
+            return {"total": 0, "enabled": 0}
+        
+        try:
+            all_plugins = await db_manager.list_plugin_settings()
+            enabled_plugins = await db_manager.list_plugin_settings(enabled_only=True)
+            return {
+                "total": len(all_plugins),
+                "enabled": len(enabled_plugins)
+            }
+        except Exception as e:
+            logger.warning(f"Failed to get plugin stats: {e}")
+            return {"total": 0, "enabled": 0}
+    
     @app.get("/api/system/status")
     async def get_system_status(user: Dict[str, Any] = Depends(get_current_user)):
         """Get system status."""
@@ -2274,9 +2057,9 @@ def create_app() -> FastAPI:
         import psutil
         from datetime import datetime, timedelta
         event_bus = get_event_bus()
-        plugin_manager = get_plugin_manager()
         application = get_app()
         config = get_config()
+        db_manager = application.db_manager if hasattr(application, 'db_manager') and application.db_manager else None
         
         # Calculate uptime
         uptime_str = "N/A"
@@ -2432,13 +2215,7 @@ def create_app() -> FastAPI:
                 "today_received": today_received,
                 "today_sent": today_sent,
             },
-            "plugins": {
-                "total": len(plugin_manager.discover_plugins()),  # 所有已安装的插件
-                "enabled": sum(
-                    1 for p in plugin_manager.get_all_plugins().values()
-                    if p.is_enabled()
-                )
-            },
+            "plugins": await _get_plugin_stats(db_manager),
             "uptime": uptime_str,
             "bot_status": _get_bot_status(application),
             "system": {
@@ -2784,34 +2561,87 @@ def create_app() -> FastAPI:
     
     # ==================== AI System API ====================
     
-    def get_model_manager() -> ModelManager:
+    # Check if AI is available
+    global _ai_available
+    _ai_available = is_ai_available()
+    
+    if _ai_available:
+        logger.info("AI系统已检测到，正在加载AI模块...")
+        try:
+            from ..ai import ModelManager, AIManager, MCPManager
+        except ImportError as e:
+            logger.error(f"AI模块导入失败: {e}")
+            _ai_available = False
+    else:
+        logger.info("AI系统未检测到，AI功能将不可用")
+    
+    def check_ai_available():
+        """Check if AI is available, raise 503 if not."""
+        if not _ai_available:
+            raise HTTPException(
+                status_code=503,
+                detail="AI系统未安装或不可用"
+            )
+    
+    def get_model_manager():
         """Get model manager instance."""
+        check_ai_available()
         global _model_manager
         if _model_manager is None:
+            from ..ai import ModelManager
             _model_manager = ModelManager()
         return _model_manager
     
-    def get_ai_manager() -> AIManager:
+    def get_ai_manager():
         """Get AI manager instance."""
+        check_ai_available()
         global _ai_manager
         if _ai_manager is None:
+            from ..ai import AIManager
             _ai_manager = AIManager()
         return _ai_manager
     
-    def get_mcp_manager() -> MCPManager:
+    def get_mcp_manager():
         """Get MCP manager instance."""
+        check_ai_available()
         global _mcp_manager
         if _mcp_manager is None:
+            from ..ai import MCPManager
             _mcp_manager = MCPManager()
         return _mcp_manager
     
-    # Initialize managers on startup
+    # Initialize managers on startup (only if AI is available)
     @app.on_event("startup")
     async def init_ai_managers():
         """Initialize AI managers."""
-        await get_model_manager().initialize()
-        await get_ai_manager().initialize()
-        await get_mcp_manager().initialize()
+        if _ai_available:
+            try:
+                await get_model_manager().initialize()
+                await get_ai_manager().initialize()
+                await get_mcp_manager().initialize()
+                logger.info("AI管理器初始化成功")
+            except Exception as e:
+                logger.error(f"AI管理器初始化失败: {e}", exc_info=True)
+        else:
+            logger.info("AI系统不可用，跳过AI管理器初始化")
+    
+    # ==================== AI Availability Check ====================
+    
+    @app.get("/api/ai/availability")
+    async def check_ai_availability():
+        """检测AI系统是否可用。"""
+        detector = get_ai_detector()
+        available = detector.is_ai_available()
+        
+        result = {
+            "available": available,
+            "message": "AI系统可用" if available else "AI系统未安装或不可用"
+        }
+        
+        if available:
+            result["module_path"] = str(detector.get_ai_module_path())
+        
+        return result
     
     # ==================== AI Configuration ====================
     
@@ -4005,13 +3835,20 @@ def create_app() -> FastAPI:
     async def get_expression_reflect_stats(
         user: Dict[str, Any] = Depends(require_permission(Permission.SYSTEM_CONFIG_VIEW))
     ):
-        """Get Expression Reflect statistics."""
+        """Get Expression Auto Check statistics (expression_reflector removed, using auto_checker instead)."""
         try:
-            from ..ai.expression_reflector import get_expression_reflector
-            reflector = get_expression_reflector()
-            return reflector.get_statistics()
+            from ..ai.expression_auto_checker import get_expression_auto_checker
+            checker = get_expression_auto_checker()
+            stats = checker.get_statistics()
+            return {
+                "total_reflections": stats.get('total_checked', 0),
+                "total_analyzed": stats.get('total_checked', 0),
+                "total_recommendations": stats.get('total_accepted', 0),
+                "last_reflection_time": stats.get('last_check_time'),
+                "tracked_expressions": stats.get('total_checked', 0)
+            }
         except Exception as e:
-            logger.error(f"Failed to get expression reflect stats: {e}")
+            logger.error(f"Failed to get expression auto check stats: {e}")
             return {
                 "total_reflections": 0,
                 "total_analyzed": 0,
@@ -4024,9 +3861,9 @@ def create_app() -> FastAPI:
     async def trigger_expression_reflect(
         user: Dict[str, Any] = Depends(require_permission(Permission.SYSTEM_CONFIG_EDIT))
     ):
-        """Manually trigger expression reflection."""
+        """Manually trigger expression auto check (expression_reflector removed, using auto_checker instead)."""
         try:
-            from ..ai.expression_reflector import get_expression_reflector
+            from ..ai.expression_auto_checker import get_expression_auto_checker
             from ..ai.llm_client import LLMClient
             
             # Get default model for LLM client
@@ -4048,17 +3885,17 @@ def create_app() -> FastAPI:
                 provider=model_with_secret.get('provider', 'openai')
             )
             
-            reflector = get_expression_reflector()
+            checker = get_expression_auto_checker()
             
             # Run in background
             import asyncio
-            asyncio.create_task(reflector.reflect_on_expressions(llm_client, min_usage_count=5, limit=30))
+            asyncio.create_task(checker.check_unchecked_expressions(llm_client, limit=50, batch_size=10))
             
-            return {"success": True, "message": "表达方式反思已启动"}
+            return {"success": True, "message": "表达方式自动检查已启动"}
         except HTTPException:
             raise
         except Exception as e:
-            logger.error(f"Failed to trigger expression reflect: {e}")
+            logger.error(f"Failed to trigger expression auto check: {e}")
             raise HTTPException(status_code=500, detail=str(e))
     
     # Knowledge Graph APIs

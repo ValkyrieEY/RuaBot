@@ -366,8 +366,8 @@ class LLMClient:
             # For GLM models or models that don't support standard tool calling,
             # try to parse tool calls from reasoning_content or content
             if tools and ("reasoning_content" in message or "content" in message):
-                reasoning = message.get("reasoning_content", "")
-                content = message.get("content", "")
+                reasoning = message.get("reasoning_content") or ""
+                content = message.get("content") or ""
                 combined_text = (reasoning + "\n" + content).strip()
                 
                 # First try to parse XML format tool calls (GLM format: tool_name <arg_key>...</arg_key>)

@@ -1,0 +1,83 @@
+# Git
+.git/
+.gitignore
+.gitattributes
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+env/
+ENV/
+.venv/
+*.egg-info/
+
+# Poetry
+.poetry/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*.swn
+.DS_Store
+
+# Data and logs (will be mounted as volumes)
+data/
+logs/
+*.db
+*.db-shm
+*.db-wal
+*.log
+
+# Frontend development files
+webui/node_modules/
+webui/.vite/
+webui/.turbo/
+*.local
+
+# Documentation
+*.md
+docs/
+README.md
+CHANGELOG.md
+PLUGIN_MIGRATION_COMPLETE.md
+
+# Tests
+tests/
+*.test.py
+.pytest_cache/
+.coverage
+htmlcov/
+
+# CI/CD
+.github/
+.gitlab-ci.yml
+
+# Docker
+docker/
+Dockerfile
+docker-compose*.yml
+.dockerignore
+
+# Temporary files
+tmp/
+temp/
+*.tmp
+.cache/
+
+# Build artifacts
+dist/
+build/
+*.egg
+
+# Other
+*.bak
+*~
+.env
+.env.local
+

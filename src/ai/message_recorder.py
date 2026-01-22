@@ -160,6 +160,52 @@ class MessageRecorder:
         except Exception as e:
             logger.error(f"Failed to get messages for learning: {e}", exc_info=True)
             return []
+    
+    async def get_messages_since(
+        self,
+        chat_id: str,
+        since_time: float,
+        exclude_bot: bool = True,
+        limit: Optional[int] = None
+    ) -> List[Dict[str, Any]]:
+        """Get messages since a specific timestamp.
+        
+        Args:
+            chat_id: Chat ID
+            since_time: Timestamp to get messages after
+            exclude_bot: Whether to exclude bot messages
+            limit: Optional maximum number of messages
+            
+        Returns:
+            List of message dicts in chronological order
+        """
+        try:
+            messages = await self.ai_db.get_messages_since(
+                chat_id=chat_id,
+                since_time=since_time,
+                exclude_bot=exclude_bot,
+                limit=limit
+            )
+            
+            # Convert to dict
+            result = []
+            for msg in messages:
+                result.append({
+                    'message_id': msg.message_id,
+                    'user_id': msg.user_id,
+                    'user_name': msg.user_cardname or msg.user_nickname or msg.user_id,
+                    'user_nickname': msg.user_nickname,
+                    'content': msg.plain_text,
+                    'display_message': msg.display_message,
+                    'time': msg.time,
+                    'is_bot_message': msg.is_bot_message
+                })
+            
+            return result
+            
+        except Exception as e:
+            logger.error(f"Failed to get messages since {since_time}: {e}", exc_info=True)
+            return []
 
 
 # Global message recorder instance

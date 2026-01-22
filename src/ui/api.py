@@ -2036,13 +2036,20 @@ def create_app() -> FastAPI:
             }
     
     async def _get_plugin_stats(db_manager) -> Dict[str, int]:
-        """Get plugin statistics from database."""
+        """Get plugin statistics from database.
+        
+        Note: enabled plugins are automatically loaded into runtime,
+        so enabled count should equal running count in normal cases.
+        """
         if not db_manager:
             return {"total": 0, "enabled": 0}
         
         try:
             all_plugins = await db_manager.list_plugin_settings()
             enabled_plugins = await db_manager.list_plugin_settings(enabled_only=True)
+            
+            # Enabled plugins are automatically loaded into runtime
+            # So enabled count should be the actual running count
             return {
                 "total": len(all_plugins),
                 "enabled": len(enabled_plugins)
@@ -2078,39 +2085,41 @@ def create_app() -> FastAPI:
         
         event_stats = event_bus.get_stats()
         
-        # Calculate today's message statistics
-        today_start = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
-        today_received = 0
-        today_sent = 0
+        # Get today's message statistics from event bus counters
+        # (These are maintained by event bus and reset at midnight)
+        today_received = event_stats.get("today_received", 0)
+        today_sent = event_stats.get("today_sent", 0)
         
-        # Count messages from event history
-        # OneBot消息事件名称是 "onebot.message"，所有消息都是接收的
-        for event in event_bus._event_history:
-            if event.timestamp >= today_start:
-                is_message = False
-                
-                # Check if it's a message event
-                # Method 1: Check event name (onebot.message)
-                if event.name == "onebot.message":
-                    is_message = True
-                # Method 2: Check payload structure
-                elif isinstance(event.payload, dict):
-                    payload = event.payload
-                    # Check if payload has 'type' key and it's 'message' (from onebot adapter)
-                    if payload.get('type') == 'message':
+        # Fallback: If counters not available, count from event history
+        if today_received == 0 and today_sent == 0:
+            today_start = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+            
+            # Count messages from event history
+            for event in event_bus._event_history:
+                if event.timestamp >= today_start:
+                    # Check for received messages
+                    is_message = False
+                    
+                    # Check if it's a received message event
+                    if event.name == "onebot.message":
                         is_message = True
-                    # Also check raw event data for post_type
-                    elif payload.get('raw') and isinstance(payload.get('raw'), dict):
-                        raw_data = payload.get('raw', {})
-                        if raw_data.get('post_type') == 'message':
+                    elif isinstance(event.payload, dict):
+                        payload = event.payload
+                        if payload.get('type') == 'message':
                             is_message = True
-                    # Direct check for post_type in payload (legacy format)
-                    elif payload.get('post_type') == 'message':
-                        is_message = True
-                
-                # Count as received message (all OneBot messages are received)
-                if is_message:
-                    today_received += 1
+                        elif payload.get('raw') and isinstance(payload.get('raw'), dict):
+                            raw_data = payload.get('raw', {})
+                            if raw_data.get('post_type') == 'message':
+                                is_message = True
+                        elif payload.get('post_type') == 'message':
+                            is_message = True
+                    
+                    if is_message:
+                        today_received += 1
+                    
+                    # Check for sent messages
+                    if event.name == "onebot.message_sent":
+                        today_sent += 1
         
         # Get CPU and memory info (with fallback if psutil fails)
         try:

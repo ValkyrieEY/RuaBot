@@ -531,6 +531,19 @@ class OneBotAdapter(ProtocolAdapter):
                 "params": payload,
                 "echo": None
             }))
+            # Emit event for message sent statistics (WebSocket)
+            try:
+                from ..core.event_bus import get_event_bus
+                event_bus = get_event_bus()
+                if event_bus:
+                    await event_bus.publish("onebot.message_sent", {
+                        "message_type": message_type,
+                        "target": target,
+                        "message_id": None,  # WebSocket doesn't return immediately
+                        "timestamp": datetime.now()
+                    })
+            except Exception as e:
+                logger.debug(f"Failed to emit message_sent event: {e}")
             return {"message_id": None}  # WebSocket doesn't return immediately
         elif self.connection_type == "ws_reverse" and self._reverse_clients:
             # Send via reverse WebSocket
@@ -540,6 +553,19 @@ class OneBotAdapter(ProtocolAdapter):
                     "params": payload,
                     "echo": None
                 }))
+            # Emit event for message sent statistics (Reverse WebSocket)
+            try:
+                from ..core.event_bus import get_event_bus
+                event_bus = get_event_bus()
+                if event_bus:
+                    await event_bus.publish("onebot.message_sent", {
+                        "message_type": message_type,
+                        "target": target,
+                        "message_id": None,  # WebSocket doesn't return immediately
+                        "timestamp": datetime.now()
+                    })
+            except Exception as e:
+                logger.debug(f"Failed to emit message_sent event: {e}")
             return {"message_id": None}
         else:
             # Send via HTTP
@@ -552,7 +578,23 @@ class OneBotAdapter(ProtocolAdapter):
             result = response.json()
             
             if result.get("status") == "ok":
-                logger.info("Message sent", message_id=result.get("data", {}).get("message_id"))
+                message_id = result.get("data", {}).get("message_id")
+                logger.info("Message sent", message_id=message_id)
+                
+                # Emit event for message sent statistics
+                try:
+                    from ..core.event_bus import get_event_bus
+                    event_bus = get_event_bus()
+                    if event_bus:
+                        await event_bus.publish("onebot.message_sent", {
+                            "message_type": message_type,
+                            "target": target,
+                            "message_id": message_id,
+                            "timestamp": datetime.now()
+                        })
+                except Exception as e:
+                    logger.debug(f"Failed to emit message_sent event: {e}")
+                
                 return result.get("data", {})
             else:
                 logger.error("Failed to send message", result=result)
@@ -622,6 +664,19 @@ class OneBotAdapter(ProtocolAdapter):
                 "params": payload,
                 "echo": None
             }))
+            # Emit event for WebSocket (message_id not available immediately)
+            try:
+                from ..core.event_bus import get_event_bus
+                event_bus = get_event_bus()
+                if event_bus:
+                    await event_bus.publish("onebot.message_sent", {
+                        "message_type": message_type,
+                        "target": target,
+                        "message_id": None,
+                        "timestamp": datetime.now()
+                    })
+            except Exception as e:
+                logger.debug(f"Failed to emit message_sent event: {e}")
             return {"message_id": None}
         elif self.connection_type == "ws_reverse" and self._reverse_clients:
             for client in self._reverse_clients:
@@ -630,6 +685,19 @@ class OneBotAdapter(ProtocolAdapter):
                     "params": payload,
                     "echo": None
                 }))
+            # Emit event for reverse WebSocket (message_id not available immediately)
+            try:
+                from ..core.event_bus import get_event_bus
+                event_bus = get_event_bus()
+                if event_bus:
+                    await event_bus.publish("onebot.message_sent", {
+                        "message_type": message_type,
+                        "target": target,
+                        "message_id": None,
+                        "timestamp": datetime.now()
+                    })
+            except Exception as e:
+                logger.debug(f"Failed to emit message_sent event: {e}")
             return {"message_id": None}
         else:
             # Send via HTTP
@@ -642,7 +710,23 @@ class OneBotAdapter(ProtocolAdapter):
             result = response.json()
             
             if result.get("status") == "ok":
-                logger.info("Forward message sent", message_id=result.get("data", {}).get("message_id"))
+                message_id = result.get("data", {}).get("message_id")
+                logger.info("Forward message sent", message_id=message_id)
+                
+                # Emit event for message sent statistics
+                try:
+                    from ..core.event_bus import get_event_bus
+                    event_bus = get_event_bus()
+                    if event_bus:
+                        await event_bus.publish("onebot.message_sent", {
+                            "message_type": message_type,
+                            "target": target,
+                            "message_id": message_id,
+                            "timestamp": datetime.now()
+                        })
+                except Exception as e:
+                    logger.debug(f"Failed to emit message_sent event: {e}")
+                
                 return result.get("data", {})
             else:
                 logger.error("Failed to send forward message", result=result)
@@ -688,6 +772,65 @@ class OneBotAdapter(ProtocolAdapter):
         """Call OneBot API."""
         logger.debug(f"call_api called: action={action}, params={params}, connection_type={self.connection_type}")
         
+        # Check if this is a message-sending action
+        # Include all OneBot message sending APIs
+        message_actions = [
+            'send_group_msg',           # 发送群消息
+            'send_private_msg',         # 发送私聊消息
+            'send_msg',                 # 发送消息（通用）
+            'send_group_forward_msg',   # 发送合并转发群消息
+            'send_private_forward_msg', # 发送合并转发私聊消息
+            'send_forward_msg',         # 发送合并转发消息（通用）
+        ]
+        is_message_action = action in message_actions
+        
+        # Helper function to emit message_sent event
+        async def emit_message_sent_event(result_data: Dict[str, Any] = None):
+            """Emit message_sent event for statistics."""
+            try:
+                from ..core.event_bus import get_event_bus
+                event_bus = get_event_bus()
+                if not event_bus:
+                    logger.warning("EventBus not available, cannot emit message_sent event")
+                    return
+                
+                # Determine message type from action
+                if "group" in action:
+                    message_type = "group"
+                    target = str(params.get("group_id") or "")
+                elif "private" in action:
+                    message_type = "private"
+                    target = str(params.get("user_id") or "")
+                else:
+                    # For generic send_msg or send_forward_msg, try to determine from params
+                    if "group_id" in params:
+                        message_type = "group"
+                        target = str(params.get("group_id") or "")
+                    elif "user_id" in params:
+                        message_type = "private"
+                        target = str(params.get("user_id") or "")
+                    else:
+                        message_type = "unknown"
+                        target = ""
+                
+                message_id = result_data.get("message_id") if result_data else None
+                
+                logger.debug(
+                    f"Emitting message_sent event: action={action}, message_type={message_type}, "
+                    f"target={target}, message_id={message_id}"
+                )
+                
+                await event_bus.publish("onebot.message_sent", {
+                    "message_type": message_type,
+                    "target": target,
+                    "message_id": message_id,
+                    "timestamp": datetime.now()
+                })
+                
+                logger.debug(f"Successfully emitted message_sent event for {action}")
+            except Exception as e:
+                logger.error(f"Failed to emit message_sent event: {e}", exc_info=True)
+        
         # Use WebSocket if available (forward or reverse)
         if self.connection_type in ("ws", "ws_forward") and self._ws:
             # Send via forward WebSocket with echo
@@ -713,7 +856,11 @@ class OneBotAdapter(ProtocolAdapter):
                     result = await asyncio.wait_for(future, timeout=self.ws_api_timeout)
                     logger.debug(f"Received API response: {result}")
                     if result.get("status") == "ok":
-                        return result.get("data", {})
+                        data = result.get("data", {})
+                        # Emit message_sent event for message-sending actions
+                        if is_message_action:
+                            await emit_message_sent_event(data)
+                        return data
                     else:
                         logger.error(f"API call failed: {result}")
                         raise RuntimeError(f"API call failed: {result}")
@@ -747,7 +894,11 @@ class OneBotAdapter(ProtocolAdapter):
                     try:
                         result = await asyncio.wait_for(future, timeout=self.ws_api_timeout)
                         if result.get("status") == "ok":
-                            return result.get("data", {})
+                            data = result.get("data", {})
+                            # Emit message_sent event for message-sending actions
+                            if is_message_action:
+                                await emit_message_sent_event(data)
+                            return data
                         else:
                             raise RuntimeError(f"API call failed: {result}")
                     except asyncio.TimeoutError:
@@ -766,7 +917,11 @@ class OneBotAdapter(ProtocolAdapter):
             result = response.json()
             
             if result.get("status") == "ok":
-                return result.get("data", {})
+                data = result.get("data", {})
+                # Emit message_sent event for message-sending actions
+                if is_message_action:
+                    await emit_message_sent_event(data)
+                return data
             else:
                 raise RuntimeError(f"API call failed: {result}")
 

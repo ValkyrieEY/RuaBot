@@ -52,6 +52,136 @@ class LLMClient:
             await self._client.aclose()
             self._client = None
     
+    @staticmethod
+    def _convert_messages_to_gemini_format(messages: List[Dict[str, str]]) -> List[Dict[str, Any]]:
+        """Convert OpenAI messages format to Gemini contents format.
+        
+        OpenAI format: [{"role": "user", "content": "..."}, {"role": "assistant", "content": "..."}]
+        Gemini format: [{"role": "user", "parts": [{"text": "..."}]}, {"role": "model", "parts": [{"text": "..."}]}]
+        """
+        contents = []
+        
+        for msg in messages:
+            role = msg.get("role", "user")
+            content = msg.get("content", "")
+            
+            # Map roles: OpenAI uses "assistant", Gemini uses "model"
+            if role == "assistant":
+                gemini_role = "model"
+            elif role == "system":
+                # Gemini doesn't have system role, prepend to first user message
+                gemini_role = "user"
+            else:
+                gemini_role = role
+            
+            # Gemini format: {"role": "...", "parts": [{"text": "..."}]}
+            content_dict = {
+                "role": gemini_role,
+                "parts": [{"text": content}]
+            }
+            
+            contents.append(content_dict)
+        
+        return contents
+    
+    @staticmethod
+    def _convert_tools_to_gemini_format(tools: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """Convert OpenAI format tools to Gemini functionDeclarations format.
+        
+        Args:
+            tools: List of tools in OpenAI format: [{"type": "function", "function": {...}}]
+            
+        Returns:
+            List of function declarations in Gemini format: [{"name": ..., "description": ..., "parameters": ...}]
+        """
+        function_declarations = []
+        
+        for tool in tools:
+            if isinstance(tool, dict):
+                # OpenAI format: {"type": "function", "function": {"name": ..., "description": ..., "parameters": ...}}
+                if "function" in tool:
+                    func = tool["function"]
+                elif "name" in tool:
+                    # Direct function format
+                    func = tool
+                else:
+                    logger.warning(f"Skipping invalid tool format: {tool}")
+                    continue
+                
+                name = func.get("name", "")
+                description = func.get("description", "")
+                parameters = func.get("parameters", {})
+                
+                if not name:
+                    logger.warning(f"Skipping tool without name: {func}")
+                    continue
+                
+                # Gemini function declaration format
+                function_declaration = {
+                    "name": name,
+                    "description": description or f"Function: {name}",
+                    "parameters": parameters if parameters else {
+                        "type": "object",
+                        "properties": {},
+                        "required": []
+                    }
+                }
+                
+                function_declarations.append(function_declaration)
+        
+        logger.debug(f"Converted {len(tools)} OpenAI tools to {len(function_declarations)} Gemini function declarations")
+        return function_declarations
+    
+    @staticmethod
+    def _parse_gemini_tool_calls(response: Dict[str, Any]) -> List[Dict[str, Any]]:
+        """Parse tool calls from Gemini API response.
+        
+        Gemini format:
+        {
+            "candidates": [{
+                "content": {
+                    "parts": [{
+                        "functionCall": {
+                            "name": "function_name",
+                            "args": {...}
+                        }
+                    }]
+                }
+            }]
+        }
+        
+        Returns:
+            List of tool calls in OpenAI format
+        """
+        tool_calls = []
+        
+        if "candidates" not in response or not response["candidates"]:
+            return tool_calls
+        
+        candidate = response["candidates"][0]
+        content = candidate.get("content", {})
+        parts = content.get("parts", [])
+        
+        for idx, part in enumerate(parts):
+            if "functionCall" in part:
+                func_call = part["functionCall"]
+                name = func_call.get("name", "")
+                args = func_call.get("args", {})
+                
+                if name:
+                    tool_call = {
+                        "id": f"call_{name}_{idx}",
+                        "type": "function",
+                        "function": {
+                            "name": name,
+                            "arguments": json.dumps(args, ensure_ascii=False)
+                        }
+                    }
+                    tool_calls.append(tool_call)
+                    logger.info(f"Parsed Gemini tool call: {name} with args: {args}")
+        
+        return tool_calls
+    
     def _parse_xml_tool_calls(self, text: str, tools: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """Parse XML format tool calls from text (GLM format).
         
@@ -282,31 +412,70 @@ class LLMClient:
         """Handle streaming chat completion."""
         client = await self._get_client()
         
-        # Prepare request payload
-        payload = {
-            "model": self.model_name,
-            "messages": messages,
-            "temperature": temperature,
-            "max_tokens": max_tokens,
-            "stream": True,
-        }
+        # Check if this is Gemini
+        is_gemini = self.provider.lower() == "gemini" or "gemini" in self.model_name.lower()
         
-        # Add optional parameters
-        if top_p is not None:
-            payload["top_p"] = top_p
-        if top_k is not None:
-            payload["top_k"] = top_k
+        # Prepare request payload
+        if is_gemini:
+            # Gemini uses contents instead of messages
+            contents = self._convert_messages_to_gemini_format(messages)
+            payload = {
+                "contents": contents,
+            }
+            # Gemini uses generationConfig for parameters
+            generation_config = {}
+            if temperature is not None:
+                generation_config["temperature"] = temperature
+            if max_tokens is not None:
+                generation_config["maxOutputTokens"] = max_tokens
+            if top_p is not None:
+                generation_config["topP"] = top_p
+            if top_k is not None:
+                generation_config["topK"] = top_k
+            if generation_config:
+                payload["generationConfig"] = generation_config
+        else:
+            # Standard OpenAI format
+            payload = {
+                "model": self.model_name,
+                "messages": messages,
+                "temperature": temperature,
+                "max_tokens": max_tokens,
+                "stream": True,
+            }
+        
+        # Add optional parameters (for non-Gemini)
+        if not is_gemini:
+            if top_p is not None:
+                payload["top_p"] = top_p
+            if top_k is not None:
+                payload["top_k"] = top_k
         
         # Add tools if provided
         if tools:
-            payload["tools"] = tools
-            payload["tool_choice"] = "auto"
+            # Convert tools format for Gemini
+            if is_gemini:
+                # Gemini uses functionDeclarations instead of tools
+                function_declarations = self._convert_tools_to_gemini_format(tools)
+                if function_declarations:
+                    payload["tools"] = [{"functionDeclarations": function_declarations}]
+                logger.debug(f"Converted tools to Gemini format: {len(function_declarations)} functions")
+            else:
+                # Standard OpenAI format
+                payload["tools"] = tools
+                payload["tool_choice"] = "auto"
         
         # Add any additional parameters
         payload.update(kwargs)
         
         try:
-            endpoint = "/chat/completions"
+            # Gemini uses different endpoint
+            if is_gemini:
+                # Extract model name from full model name (e.g., "gemini-2.0-flash-exp" from "models/gemini-2.0-flash-exp")
+                model_name_clean = self.model_name.replace("models/", "")
+                endpoint = f"/v1/models/{model_name_clean}:streamGenerateContent"
+            else:
+                endpoint = "/chat/completions"
             logger.debug(f"Calling LLM API (stream): {self.base_url}{endpoint}, model={self.model_name}")
             
             async with client.stream("POST", endpoint, json=payload) as response:
@@ -320,7 +489,18 @@ class LLMClient:
                         break
                     try:
                         chunk_data = json.loads(line)
-                        if "choices" in chunk_data and len(chunk_data["choices"]) > 0:
+                        
+                        # Handle Gemini streaming format
+                        if is_gemini and "candidates" in chunk_data:
+                            if len(chunk_data["candidates"]) > 0:
+                                candidate = chunk_data["candidates"][0]
+                                content = candidate.get("content", {})
+                                parts = content.get("parts", [])
+                                for part in parts:
+                                    if "text" in part:
+                                        yield part["text"]
+                        # Handle OpenAI streaming format
+                        elif "choices" in chunk_data and len(chunk_data["choices"]) > 0:
                             choice = chunk_data["choices"][0]
                             delta = choice.get("delta", {})
                             if "content" in delta and delta["content"]:
@@ -343,7 +523,14 @@ class LLMClient:
         # Debug: log the raw response to understand what model returns
         logger.debug(f"LLM API raw response (first 500 chars): {str(result)[:500]}")
         
-        # Extract response
+        # Check if this is a Gemini response format
+        is_gemini = "candidates" in result
+        
+        if is_gemini:
+            # Parse Gemini response format
+            return self._parse_gemini_response(result, tools)
+        
+        # Extract response (OpenAI format)
         if "choices" in result and len(result["choices"]) > 0:
             choice = result["choices"][0]
             message = choice.get("message", {})
@@ -409,6 +596,53 @@ class LLMClient:
         logger.error(f"Unexpected API response format: {result}")
         raise RuntimeError("Unexpected API response format")
     
+    def _parse_gemini_response(self, result: Dict[str, Any], tools: Optional[List[Dict[str, Any]]]) -> Dict[str, Any]:
+        """Parse Gemini API response format.
+        
+        Gemini format:
+        {
+            "candidates": [{
+                "content": {
+                    "parts": [
+                        {"text": "..."} or {"functionCall": {...}}
+                    ]
+                },
+                "finishReason": "STOP" or "FUNCTION_CALL"
+            }]
+        }
+        """
+        if "candidates" not in result or not result["candidates"]:
+            logger.error(f"Gemini response missing candidates: {result}")
+            raise RuntimeError("Gemini API response missing candidates")
+        
+        candidate = result["candidates"][0]
+        content = candidate.get("content", {})
+        parts = content.get("parts", [])
+        finish_reason = candidate.get("finishReason", "")
+        
+        # Check for function calls
+        tool_calls = self._parse_gemini_tool_calls(result)
+        if tool_calls:
+            logger.info(f"Gemini returned {len(tool_calls)} tool call(s)")
+            return {
+                "type": "tool_calls",
+                "tool_calls": tool_calls,
+                "content": ""
+            }
+        
+        # Extract text content
+        text_parts = []
+        for part in parts:
+            if "text" in part:
+                text_parts.append(part["text"])
+        
+        content_text = "".join(text_parts).strip()
+        
+        return {
+            "type": "text",
+            "content": content_text
+        }
+    
     async def _chat_completion_non_stream(
         self,
         messages: List[Dict[str, str]],
@@ -423,30 +657,69 @@ class LLMClient:
         """Handle non-streaming chat completion."""
         client = await self._get_client()
         
-        # Prepare request payload
-        payload = {
-            "model": self.model_name,
-            "messages": messages,
-            "temperature": temperature,
-            "max_tokens": max_tokens,
-        }
+        # Check if this is Gemini
+        is_gemini = self.provider.lower() == "gemini" or "gemini" in self.model_name.lower()
         
-        # Add optional parameters
-        if top_p is not None:
-            payload["top_p"] = top_p
-        if top_k is not None:
-            payload["top_k"] = top_k
+        # Prepare request payload
+        if is_gemini:
+            # Gemini uses contents instead of messages
+            contents = self._convert_messages_to_gemini_format(messages)
+            payload = {
+                "contents": contents,
+            }
+            # Gemini uses generationConfig for parameters
+            generation_config = {}
+            if temperature is not None:
+                generation_config["temperature"] = temperature
+            if max_tokens is not None:
+                generation_config["maxOutputTokens"] = max_tokens
+            if top_p is not None:
+                generation_config["topP"] = top_p
+            if top_k is not None:
+                generation_config["topK"] = top_k
+            if generation_config:
+                payload["generationConfig"] = generation_config
+        else:
+            # Standard OpenAI format
+            payload = {
+                "model": self.model_name,
+                "messages": messages,
+                "temperature": temperature,
+                "max_tokens": max_tokens,
+            }
+        
+        # Add optional parameters (for non-Gemini)
+        if not is_gemini:
+            if top_p is not None:
+                payload["top_p"] = top_p
+            if top_k is not None:
+                payload["top_k"] = top_k
         
         # Add tools if provided
         if tools:
-            payload["tools"] = tools
-            payload["tool_choice"] = "auto"
+            # Convert tools format for Gemini
+            if is_gemini:
+                # Gemini uses functionDeclarations instead of tools
+                function_declarations = self._convert_tools_to_gemini_format(tools)
+                if function_declarations:
+                    payload["tools"] = [{"functionDeclarations": function_declarations}]
+                logger.debug(f"Converted tools to Gemini format: {len(function_declarations)} functions")
+            else:
+                # Standard OpenAI format
+                payload["tools"] = tools
+                payload["tool_choice"] = "auto"
         
         # Add any additional parameters
         payload.update(kwargs)
         
         try:
-            endpoint = "/chat/completions"
+            # Gemini uses different endpoint
+            if is_gemini:
+                # Extract model name from full model name (e.g., "gemini-2.0-flash-exp" from "models/gemini-2.0-flash-exp")
+                model_name_clean = self.model_name.replace("models/", "")
+                endpoint = f"/v1/models/{model_name_clean}:generateContent"
+            else:
+                endpoint = "/chat/completions"
             logger.debug(f"Calling LLM API (non-stream): {self.base_url}{endpoint}, model={self.model_name}")
             
             # Async HTTP request (stays in event loop)

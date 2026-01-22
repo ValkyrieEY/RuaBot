@@ -45,6 +45,11 @@ class EventBus:
         self._running: bool = False
         self._event_queue: asyncio.Queue = asyncio.Queue()
         self._processor_task: Optional[asyncio.Task] = None
+        
+        # Message statistics (persistent counters, reset at midnight)
+        self._today_sent: int = 0
+        self._today_received: int = 0
+        self._last_reset_date: Optional[datetime] = None
 
     async def start(self) -> None:
         """Start the event bus processor."""
@@ -97,6 +102,9 @@ class EventBus:
         self._event_history.append(event)
         if len(self._event_history) > self._max_history:
             self._event_history.pop(0)
+        
+        # Update message statistics
+        self._update_message_stats(event)
 
         # Get subscribers for this event
         subscribers = self._subscribers.get(event.name, []).copy()
@@ -252,8 +260,35 @@ class EventBus:
         self._event_history.clear()
         logger.debug("Event history cleared")
 
+    def _update_message_stats(self, event: Event) -> None:
+        """Update message statistics counters."""
+        # Reset counters at midnight
+        now = datetime.now()
+        today = now.date()
+        
+        if self._last_reset_date is None or self._last_reset_date.date() != today:
+            self._today_sent = 0
+            self._today_received = 0
+            self._last_reset_date = now
+        
+        # Count received messages
+        if event.name == "onebot.message":
+            self._today_received += 1
+        # Count sent messages
+        elif event.name == "onebot.message_sent":
+            self._today_sent += 1
+    
     def get_stats(self) -> Dict[str, Any]:
         """Get event bus statistics."""
+        # Reset counters if needed
+        now = datetime.now()
+        today = now.date()
+        
+        if self._last_reset_date is None or self._last_reset_date.date() != today:
+            self._today_sent = 0
+            self._today_received = 0
+            self._last_reset_date = now
+        
         return {
             "running": self._running,
             "queue_size": self._event_queue.qsize(),
@@ -261,6 +296,8 @@ class EventBus:
             "total_subscribers": sum(len(subs) for subs in self._subscribers.values()),
             "wildcard_subscribers": len(self._wildcard_subscribers),
             "history_size": len(self._event_history),
+            "today_sent": self._today_sent,
+            "today_received": self._today_received,
         }
 
 

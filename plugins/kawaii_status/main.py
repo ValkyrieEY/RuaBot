@@ -1,6 +1,8 @@
 """Kawaii Status Plugin - 服务器状态查看插件
 
 适配自 nonebot-plugin-kawaii-status
+
+已接入插件线程池，CPU密集型操作不阻塞事件循环
 """
 
 import base64
@@ -9,11 +11,19 @@ import sys
 import asyncio
 import uuid
 from datetime import datetime
-from typing import Dict, Any
+from typing import Dict, Any, Optional
 from pathlib import Path
 import tempfile
 import os
 import importlib.util
+
+# 导入线程池（插件运行在独立进程中，需要创建自己的线程池）
+from concurrent.futures import ThreadPoolExecutor
+import threading
+
+# 插件专用线程池（运行在插件进程中）
+_plugin_executor: Optional[ThreadPoolExecutor] = None
+_executor_lock = threading.Lock()
 
 # 动态导入同目录下的模块
 _plugin_dir = Path(__file__).parent
@@ -59,12 +69,33 @@ class KawaiiStatusPlugin:
         # 命令别名
         self.commands = ['status', '状态', '运行状态']
         
+        # 初始化插件专用线程池（运行在插件自己的进程中）
+        self._init_thread_pool()
+        self.api.log("info", f"✅ 插件专用线程池已初始化（{self.max_workers} 线程）")
+        
+    def _init_thread_pool(self):
+        """初始化插件专用线程池"""
+        global _plugin_executor
+        with _executor_lock:
+            if _plugin_executor is None:
+                # 创建线程池（2-3个线程足够处理图像任务）
+                self.max_workers = 2
+                _plugin_executor = ThreadPoolExecutor(
+                    max_workers=self.max_workers,
+                    thread_name_prefix="kawaii_"
+                )
+                self.executor = _plugin_executor
+            else:
+                self.executor = _plugin_executor
+                self.max_workers = 2
+    
     async def on_load(self):
         """插件加载时调用"""
         self.api.log("info", "=" * 50)
         self.api.log("info", "Kawaii Status 插件开始加载...")
         self.api.log("info", f"插件配置: to_me={self.to_me}, only_superuser={self.only_superuser}, nickname={self.nickname}")
         self.api.log("info", f"支持的命令: {self.commands}")
+        self.api.log("info", f"线程池: {self.max_workers} 个工作线程")
         
         # 设置框架启动时间（使用当前时间作为启动时间）
         # 注意：实际框架启动时间可能更早，但插件加载时使用当前时间作为参考
@@ -117,6 +148,7 @@ class KawaiiStatusPlugin:
         """插件卸载时调用"""
         self.api.log("info", "Kawaii Status 插件已卸载")
         self.running = False
+        # 注意：不关闭线程池，因为可能有其他插件实例使用
     
     async def on_event(self, event_name: str, data: Dict[str, Any]):
         """处理事件
@@ -220,52 +252,27 @@ class KawaiiStatusPlugin:
             # 更新框架信息
             await self._update_framework_info()
             
-            # 绘制状态图片
+            # 绘制状态图片（CPU密集型，使用线程池）
             if draw is None:
                 self.api.log("error", "draw 函数未加载")
                 return
-            img_bytes = draw()
+            
+            self.api.log("debug", "开始绘制状态图片...")
+            # 在线程池中执行绘图
+            loop = asyncio.get_event_loop()
+            img_bytes = await loop.run_in_executor(self.executor, draw)
+            self.api.log("debug", "✅ 图片绘制完成（线程池）")
             
             # 压缩图片以减少 base64 大小（避免 readline 限制）
-            # PNG 图片可能很大，需要压缩
+            # PNG 图片可能很大，需要压缩（CPU密集型，使用线程池）
             try:
-                from PIL import Image
-                from io import BytesIO
-                
-                # 打开图片
-                img = Image.open(BytesIO(img_bytes))
-                
-                # 如果图片太大，进行压缩
-                # 限制最大尺寸和文件大小
-                max_size = (1920, 1080)  # 最大尺寸
-                max_file_size = 300 * 1024  # 最大 300KB（压缩后）
-                
-                # 调整尺寸
-                if img.size[0] > max_size[0] or img.size[1] > max_size[1]:
-                    img.thumbnail(max_size, Image.Resampling.LANCZOS)
-                    self.api.log("debug", f"图片已调整尺寸: {img.size}")
-                
-                # 压缩并保存
-                output = BytesIO()
-                quality = 85
-                attempts = 0
-                while attempts < 5:  # 最多尝试 5 次
-                    output.seek(0)
-                    output.truncate()
-                    # PNG 不支持 quality 参数，使用 optimize
-                    img.save(output, format='PNG', optimize=True)
-                    compressed_size = len(output.getvalue())
-                    
-                    if compressed_size <= max_file_size:
-                        break
-                    
-                    # 如果还是太大，进一步缩小尺寸
-                    new_size = (int(img.size[0] * 0.9), int(img.size[1] * 0.9))
-                    img = img.resize(new_size, Image.Resampling.LANCZOS)
-                    attempts += 1
-                
-                img_bytes = output.getvalue()
-                self.api.log("debug", f"图片已压缩: {len(img_bytes)} bytes (原始: {len(img_bytes)} bytes)")
+                self.api.log("debug", "开始压缩图片...")
+                # 在线程池中执行压缩
+                loop = asyncio.get_event_loop()
+                img_bytes = await loop.run_in_executor(
+                    self.executor, self._compress_image, img_bytes
+                )
+                self.api.log("debug", f"✅ 图片已压缩: {len(img_bytes)} bytes（线程池）")
                 
             except Exception as e:
                 self.api.log("warning", f"图片压缩失败，使用原始图片: {e}")
@@ -297,6 +304,50 @@ class KawaiiStatusPlugin:
         
         except Exception as e:
             self.api.log("error", f"处理状态查询请求失败: {e}", exc_info=True)
+    
+    def _compress_image(self, img_bytes: bytes) -> bytes:
+        """压缩图片（在线程池中执行的阻塞函数）
+        
+        Args:
+            img_bytes: 原始图片字节
+            
+        Returns:
+            压缩后的图片字节
+        """
+        from PIL import Image
+        from io import BytesIO
+        
+        # 打开图片
+        img = Image.open(BytesIO(img_bytes))
+        
+        # 如果图片太大，进行压缩
+        # 限制最大尺寸和文件大小
+        max_size = (1920, 1080)  # 最大尺寸
+        max_file_size = 300 * 1024  # 最大 300KB（压缩后）
+        
+        # 调整尺寸
+        if img.size[0] > max_size[0] or img.size[1] > max_size[1]:
+            img.thumbnail(max_size, Image.Resampling.LANCZOS)
+        
+        # 压缩并保存
+        output = BytesIO()
+        attempts = 0
+        while attempts < 5:  # 最多尝试 5 次
+            output.seek(0)
+            output.truncate()
+            # PNG 不支持 quality 参数，使用 optimize
+            img.save(output, format='PNG', optimize=True)
+            compressed_size = len(output.getvalue())
+            
+            if compressed_size <= max_file_size:
+                break
+            
+            # 如果还是太大，进一步缩小尺寸
+            new_size = (int(img.size[0] * 0.9), int(img.size[1] * 0.9))
+            img = img.resize(new_size, Image.Resampling.LANCZOS)
+            attempts += 1
+        
+        return output.getvalue()
 
 
 # Plugin entry point

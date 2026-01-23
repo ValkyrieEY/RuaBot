@@ -448,20 +448,37 @@ def create_app() -> FastAPI:
         plugin_base = Path(config.plugin_dir)
         all_plugins = []
         
+        # Get thread pool for file operations
+        app = get_app()
+        thread_pool = getattr(app, 'plugin_thread_pool', None)
+        
         # Discover all available plugins in plugins/{name} structure
         if plugin_base.exists():
-            for plugin_dir in plugin_base.iterdir():
-                if not plugin_dir.is_dir() or plugin_dir.name.startswith('.') or plugin_dir.name.startswith('_'):
-                    continue
-                
+            # Scan directory in thread pool to avoid blocking
+            if thread_pool:
+                def scan_plugin_dirs():
+                    return [d for d in plugin_base.iterdir() 
+                            if d.is_dir() and not d.name.startswith('.') and not d.name.startswith('_')]
+                plugin_dirs = await thread_pool.run_in_executor(scan_plugin_dirs)
+            else:
+                plugin_dirs = [d for d in plugin_base.iterdir() 
+                               if d.is_dir() and not d.name.startswith('.') and not d.name.startswith('_')]
+            
+            for plugin_dir in plugin_dirs:
                 plugin_json = plugin_dir / "plugin.json"
                 if not plugin_json.exists():
                     continue
                 
-                # Load plugin.json
+                # Load plugin.json in thread pool
                 try:
-                    with open(plugin_json, 'r', encoding='utf-8') as f:
-                        plugin_config = json.load(f)
+                    if thread_pool:
+                        def read_plugin_json():
+                            with open(plugin_json, 'r', encoding='utf-8') as f:
+                                return json.load(f)
+                        plugin_config = await thread_pool.run_in_executor(read_plugin_json)
+                    else:
+                        with open(plugin_json, 'r', encoding='utf-8') as f:
+                            plugin_config = json.load(f)
                     
                     author = plugin_config.get("author", "Unknown")
                     plugin_name = plugin_config.get("name", plugin_dir.name)
@@ -543,10 +560,19 @@ def create_app() -> FastAPI:
         if not plugin_json.exists():
             raise HTTPException(status_code=404, detail="Plugin metadata not found")
         
-        # Load plugin.json
+        # Load plugin.json using thread pool
+        app = get_app()
+        thread_pool = getattr(app, 'plugin_thread_pool', None)
+        
         try:
-            with open(plugin_json, 'r', encoding='utf-8') as f:
-                plugin_config = json.load(f)
+            if thread_pool:
+                def read_plugin_json():
+                    with open(plugin_json, 'r', encoding='utf-8') as f:
+                        return json.load(f)
+                plugin_config = await thread_pool.run_in_executor(read_plugin_json)
+            else:
+                with open(plugin_json, 'r', encoding='utf-8') as f:
+                    plugin_config = json.load(f)
             
             author = plugin_config.get("author", "Unknown")
             name = plugin_config.get("name", plugin_name)
@@ -621,8 +647,18 @@ def create_app() -> FastAPI:
             
             if plugin_json.exists():
                 try:
-                    with open(plugin_json, 'r', encoding='utf-8') as f:
-                        metadata = json.load(f)
+                    # Use thread pool for file IO
+                    app = get_app()
+                    thread_pool = getattr(app, 'plugin_thread_pool', None)
+                    
+                    if thread_pool:
+                        def read_plugin_json():
+                            with open(plugin_json, 'r', encoding='utf-8') as f:
+                                return json.load(f)
+                        metadata = await thread_pool.run_in_executor(read_plugin_json)
+                    else:
+                        with open(plugin_json, 'r', encoding='utf-8') as f:
+                            metadata = json.load(f)
                     author = metadata.get('author', 'Unknown')
                     name = metadata.get('name', plugin_name)
                 except Exception as e:
@@ -706,7 +742,7 @@ def create_app() -> FastAPI:
             raise HTTPException(status_code=500, detail="Database manager not available")
         
         # Helper function to get author from plugin.json
-        def get_plugin_author(plugin_name: str) -> tuple[str, str]:
+        async def get_plugin_author(plugin_name: str) -> tuple[str, str]:
             """Get author and name from plugin.json. Returns (author, name)."""
             config = get_config()
             plugin_dir = Path(config.plugin_dir) / plugin_name
@@ -714,8 +750,18 @@ def create_app() -> FastAPI:
             
             if plugin_json.exists():
                 try:
-                    with open(plugin_json, 'r', encoding='utf-8') as f:
-                        metadata = json.load(f)
+                    # Use thread pool for file IO
+                    app = get_app()
+                    thread_pool = getattr(app, 'plugin_thread_pool', None)
+                    
+                    if thread_pool:
+                        def read_plugin_json():
+                            with open(plugin_json, 'r', encoding='utf-8') as f:
+                                return json.load(f)
+                        metadata = await thread_pool.run_in_executor(read_plugin_json)
+                    else:
+                        with open(plugin_json, 'r', encoding='utf-8') as f:
+                            metadata = json.load(f)
                     author = metadata.get('author', 'Unknown')
                     name = metadata.get('name', plugin_name)
                     return author, name
@@ -744,7 +790,7 @@ def create_app() -> FastAPI:
             raise HTTPException(status_code=403, detail="Insufficient permissions")
         
         # Get plugin author and name
-        author, name = get_plugin_author(plugin_name)
+        author, name = await get_plugin_author(plugin_name)
         
         # Perform action
         success = False
@@ -789,9 +835,11 @@ def create_app() -> FastAPI:
             elif action.action == "reload":
                 # Reload plugin: reload from file and restart in runtime
                 if plugin_connector:
-                    await plugin_connector.reload_plugins()
-                    success = True
-                    logger.info(f"Plugin {plugin_name} reloaded")
+                    success = await plugin_connector.reload_plugin(plugin_name)
+                    if success:
+                        logger.info(f"Plugin {plugin_name} reloaded")
+                    else:
+                        raise HTTPException(status_code=500, detail=f"Failed to reload plugin {plugin_name}")
                 else:
                     raise HTTPException(status_code=500, detail="Plugin connector not available")
             
@@ -842,21 +890,39 @@ def create_app() -> FastAPI:
         created_count = 0
         failed_plugins = []
         
+        # Get thread pool for file operations
+        app = get_app()
+        thread_pool = getattr(app, 'plugin_thread_pool', None)
+        
         # Scan all plugins and update database
         if db_manager:
             plugin_base = Path(config.plugin_dir)
             if plugin_base.exists():
-                for plugin_dir in plugin_base.iterdir():
-                    if not plugin_dir.is_dir() or plugin_dir.name.startswith('.') or plugin_dir.name.startswith('_'):
-                        continue
-                    
+                # Scan directory in thread pool
+                if thread_pool:
+                    def scan_plugin_dirs():
+                        return [d for d in plugin_base.iterdir() 
+                                if d.is_dir() and not d.name.startswith('.') and not d.name.startswith('_')]
+                    plugin_dirs = await thread_pool.run_in_executor(scan_plugin_dirs)
+                else:
+                    plugin_dirs = [d for d in plugin_base.iterdir() 
+                                   if d.is_dir() and not d.name.startswith('.') and not d.name.startswith('_')]
+                
+                for plugin_dir in plugin_dirs:
                     plugin_json_file = plugin_dir / "plugin.json"
                     if not plugin_json_file.exists():
                         continue
                     
                     try:
-                        with open(plugin_json_file, 'r', encoding='utf-8') as f:
-                            plugin_metadata = json.load(f)
+                        # Read plugin.json in thread pool
+                        if thread_pool:
+                            def read_plugin_json():
+                                with open(plugin_json_file, 'r', encoding='utf-8') as f:
+                                    return json.load(f)
+                            plugin_metadata = await thread_pool.run_in_executor(read_plugin_json)
+                        else:
+                            with open(plugin_json_file, 'r', encoding='utf-8') as f:
+                                plugin_metadata = json.load(f)
                         
                         author = plugin_metadata.get('author', 'Unknown')
                         name = plugin_metadata.get('name', plugin_dir.name)
@@ -967,8 +1033,17 @@ def create_app() -> FastAPI:
         try:
             plugin_json = plugin_path / "plugin.json"
             if plugin_json.exists():
-                with open(plugin_json, 'r', encoding='utf-8') as f:
-                    plugin_metadata = json.load(f)
+                # Use thread pool for file IO
+                thread_pool = getattr(app, 'plugin_thread_pool', None)
+                
+                if thread_pool:
+                    def read_plugin_json():
+                        with open(plugin_json, 'r', encoding='utf-8') as f:
+                            return json.load(f)
+                    plugin_metadata = await thread_pool.run_in_executor(read_plugin_json)
+                else:
+                    with open(plugin_json, 'r', encoding='utf-8') as f:
+                        plugin_metadata = json.load(f)
                 author = plugin_metadata.get("author", "Unknown")
                 name = plugin_metadata.get("name", plugin_name)
                 config_schema = plugin_metadata.get("config_schema", {})
@@ -1141,16 +1216,25 @@ def create_app() -> FastAPI:
             if not plugin_json.exists():
                 raise HTTPException(status_code=400, detail="Plugin must contain plugin.json file")
             
-            # Validate and parse plugin.json
+            # Validate and parse plugin.json using thread pool
             try:
-                with open(plugin_json, 'r', encoding='utf-8') as f:
-                    plugin_metadata = json.load(f)
+                app = get_app()
+                thread_pool = getattr(app, 'plugin_thread_pool', None)
+                
+                if thread_pool:
+                    def read_plugin_json():
+                        with open(plugin_json, 'r', encoding='utf-8') as f:
+                            return json.load(f)
+                    plugin_metadata = await thread_pool.run_in_executor(read_plugin_json)
+                else:
+                    with open(plugin_json, 'r', encoding='utf-8') as f:
+                        plugin_metadata = json.load(f)
                     
-                    # Check required fields
-                    if 'name' not in plugin_metadata:
-                        raise HTTPException(status_code=400, detail="plugin.json must contain 'name' field")
-                    if 'version' not in plugin_metadata:
-                        raise HTTPException(status_code=400, detail="plugin.json must contain 'version' field")
+                # Check required fields
+                if 'name' not in plugin_metadata:
+                    raise HTTPException(status_code=400, detail="plugin.json must contain 'name' field")
+                if 'version' not in plugin_metadata:
+                    raise HTTPException(status_code=400, detail="plugin.json must contain 'version' field")
                     
                     plugin_author = plugin_metadata.get('author', 'Unknown')
                     plugin_name = plugin_metadata['name']
@@ -1259,11 +1343,20 @@ def create_app() -> FastAPI:
                 default_config = {}
                 
                 if plugin_json.exists():
-                    with open(plugin_json, 'r', encoding='utf-8') as f:
-                        plugin_data = json.load(f)
-                        author = plugin_data.get("author", "Unknown")
-                        config_schema = plugin_data.get("config_schema", {})
-                        default_config = plugin_data.get("default_config", {})
+                    # Use thread pool for file IO
+                    thread_pool = getattr(app, 'plugin_thread_pool', None)
+                    
+                    if thread_pool:
+                        def read_plugin_json():
+                            with open(plugin_json, 'r', encoding='utf-8') as f:
+                                return json.load(f)
+                        plugin_data = await thread_pool.run_in_executor(read_plugin_json)
+                    else:
+                        with open(plugin_json, 'r', encoding='utf-8') as f:
+                            plugin_data = json.load(f)
+                    author = plugin_data.get("author", "Unknown")
+                    config_schema = plugin_data.get("config_schema", {})
+                    default_config = plugin_data.get("default_config", {})
                 
                 # Get current config from database
                 setting = await app.db_manager.get_plugin_setting(author, name)
@@ -1540,10 +1633,21 @@ def create_app() -> FastAPI:
                 detail="TOML write support not available. Please install tomli-w."
             )
         
+        # Use thread pool for synchronous file IO
+        app = get_app()
+        thread_pool = getattr(app, 'plugin_thread_pool', None)
+        
         config_data = {}
         if toml_file.exists():
-            with open(toml_file, "rb") as f:
-                config_data = tomllib.load(f)
+            if thread_pool:
+                def read_toml_file():
+                    with open(toml_file, "rb") as f:
+                        return tomllib.load(f)
+                config_data = await thread_pool.run_in_executor(read_toml_file)
+            else:
+                # Fallback to sync operation if thread pool not available
+                with open(toml_file, "rb") as f:
+                    config_data = tomllib.load(f)
         
         # Ensure [onebot] section exists
         if "onebot" not in config_data:
@@ -1573,9 +1677,16 @@ def create_app() -> FastAPI:
                 env_key = key.upper()
                 os.environ[env_key] = str(value)
         
-        # Write back to TOML file
-        with open(toml_file, "wb") as f:
-            tomli_w.dump(config_data, f)
+        # Write back to TOML file using thread pool
+        if thread_pool:
+            def write_toml_file():
+                with open(toml_file, "wb") as f:
+                    tomli_w.dump(config_data, f)
+            await thread_pool.run_in_executor(write_toml_file)
+        else:
+            # Fallback to sync operation if thread pool not available
+            with open(toml_file, "wb") as f:
+                tomli_w.dump(config_data, f)
         
         logger.info("Configuration saved to config.toml", file=str(toml_file))
         
@@ -2266,7 +2377,7 @@ def create_app() -> FastAPI:
             "plugin_auto_load": config.plugin_auto_load,
             "web_ui_enabled": config.web_ui_enabled,
             "ai_thread_pool_enabled": getattr(config, 'ai_thread_pool_enabled', True),
-            "ai_thread_pool_workers": getattr(config, 'ai_thread_pool_workers', 5),
+            "plugin_thread_pool_enabled": getattr(config, 'plugin_thread_pool_enabled', True),
         }
         # Add Tencent Cloud TTS config if exists
         config_manager = get_config_manager()
@@ -2281,21 +2392,35 @@ def create_app() -> FastAPI:
             except ImportError:
                 import tomli as tomllib
             
-            with open(toml_file, "rb") as f:
-                toml_data = tomllib.load(f)
-                if "tencent_cloud" in toml_data:
-                    tencent_cloud = toml_data["tencent_cloud"]
-                    # Only return if secret_id exists (mask secret_key)
-                    if "secret_id" in tencent_cloud:
-                        tencent_config = {
-                            "secret_id": tencent_cloud.get("secret_id", ""),
-                            "secret_key_set": bool(tencent_cloud.get("secret_key", ""))  # Don't expose actual key
-                        }
-                # Load AI thread pool config
-                if "ai" in toml_data:
-                    ai_config = toml_data["ai"]
-                    safe_config["ai_thread_pool_enabled"] = ai_config.get("thread_pool_enabled", True)
-                    safe_config["ai_thread_pool_workers"] = ai_config.get("thread_pool_workers", 5)
+            # Use thread pool for synchronous file IO
+            app = get_app()
+            thread_pool = getattr(app, 'plugin_thread_pool', None)
+            
+            if thread_pool:
+                def read_toml_file():
+                    with open(toml_file, "rb") as f:
+                        return tomllib.load(f)
+                toml_data = await thread_pool.run_in_executor(read_toml_file)
+            else:
+                # Fallback to sync operation if thread pool not available
+                with open(toml_file, "rb") as f:
+                    toml_data = tomllib.load(f)
+            
+            if "tencent_cloud" in toml_data:
+                tencent_cloud = toml_data["tencent_cloud"]
+                # Only return if secret_id exists (mask secret_key)
+                if "secret_id" in tencent_cloud:
+                    tencent_config = {
+                        "secret_id": tencent_cloud.get("secret_id", ""),
+                        "secret_key_set": bool(tencent_cloud.get("secret_key", ""))  # Don't expose actual key
+                    }
+            # Load thread pool config
+            if "ai" in toml_data:
+                ai_config = toml_data["ai"]
+                safe_config["ai_thread_pool_enabled"] = ai_config.get("thread_pool_enabled", True)
+            if "plugins" in toml_data:
+                plugins_config = toml_data["plugins"]
+                safe_config["plugin_thread_pool_enabled"] = plugins_config.get("thread_pool_enabled", True)
         
         safe_config["tencent_cloud"] = tencent_config
         return safe_config
@@ -2337,7 +2462,7 @@ def create_app() -> FastAPI:
         
         # Update allowed config values
         update_data = {}
-        allowed_keys = ["web_ui_enabled", "debug", "log_level", "plugin_auto_load", "ai_thread_pool_enabled", "ai_thread_pool_workers"]
+        allowed_keys = ["web_ui_enabled", "debug", "log_level", "plugin_auto_load", "ai_thread_pool_enabled", "plugin_thread_pool_enabled"]
         for key in allowed_keys:
             if key in config_update:
                 update_data[key] = config_update[key]
@@ -2366,9 +2491,20 @@ def create_app() -> FastAPI:
                 detail="TOML write support not available. Please install tomli-w."
             )
         
+        # Use thread pool for synchronous file IO
+        app = get_app()
+        thread_pool = getattr(app, 'plugin_thread_pool', None)
+        
         if toml_file.exists():
-            with open(toml_file, "rb") as f:
-                toml_data = tomllib.load(f)
+            if thread_pool:
+                def read_toml_file():
+                    with open(toml_file, "rb") as f:
+                        return tomllib.load(f)
+                toml_data = await thread_pool.run_in_executor(read_toml_file)
+            else:
+                # Fallback to sync operation if thread pool not available
+                with open(toml_file, "rb") as f:
+                    toml_data = tomllib.load(f)
         else:
             toml_data = {}
         
@@ -2420,11 +2556,11 @@ def create_app() -> FastAPI:
                 if "ai" not in toml_data:
                     toml_data["ai"] = {}
                 toml_data["ai"]["thread_pool_enabled"] = value
-            elif key == "ai_thread_pool_workers":
-                # Save to [ai].thread_pool_workers
-                if "ai" not in toml_data:
-                    toml_data["ai"] = {}
-                toml_data["ai"]["thread_pool_workers"] = value
+            elif key == "plugin_thread_pool_enabled":
+                # Save to [plugins].thread_pool_enabled
+                if "plugins" not in toml_data:
+                    toml_data["plugins"] = {}
+                toml_data["plugins"]["thread_pool_enabled"] = value
         
         # Handle Tencent Cloud TTS config
         tencent_config = config_update.get("tencent_cloud")
@@ -2450,10 +2586,17 @@ def create_app() -> FastAPI:
                     if "TENCENT_CLOUD_SECRET_KEY" in os.environ:
                         del os.environ["TENCENT_CLOUD_SECRET_KEY"]
         
-        # Write back to TOML
+        # Write back to TOML using thread pool
         try:
-            with open(toml_file, "wb") as f:
-                tomli_w.dump(toml_data, f)
+            if thread_pool:
+                def write_toml_file():
+                    with open(toml_file, "wb") as f:
+                        tomli_w.dump(toml_data, f)
+                await thread_pool.run_in_executor(write_toml_file)
+            else:
+                # Fallback to sync operation if thread pool not available
+                with open(toml_file, "wb") as f:
+                    tomli_w.dump(toml_data, f)
         except Exception as e:
             logger.error(f"Failed to write TOML config: {e}", exc_info=True)
             raise HTTPException(
@@ -2535,9 +2678,19 @@ def create_app() -> FastAPI:
                 logger.warning("tomli-w not available, password not saved to config file")
                 # Continue without saving to file, password is already updated in memory
             else:
+                # Use thread pool for synchronous file IO
+                app = get_app()
+                thread_pool = getattr(app, 'plugin_thread_pool', None)
+                
                 if toml_file.exists():
-                    with open(toml_file, "rb") as f:
-                        toml_data = tomllib.load(f)
+                    if thread_pool:
+                        def read_toml_file():
+                            with open(toml_file, "rb") as f:
+                                return tomllib.load(f)
+                        toml_data = await thread_pool.run_in_executor(read_toml_file)
+                    else:
+                        with open(toml_file, "rb") as f:
+                            toml_data = tomllib.load(f)
                 else:
                     toml_data = {}
                 
@@ -2547,8 +2700,15 @@ def create_app() -> FastAPI:
                 
                 toml_data["web_ui"]["password"] = new_password
                 
-                with open(toml_file, "wb") as f:
-                    tomli_w.dump(toml_data, f)
+                # Write back using thread pool
+                if thread_pool:
+                    def write_toml_file():
+                        with open(toml_file, "wb") as f:
+                            tomli_w.dump(toml_data, f)
+                    await thread_pool.run_in_executor(write_toml_file)
+                else:
+                    with open(toml_file, "wb") as f:
+                        tomli_w.dump(toml_data, f)
                 
                 reload_config()
             

@@ -12,9 +12,7 @@ interface SystemConfig {
   plugin_auto_load: boolean
   web_ui_enabled: boolean
   ai_thread_pool_enabled?: boolean
-  ai_thread_pool_workers?: number
   plugin_thread_pool_enabled?: boolean
-  plugin_thread_pool_workers?: number
   tencent_cloud?: {
     secret_id?: string
     secret_key_set?: boolean
@@ -44,11 +42,9 @@ export default function SystemPage() {
   
   // AI Thread Pool config
   const [aiThreadPoolEnabled, setAiThreadPoolEnabled] = useState(true)
-  const [aiThreadPoolWorkers, setAiThreadPoolWorkers] = useState(5)
   
   // Plugin Thread Pool config
   const [pluginThreadPoolEnabled, setPluginThreadPoolEnabled] = useState(true)
-  const [pluginThreadPoolWorkers, setPluginThreadPoolWorkers] = useState(3)
 
   useEffect(() => {
     loadConfig()
@@ -66,10 +62,8 @@ export default function SystemPage() {
       }
       // Load AI Thread Pool config
       setAiThreadPoolEnabled(data.ai_thread_pool_enabled !== undefined ? data.ai_thread_pool_enabled : true)
-      setAiThreadPoolWorkers(data.ai_thread_pool_workers || 5)
       // Load Plugin Thread Pool config
       setPluginThreadPoolEnabled(data.plugin_thread_pool_enabled !== undefined ? data.plugin_thread_pool_enabled : true)
-      setPluginThreadPoolWorkers(data.plugin_thread_pool_workers || 3)
     } catch (error) {
       console.error('Failed to load system config:', error)
     } finally {
@@ -91,9 +85,7 @@ export default function SystemPage() {
         debug: config.debug,
         log_level: config.log_level,
         ai_thread_pool_enabled: aiThreadPoolEnabled,
-        ai_thread_pool_workers: aiThreadPoolWorkers,
         plugin_thread_pool_enabled: pluginThreadPoolEnabled,
-        plugin_thread_pool_workers: pluginThreadPoolWorkers,
       }
       
       // Include Tencent Cloud config if provided
@@ -258,10 +250,10 @@ export default function SystemPage() {
           <h3 className="text-sm font-medium text-gray-900 mb-3">AI多线程处理</h3>
           
           {/* Thread Pool Enabled */}
-          <div className="flex items-center justify-between py-3 border-b border-gray-100">
+          <div className="flex items-center justify-between py-3">
             <div>
               <label className="text-sm font-medium text-gray-900">启用多线程处理</label>
-              <p className="text-xs text-gray-500 mt-1">启用后，AI消息处理将使用线程池，支持多群并发处理，避免卡死</p>
+              <p className="text-xs text-gray-500 mt-1">启用后，AI消息处理将使用线程池，支持多群并发处理，避免卡死。线程数由系统自动管理。</p>
             </div>
             <button
               type="button"
@@ -276,27 +268,6 @@ export default function SystemPage() {
               />
             </button>
           </div>
-
-          {/* Thread Pool Workers */}
-          {aiThreadPoolEnabled && (
-            <div className="mt-3">
-              <label className="label">AI 线程池大小</label>
-              <div className="flex items-center gap-3">
-                <input
-                  type="range"
-                  min="1"
-                  max="20"
-                  value={aiThreadPoolWorkers}
-                  onChange={(e) => setAiThreadPoolWorkers(parseInt(e.target.value))}
-                  className="flex-1"
-                />
-                <span className="text-sm font-medium w-12 text-right">{aiThreadPoolWorkers}</span>
-              </div>
-              <p className="text-xs text-gray-500 mt-1">
-                控制 AI 消息处理线程池的工作线程数量（1-20，默认5）。值越大，并发处理能力越强，但也会消耗更多资源。
-              </p>
-            </div>
-          )}
         </div>
 
         {/* Plugin Thread Pool Settings */}
@@ -304,10 +275,10 @@ export default function SystemPage() {
           <h3 className="text-sm font-medium text-gray-900 mb-3">框架连接器多线程处理</h3>
           
           {/* Plugin Thread Pool Enabled */}
-          <div className="flex items-center justify-between py-3 border-b border-gray-100">
+          <div className="flex items-center justify-between py-3">
             <div>
               <label className="text-sm font-medium text-gray-900">启用框架连接器线程池</label>
-              <p className="text-xs text-gray-500 mt-1">启用后，框架层面的插件管理操作（插件加载、配置读写、进程通信等）将在独立线程池中执行，避免阻塞主事件循环</p>
+              <p className="text-xs text-gray-500 mt-1">启用后，框架层面的插件管理操作（插件加载、配置读写、进程通信等）将在独立线程池中执行，避免阻塞主事件循环。线程数由系统自动管理。</p>
             </div>
             <button
               type="button"
@@ -322,27 +293,6 @@ export default function SystemPage() {
               />
             </button>
           </div>
-
-          {/* Plugin Thread Pool Workers */}
-          {pluginThreadPoolEnabled && (
-            <div className="mt-3">
-              <label className="label">框架连接器线程池大小</label>
-              <div className="flex items-center gap-3">
-                <input
-                  type="range"
-                  min="1"
-                  max="10"
-                  value={pluginThreadPoolWorkers}
-                  onChange={(e) => setPluginThreadPoolWorkers(parseInt(e.target.value))}
-                  className="flex-1"
-                />
-                <span className="text-sm font-medium w-12 text-right">{pluginThreadPoolWorkers}</span>
-              </div>
-              <p className="text-xs text-gray-500 mt-1">
-                控制框架连接器线程池的工作线程数量（1-10，默认3）。用于框架层面的插件管理操作，如插件加载、配置读写、进程通信等。注意：插件内部的操作使用插件自己的线程池。
-              </p>
-            </div>
-          )}
         </div>
 
         <button

@@ -13,12 +13,12 @@ logger = get_logger(__name__)
 class PluginThreadPoolManager:
     """Thread pool manager for plugin operations."""
     
-    def __init__(self, max_workers: int = 3):
+    def __init__(self, max_workers: Optional[int] = None):
         """
         Initialize plugin thread pool manager.
         
         Args:
-            max_workers: Maximum number of worker threads (default: 3)
+            max_workers: Maximum number of worker threads (default: None, uses system default)
         """
         self.max_workers = max_workers
         self._executor: Optional[ThreadPoolExecutor] = None
@@ -42,7 +42,8 @@ class PluginThreadPoolManager:
                 )
                 self._initialized = True
                 self._init_time = time.time()
-                logger.info(f"Plugin thread pool initialized with {self.max_workers} workers")
+                worker_info = f"{self.max_workers} workers" if self.max_workers else "system-managed workers"
+                logger.info(f"Plugin thread pool initialized with {worker_info}")
     
     def shutdown(self, wait: bool = True):
         """Shutdown the thread pool executor."""
@@ -91,8 +92,15 @@ class PluginThreadPoolManager:
         """Get thread pool statistics."""
         with self._lock:
             uptime = time.time() - self._init_time if self._init_time else 0
+            # Get actual worker count from the executor
+            actual_workers = self.max_workers
+            if actual_workers is None and self._executor:
+                # When max_workers is None, ThreadPoolExecutor uses: min(32, (os.cpu_count() or 1) + 4)
+                import os
+                actual_workers = min(32, (os.cpu_count() or 1) + 4)
             return {
-                "max_workers": self.max_workers,
+                "max_workers": actual_workers or 0,
+                "max_workers_auto": self.max_workers is None,
                 "initialized": self._initialized,
                 "total_tasks": self._total_tasks,
                 "completed_tasks": self._completed_tasks,
@@ -112,7 +120,7 @@ class PluginThreadPoolManager:
 _plugin_thread_pool_manager: Optional[PluginThreadPoolManager] = None
 
 
-def get_plugin_thread_pool_manager(max_workers: int = 3) -> PluginThreadPoolManager:
+def get_plugin_thread_pool_manager(max_workers: Optional[int] = None) -> PluginThreadPoolManager:
     """Get or create the global plugin thread pool manager."""
     global _plugin_thread_pool_manager
     if _plugin_thread_pool_manager is None:

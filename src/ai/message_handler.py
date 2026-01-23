@@ -327,12 +327,9 @@ class AIMessageHandler:
         await self.ai_manager.initialize()
         
         # Initialize thread pool for blocking operations
-        # Get max_workers from config (default: 5)
-        from ..core.config import get_config
-        config = get_config()
-        max_workers = getattr(config, 'ai_thread_pool_workers', 5)
-        self.thread_pool = get_thread_pool_manager(max_workers=max_workers)
-        logger.info(f"Thread pool initialized with {max_workers} workers for AI processing")
+        # Thread pool uses system-managed worker count
+        self.thread_pool = get_thread_pool_manager()
+        logger.info("Thread pool initialized with system-managed workers for AI processing")
         
         # Subscribe to message events (subscribe is not async)
         self.event_bus.subscribe("onebot.message", self.handle_message)

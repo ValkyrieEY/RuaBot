@@ -72,11 +72,9 @@ class Config(BaseSettings):
     
     # AI Thread Pool
     ai_thread_pool_enabled: bool = Field(default=True, alias="AI_THREAD_POOL_ENABLED")
-    ai_thread_pool_workers: int = Field(default=5, alias="AI_THREAD_POOL_WORKERS")
     
     # Plugin Thread Pool
     plugin_thread_pool_enabled: bool = Field(default=True, alias="PLUGIN_THREAD_POOL_ENABLED")
-    plugin_thread_pool_workers: int = Field(default=3, alias="PLUGIN_THREAD_POOL_WORKERS")
 
     model_config = SettingsConfigDict(
         env_file=".env",

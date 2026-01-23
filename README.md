@@ -30,7 +30,7 @@
 - [项目介绍](docs/project-introduction.md) - 项目概述、架构设计、核心概念
 - [系统架构](docs/architecture.md) - 系统架构、工作流程、核心机制
 - [安装配置](docs/installation.md) - 环境要求、安装步骤、配置说明
-- [插件开发](docs/plugin-development.md) - 插件开发指南、API 参考、示例
+- [插件开发](docs/plugin/README.md.md) - 插件开发指南、API 参考、示例
 - [AI 功能](docs/ai-features.md) - AI 系统介绍、配置说明、高级功能
 
 ## 许可证

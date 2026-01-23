@@ -36,7 +36,7 @@
 
 ### 开发文档
 
-- [插件开发指南](plugin-development.md)
+- [插件开发指南](plugin/README.md.md)
   - 插件基础
   - 开发流程
   - API 参考

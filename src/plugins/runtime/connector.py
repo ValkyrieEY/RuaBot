@@ -518,8 +518,17 @@ class PluginRuntimeConnector:
                     plugin_json = plugin_path / "plugin.json"
                     if plugin_json.exists():
                         import json
-                        with open(plugin_json, 'r', encoding='utf-8') as f:
-                            metadata = json.load(f)
+                        # Use thread pool for synchronous file IO
+                        thread_pool = getattr(self.app, 'plugin_thread_pool', None)
+                        if thread_pool:
+                            def read_plugin_json():
+                                with open(plugin_json, 'r', encoding='utf-8') as f:
+                                    return json.load(f)
+                            metadata = await thread_pool.run_in_executor(read_plugin_json)
+                        else:
+                            # Fallback to sync operation if thread pool not available
+                            with open(plugin_json, 'r', encoding='utf-8') as f:
+                                metadata = json.load(f)
                         author = metadata.get('author', 'Unknown')
                         name = plugin_name
                     else:
@@ -548,10 +557,7 @@ class PluginRuntimeConnector:
             return True
         except Exception as e:
             logger.error(f"Failed to reload plugin {plugin_name}: {e}", exc_info=True)
-            # Fallback to reload all plugins
-            logger.warning(f"Falling back to reload all plugins")
-            await self.reload_plugins()
-            return True
+            return False
     
     async def reload_plugins(self):
         """Reload all plugins from database.

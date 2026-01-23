@@ -94,9 +94,8 @@ class Application:
         if getattr(self.config, 'plugin_thread_pool_enabled', True):
             try:
                 from ..plugins.thread_pool import get_plugin_thread_pool_manager
-                max_workers = getattr(self.config, 'plugin_thread_pool_workers', 3)
-                self.plugin_thread_pool = get_plugin_thread_pool_manager(max_workers=max_workers)
-                logger.info(f"Plugin thread pool initialized with {max_workers} workers")
+                self.plugin_thread_pool = get_plugin_thread_pool_manager()
+                logger.info("Plugin thread pool initialized with system-managed workers")
             except Exception as e:
                 logger.warning(f"Failed to initialize plugin thread pool: {e}")
 

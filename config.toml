@@ -37,7 +37,6 @@ file = "logs/onebot_framework.log"
 dir = "./plugins"
 auto_load = true
 thread_pool_enabled = true
-thread_pool_workers = 3
 
 [web_ui]
 enabled = true
@@ -50,4 +49,3 @@ secret_key = ""
 
 [ai]
 thread_pool_enabled = true
-thread_pool_workers = 5

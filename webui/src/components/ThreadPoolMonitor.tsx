@@ -5,6 +5,7 @@ import { Activity, Zap, CheckCircle, XCircle, Clock } from 'lucide-react'
 
 interface ThreadPoolStats {
   max_workers: number
+  max_workers_auto?: boolean
   initialized: boolean
   total_tasks: number
   completed_tasks: number
@@ -137,7 +138,12 @@ export const ThreadPoolMonitor: React.FC<ThreadPoolMonitorProps> = ({
             <Zap className="w-4 h-4 text-blue-600" />
             <span className="text-xs text-gray-600">工作线程</span>
           </div>
-          <div className="text-xl font-bold text-gray-900">{stats.max_workers}</div>
+          <div className="flex items-center gap-1">
+            <div className="text-xl font-bold text-gray-900">{stats.max_workers || 'N/A'}</div>
+            {stats.max_workers_auto && (
+              <span className="text-xs text-blue-600 font-medium">自动</span>
+            )}
+          </div>
         </div>
 
         <div className="bg-orange-50 rounded-lg p-3">

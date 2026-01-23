@@ -1,8 +1,8 @@
 {
   "name": "kawaii_status",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "author": "XQNEXT",
-  "description": "服务器状态查看插件，显示 CPU、内存、磁盘等信息",
+  "description": "服务器状态查看插件，显示 CPU、内存、磁盘等信息（已接入线程池，支持高并发）",
   "entry": "main.py",
   "dependencies": [
     {

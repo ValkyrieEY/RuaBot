@@ -1,145 +1,145 @@
-# Advanced Features
+# 高级特性
 
-{ [Chinese](07-advanced-features_CN.md) | English }
+{ Chinese | [English](07-advanced-features.md) }
 
-> **Doc Version**: v2.0
-> **Last Updated**: 2026-01-23
-> **Difficulty**: Advanced
+> **文档版本**: v2.0  
+> **更新日期**: 2026-01-23  
+> **难度等级**: 高级
 
-## Event System
+## 事件系统
 
-### Event Types
+### 事件类型
 
-| Event Name | Timing | Data Format |
-|------------|--------|-------------|
-| `onebot.message` | Receive Message | OneBot Message Event |
-| `onebot.notice` | Receive Notice | OneBot Notice Event |
-| `onebot.request` | Receive Request | OneBot Request Event |
-| `plugin.<name>.*` | Plugin Custom Event | Custom |
+| 事件名 | 触发时机 | 数据格式 |
+|--------|----------|----------|
+| `onebot.message` | 收到消息 | OneBot 消息事件 |
+| `onebot.notice` | 收到通知 | OneBot 通知事件 |
+| `onebot.request` | 收到请求 | OneBot 请求事件 |
+| `plugin.<name>.*` | 插件自定义事件 | 自定义 |
 
-### Emitting Custom Events
+### 发送自定义事件
 
 ```python
-# Plugin A emits event
+# 插件 A 发送事件
 await self.api.emit_event('user_banned', {
     'user_id': 789,
     'group_id': 123456,
-    'reason': 'Violation'
+    'reason': '违规'
 })
 
-# Plugin B listens event
+# 插件 B 监听事件
 async def on_event(self, event_name, data):
     if event_name == 'plugin.plugin_a.user_banned':
         user_id = data['user_id']
-        # Handle event
+        # 处理事件
 ```
 
 ---
 
-## Async Programming Best Practices
+## 异步编程最佳实践
 
-### 1. Correct Use of async/await
+### 1. 正确使用 async/await
 
 ```python
-#  Correct
+#  正确
 async def fetch_data(self):
     async with aiohttp.ClientSession() as session:
         async with session.get(url) as response:
             return await response.json()
 
-#  Incorrect: Forgot await
+#  错误：忘记 await
 async def fetch_data(self):
     async with aiohttp.ClientSession() as session:
         async with session.get(url) as response:
-            return response.json()  # Returns coroutine, not data!
+            return response.json()  # 返回的是 coroutine，不是数据！
 ```
 
-### 2. Concurrent Execution of Multiple Tasks
+### 2. 并发执行多个任务
 
 ```python
 import asyncio
 
 async def process_multiple_users(self, user_ids):
-    """Concurrent processing of multiple users"""
+    """并发处理多个用户"""
     tasks = [self.process_user(uid) for uid in user_ids]
     results = await asyncio.gather(*tasks)
     return results
 ```
 
-### 3. Periodic Tasks
+### 3. 定时任务
 
 ```python
 class MyPlugin:
     async def on_load(self):
-        """Start periodic task"""
+        """启动定时任务"""
         asyncio.create_task(self._periodic_task())
     
     async def _periodic_task(self):
-        """Task executed every hour"""
+        """每小时执行一次的任务"""
         while True:
             try:
                 await self._do_work()
             except Exception as e:
-                self.api.log("error", f"Periodic task error: {e}")
+                self.api.log("error", f"定时任务出错: {e}")
             
-            # Wait 1 hour
+            # 等待1小时
             await asyncio.sleep(3600)
 ```
 
 ---
 
-## Error Handling
+## 错误处理
 
-### 1. Catching Exceptions
+### 1. 捕获异常
 
 ```python
 async def handle_message(self, event):
     try:
-        # Your code
+        # 你的代码
         result = await self.process(event)
     except ValueError as e:
-        # Handle specific exception
-        self.api.log("warning", f"Input error: {e}")
-        await self.send_error_message(event, "Input format error")
+        # 处理特定异常
+        self.api.log("warning", f"输入错误: {e}")
+        await self.send_error_message(event, "输入格式错误")
     except Exception as e:
-        # Handle unknown exception
-        self.api.log("error", f"Processing failed: {e}")
-        await self.send_error_message(event, "Processing failed, please try again later")
+        # 处理未知异常
+        self.api.log("error", f"处理失败: {e}")
+        await self.send_error_message(event, "处理失败，请稍后重试")
 ```
 
-### 2. Timeout Control
+### 2. 超时控制
 
 ```python
 import asyncio
 
 async def call_api_with_timeout(self, url):
-    """API call with timeout"""
+    """带超时的 API 调用"""
     try:
-        async with asyncio.timeout(10.0):  # 10 seconds timeout
+        async with asyncio.timeout(10.0):  # 10秒超时
             return await self.call_api(url)
     except asyncio.TimeoutError:
-        self.api.log("error", "API Call Timeout")
+        self.api.log("error", "API 调用超时")
         return None
 ```
 
-### 3. Retry Mechanism
+### 3. 重试机制
 
 ```python
 async def call_api_with_retry(self, action, params, max_retry=3):
-    """API call with retry"""
+    """带重试的 API 调用"""
     for attempt in range(max_retry):
         try:
             result = await self.api.call_api(action, params)
             if result['success']:
                 return result
             
-            # Failed but no exception, retry after wait
+            # 失败但没有异常，等待后重试
             if attempt < max_retry - 1:
-                wait_time = 2 ** attempt  # Exponential backoff
-                self.api.log("warning", f"API call failed, retrying in {wait_time}s")
+                wait_time = 2 ** attempt  # 指数退避
+                self.api.log("warning", f"API 调用失败，{wait_time}秒后重试")
                 await asyncio.sleep(wait_time)
         except Exception as e:
-            self.api.log("error", f"API call exception: {e}")
+            self.api.log("error", f"API 调用异常: {e}")
             if attempt < max_retry - 1:
                 await asyncio.sleep(2 ** attempt)
     
@@ -148,17 +148,17 @@ async def call_api_with_retry(self, action, params, max_retry=3):
 
 ---
 
-## Performance Optimization
+## 性能优化
 
-### 1. Reduce Database Access
+### 1. 减少数据库访问
 
 ```python
-#  Read database every time
+#  每次都读数据库
 async def is_admin(self, user_id):
     config = await self.api.get_config()
     return user_id in config.get('admins', [])
 
-#  Cache in memory
+#  缓存到内存
 class MyPlugin:
     def __init__(self, api, config):
         self.admins = set(config.get('admins', []))
@@ -167,15 +167,15 @@ class MyPlugin:
         return user_id in self.admins
 ```
 
-### 2. Batch Operations
+### 2. 批量操作
 
 ```python
-#  Send one by one
+#  逐个发送
 for user_id in user_ids:
     await self.api.send_private_msg(user_id, message)
-    await asyncio.sleep(1)  # Avoid rate limit
+    await asyncio.sleep(1)  # 避免限流
 
-#  Concurrent sending
+#  并发发送
 tasks = [
     self.api.send_private_msg(uid, message)
     for uid in user_ids
@@ -185,13 +185,13 @@ await asyncio.gather(*tasks)
 
 ---
 
-## Security
+## 安全性
 
-### 1. Input Validation
+### 1. 输入验证
 
 ```python
 def validate_qq_number(self, qq: str) -> bool:
-    """Validate QQ number format"""
+    """验证 QQ 号格式"""
     if not qq.isdigit():
         return False
     qq_num = int(qq)
@@ -200,33 +200,33 @@ def validate_qq_number(self, qq: str) -> bool:
 async def handle_command(self, message):
     qq = message.split()[1]
     if not self.validate_qq_number(qq):
-        return "QQ number format error"
+        return "QQ号格式错误"
 ```
 
-### 2. Permission Check
+### 2. 权限检查
 
 ```python
 async def handle_admin_command(self, event):
-    """Handle admin command"""
+    """处理管理员命令"""
     user_id = event['user_id']
     
-    # Check if admin
+    # 检查是否是管理员
     if user_id not in self.admins:
         await self.api.send_group_msg(
             event['group_id'],
-            " Permission denied"
+            " 权限不足"
         )
         return
     
-    # Execute admin action
+    # 执行管理员操作
     await self.do_admin_action(event)
 ```
 
 ---
 
-## Testing
+## 测试
 
-### Unit Test Example
+### 单元测试示例
 
 ```python
 import unittest
@@ -234,7 +234,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 class TestMyPlugin(unittest.IAsyncioTestCase):
     async def asyncSetUp(self):
-        """Test Initialization"""
+        """测试初始化"""
         self.api = MagicMock()
         self.api.log = MagicMock()
         self.api.send_group_msg = AsyncMock(return_value={'success': True})
@@ -248,7 +248,7 @@ class TestMyPlugin(unittest.IAsyncioTestCase):
         await self.plugin.on_load()
     
     async def test_handle_message(self):
-        """Test Message Handling"""
+        """测试消息处理"""
         event = {
             'message_type': 'group',
             'group_id': 123456,
@@ -257,12 +257,11 @@ class TestMyPlugin(unittest.IAsyncioTestCase):
         
         await self.plugin.handle_message(event)
         
-        # Verify if send_group_msg called
+        # 验证是否调用了 send_group_msg
         self.api.send_group_msg.assert_called_once()
 ```
 
 ---
 
-**Previous**: [← Frontend UI Integration](06-ui-integration.md)  
-**Next**: [Best Practices & Examples →](08-best-practices.md)
-
+**上一篇**: [← 前端 UI 集成](06-ui-integration_CN.md)  
+**下一篇**: [最佳实践与示例 →](08-best-practices_CN.md)

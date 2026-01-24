@@ -1,13 +1,13 @@
-# XQNEXT Framework Dockerfile (优化版 - 支持国内镜像源)
-# Multi-stage build for optimal image size and faster builds
+# XQNEXT Framework Dockerfile (国内加速版)
+# 使用国内镜像源，构建速度更快
 
 # Stage 1: Build frontend
 FROM node:20-alpine AS frontend-builder
 
 WORKDIR /build/webui
 
-# 使用淘宝 npm 镜像加速（可选，如果在国内）
-# RUN npm config set registry https://registry.npmmirror.com
+# 使用淘宝 npm 镜像加速
+RUN npm config set registry https://registry.npmmirror.com
 
 # Copy package files
 COPY webui/package*.json ./
@@ -36,9 +36,8 @@ RUN apt-get update && apt-get install -y \
 # Copy requirements file
 COPY requirements.txt ./
 
-# 使用清华 pip 镜像加速（可选，如果在国内）
-# 取消下面这行的注释来启用国内镜像
-# RUN pip config set global.index-url https://pypi.tuna.tsinghua.edu.cn/simple
+# 使用清华 pip 镜像加速
+RUN pip config set global.index-url https://pypi.tuna.tsinghua.edu.cn/simple
 
 # Install Python dependencies
 RUN pip install --no-cache-dir --upgrade pip \
@@ -91,3 +90,4 @@ EXPOSE 8000 8080
 
 # Run the application
 CMD ["python", "-m", "src.main"]
+

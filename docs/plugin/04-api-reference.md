@@ -1,44 +1,46 @@
-# 插件 API 参考
+# Plugin API Reference
 
-> **文档版本**: v2.0  
-> **更新日期**: 2026-01-23  
-> **难度等级**: 中级
-> **阅读时间**: 30 分钟
+{ [Chinese](04-api-reference_CN.md) | English }
 
-## 文档导航
+> **Doc Version**: v2.0
+> **Last Updated**: 2026-01-23
+> **Difficulty**: Intermediate
+> **Read Time**: 30 Minutes
 
-1. [插件系统概述](01-overview.md)
-2. [快速开始](02-quickstart.md)
-3. [插件系统架构](03-architecture.md)
-4. **[插件 API 参考](04-api-reference.md)** ← 当前文档
-5. [OneBot API 使用](05-onebot-guide.md)
-6. [配置与数据管理](06-config-data.md)
-7. [前端 UI 集成](07-ui-integration.md)
-8. [高级特性](08-advanced-features.md)
-9. [最佳实践与示例](09-best-practices.md)
+## Document Navigation
 
----
-
-## API 概览
-
-PluginAPI 提供以下分类的方法：
-
-| 分类 | 说明 | 方法数 |
-|------|------|--------|
-| [消息API](#消息-api) | 发送消息、图片、语音等 | 10+ |
-| [OneBot API](#onebot-api) | 调用任意 OneBot API | 40+ |
-| [配置API](#配置-api) | 读写插件配置 | 2 |
-| [存储API](#存储-api) | 二进制数据持久化 | 4 |
-| [事件API](#事件-api) | 发送自定义事件 | 1 |
-| [工具API](#工具-api) | 日志、获取插件信息 | 2 |
+1. [Plugin System Overview](01-overview.md)
+2. [Quick Start](02-quickstart.md)
+3. [Plugin System Architecture](03-architecture.md)
+4. **[Plugin API Reference](04-api-reference.md)** ← Current
+5. [OneBot API Guide](05-onebot-guide.md)
+6. [Configuration & Data Management](06-config-data.md)
+7. [Frontend UI Integration](07-ui-integration.md)
+8. [Advanced Features](08-advanced-features.md)
+9. [Best Practices & Examples](09-best-practices.md)
 
 ---
 
-## 消息 API
+## API Overview
+
+PluginAPI provides methods in the following categories:
+
+| Category | Description | Methods |
+|----------|-------------|---------|
+| [Message API](#message-api) | Send message, image, voice, etc. | 10+ |
+| [OneBot API](#onebot-api) | Call arbitrary OneBot API | 40+ |
+| [Config API](#config-api) | Read/Write plugin config | 2 |
+| [Storage API](#storage-api) | Binary data persistence | 4 |
+| [Event API](#event-api) | Emit custom events | 1 |
+| [Utility API](#utility-api) | Log, Get plugin info | 2 |
+
+---
+
+## Message API
 
 ### send_message()
 
-发送消息（通用方法）。
+Send message (Generic method).
 
 ```python
 async def send_message(
@@ -49,44 +51,44 @@ async def send_message(
 ) -> Dict[str, Any]
 ```
 
-**参数：**
+**Parameters:**
 
-| 参数 | 类型 | 说明 | 必需 |
-|------|------|------|------|
-| `message_type` | str | 消息类型：`'private'` 或 `'group'` |  |
-| `target_id` | int | 目标 ID（QQ 号或群号） |  |
-| `message` | str | 消息内容（支持 CQ 码） |  |
-| `auto_escape` | bool | 是否转义 CQ 码（默认 False） |  |
+| Parameter | Type | Description | Required |
+|-----------|------|-------------|----------|
+| `message_type` | str | Message Type: `'private'` or `'group'` | Yes |
+| `target_id` | int | Target ID (QQ ID or Group ID) | Yes |
+| `message` | str | Message Content (Support CQ Code) | Yes |
+| `auto_escape` | bool | Auto Escape CQ Code (Default False) | No |
 
-**返回值：**
+**Returns:**
 
 ```python
 {
-  'success': True,          # 是否成功
+  'success': True,          # Success or not
   'data': {
-    'message_id': 12345     # 消息 ID
+    'message_id': 12345     # Message ID
   }
 }
 ```
 
-**示例：**
+**Example:**
 
 ```python
-# 发送群消息
-result = await api.send_message('group', 123456, '你好')
+# Send group message
+result = await api.send_message('group', 123456, 'Hello')
 
-# 发送私聊消息
-result = await api.send_message('private', 789, '你好')
+# Send private message
+result = await api.send_message('private', 789, 'Hello')
 
-# 发送带 CQ 码的消息
-result = await api.send_message('group', 123456, '[CQ:at,qq=789]你好')
+# Send message with CQ Code
+result = await api.send_message('group', 123456, '[CQ:at,qq=789]Hello')
 ```
 
 ---
 
 ### send_group_msg()
 
-发送群消息（快捷方法）。
+Send group message (Shortcut).
 
 ```python
 async def send_group_msg(
@@ -96,35 +98,35 @@ async def send_group_msg(
 ) -> Dict[str, Any]
 ```
 
-**参数：**
+**Parameters:**
 
-| 参数 | 类型 | 说明 | 必需 |
-|------|------|------|------|
-| `group_id` | int | 群号 |  |
-| `message` | str | 消息内容（支持 CQ 码） |  |
-| `auto_escape` | bool | 是否转义 CQ 码（默认 False） |  |
+| Parameter | Type | Description | Required |
+|-----------|------|-------------|----------|
+| `group_id` | int | Group ID | Yes |
+| `message` | str | Message Content (Support CQ Code) | Yes |
+| `auto_escape` | bool | Auto Escape CQ Code (Default False) | No |
 
-**示例：**
+**Example:**
 
 ```python
-# 发送纯文本
-await api.send_group_msg(123456, '你好世界')
+# Send text
+await api.send_group_msg(123456, 'Hello World')
 
-# 发送图片
+# Send image
 await api.send_group_msg(123456, '[CQ:image,file=https://example.com/image.jpg]')
 
-# @ 某人
-await api.send_group_msg(123456, '[CQ:at,qq=789]你好')
+# At someone
+await api.send_group_msg(123456, '[CQ:at,qq=789]Hello')
 
-# 回复某条消息
-await api.send_group_msg(123456, '[CQ:reply,id=12345]收到')
+# Reply to a message
+await api.send_group_msg(123456, '[CQ:reply,id=12345]Received')
 ```
 
 ---
 
 ### send_private_msg()
 
-发送私聊消息（快捷方法）。
+Send private message (Shortcut).
 
 ```python
 async def send_private_msg(
@@ -134,21 +136,21 @@ async def send_private_msg(
 ) -> Dict[str, Any]
 ```
 
-**参数：**
+**Parameters:**
 
-| 参数 | 类型 | 说明 | 必需 |
-|------|------|------|------|
-| `user_id` | int | QQ 号 |  |
-| `message` | str | 消息内容（支持 CQ 码） |  |
-| `auto_escape` | bool | 是否转义 CQ 码（默认 False） |  |
+| Parameter | Type | Description | Required |
+|-----------|------|-------------|----------|
+| `user_id` | int | QQ ID | Yes |
+| `message` | str | Message Content (Support CQ Code) | Yes |
+| `auto_escape` | bool | Auto Escape CQ Code (Default False) | No |
 
-**示例：**
+**Example:**
 
 ```python
-# 发送纯文本
-await api.send_private_msg(789, '你好')
+# Send text
+await api.send_private_msg(789, 'Hello')
 
-# 发送图片
+# Send image
 await api.send_private_msg(789, '[CQ:image,file=xxx.jpg]')
 ```
 
@@ -156,7 +158,7 @@ await api.send_private_msg(789, '[CQ:image,file=xxx.jpg]')
 
 ### send_forward_msg()
 
-发送合并转发消息。
+Send merged forward message.
 
 ```python
 async def send_forward_msg(
@@ -166,54 +168,54 @@ async def send_forward_msg(
 ) -> Dict[str, Any]
 ```
 
-**参数：**
+**Parameters:**
 
-| 参数 | 类型 | 说明 | 必需 |
-|------|------|------|------|
-| `message_type` | str | 消息类型：`'private'` 或 `'group'` |  |
-| `target_id` | int | 目标 ID |  |
-| `nodes` | List[Dict] | 转发节点列表 |  |
+| Parameter | Type | Description | Required |
+|-----------|------|-------------|----------|
+| `message_type` | str | Message Type: `'private'` or `'group'` | Yes |
+| `target_id` | int | Target ID | Yes |
+| `nodes` | List[Dict] | Forward Nodes List | Yes |
 
-**节点格式：**
+**Node Format:**
 
 ```python
 {
   "type": "node",
   "data": {
-    "name": "发送者名称",    # 显示的昵称
-    "uin": "10001",        # 显示的 QQ 号
-    "content": "消息内容"   # 消息内容（支持CQ码）
+    "name": "Sender Name",    # Display Nickname
+    "uin": "10001",           # Display QQ ID
+    "content": "Message"      # Message Content (Support CQ Code)
   }
 }
 ```
 
-**示例：**
+**Example:**
 
 ```python
-# 创建节点列表
+# Create node list
 nodes = [
     {
         "type": "node",
         "data": {
-            "name": "小明",
+            "name": "Alice",
             "uin": "10001",
-            "content": "今天天气真好"
+            "content": "Nice weather today"
         }
     },
     {
         "type": "node",
         "data": {
-            "name": "小红",
+            "name": "Bob",
             "uin": "10002",
-            "content": "是啊，我们去爬山吧"
+            "content": "Yeah, let's go hiking"
         }
     }
 ]
 
-# 发送到群
+# Send to group
 await api.send_forward_msg('group', 123456, nodes)
 
-# 发送到私聊
+# Send to private
 await api.send_forward_msg('private', 789, nodes)
 ```
 
@@ -221,7 +223,7 @@ await api.send_forward_msg('private', 789, nodes)
 
 ### send_group_forward_msg()
 
-发送群合并转发（快捷方法）。
+Send group merged forward message (Shortcut).
 
 ```python
 async def send_group_forward_msg(
@@ -234,7 +236,7 @@ async def send_group_forward_msg(
 
 ### send_private_forward_msg()
 
-发送私聊合并转发（快捷方法）。
+Send private merged forward message (Shortcut).
 
 ```python
 async def send_private_forward_msg(
@@ -247,26 +249,26 @@ async def send_private_forward_msg(
 
 ### delete_msg()
 
-撤回消息。
+Recall a message.
 
 ```python
 async def delete_msg(message_id: int) -> Dict[str, Any]
 ```
 
-**参数：**
+**Parameters:**
 
-| 参数 | 类型 | 说明 | 必需 |
-|------|------|------|------|
-| `message_id` | int | 消息 ID |  |
+| Parameter | Type | Description | Required |
+|-----------|------|-------------|----------|
+| `message_id` | int | Message ID | Yes |
 
-**示例：**
+**Example:**
 
 ```python
-# 发送消息
-result = await api.send_group_msg(123456, '这是一条测试消息')
+# Send message
+result = await api.send_group_msg(123456, 'Test Message')
 message_id = result['data']['message_id']
 
-# 撤回消息
+# Recall message
 await api.delete_msg(message_id)
 ```
 
@@ -274,13 +276,13 @@ await api.delete_msg(message_id)
 
 ### get_msg()
 
-获取消息详情。
+Get message details.
 
 ```python
 async def get_msg(message_id: int) -> Dict[str, Any]
 ```
 
-**返回值：**
+**Returns:**
 
 ```python
 {
@@ -292,10 +294,10 @@ async def get_msg(message_id: int) -> Dict[str, Any]
     'real_id': 12345,
     'sender': {
       'user_id': 789,
-      'nickname': '昵称',
-      'card': '群名片'
+      'nickname': 'Nickname',
+      'card': 'Group Card'
     },
-    'message': [...]  # 消息段数组
+    'message': [...]  # Message Segment Array
   }
 }
 ```
@@ -306,7 +308,7 @@ async def get_msg(message_id: int) -> Dict[str, Any]
 
 ### call_api()
 
-调用任意 OneBot API（万能方法）。
+Call arbitrary OneBot API (Universal method).
 
 ```python
 async def call_api(
@@ -315,71 +317,71 @@ async def call_api(
 ) -> Dict[str, Any]
 ```
 
-**参数：**
+**Parameters:**
 
-| 参数 | 类型 | 说明 | 必需 |
-|------|------|------|------|
-| `action` | str | API 动作名称 |  |
-| `params` | Dict | API 参数字典 |  |
+| Parameter | Type | Description | Required |
+|-----------|------|-------------|----------|
+| `action` | str | API Action Name | Yes |
+| `params` | Dict | API Parameters Dictionary | No |
 
-**返回值：**
+**Returns:**
 
 ```python
 {
-  'success': True,      # 是否成功
-  'data': {...}         # API 返回的数据
+  'success': True,      # Success or not
+  'data': {...}         # API Return Data
 }
 ```
 
-**示例：**
+**Example:**
 
 ```python
-# 获取群列表
+# Get group list
 result = await api.call_api('get_group_list')
 groups = result['data']
 
-# 获取群成员列表
+# Get group member list
 result = await api.call_api('get_group_member_list', {
     'group_id': 123456
 })
 members = result['data']
 
-# 禁言群成员
+# Ban group member
 result = await api.call_api('set_group_ban', {
     'group_id': 123456,
     'user_id': 789,
-    'duration': 600  # 10分钟
+    'duration': 600  # 10 minutes
 })
 ```
 
 ---
 
-### 快捷 API 方法
+### Shortcut API Methods
 
-以下方法是常用 OneBot API 的快捷封装。
+The following methods are shortcut wrappers for common OneBot APIs.
 
 #### get_group_list()
 
-获取群列表。
+Get group list.
 
 ```python
 async def get_group_list() -> Dict[str, Any]
 ```
 
-**示例：**
+**Example:**
 
 ```python
 result = await api.get_group_list()
 if result['success']:
     for group in result['data']:
-        print(f"群号: {group['group_id']}, 群名: {group['group_name']}")
+        print(f"ID: {group['group_id']}, Name: {group['group_name']}")
 ```
 
 ---
 
 #### get_group_info()
 
-获取群信息。
+Get group info.
 
 ```python
 async def get_group_info(
@@ -388,12 +390,12 @@ async def get_group_info(
 ) -> Dict[str, Any]
 ```
 
-**返回数据：**
+**Return Data:**
 
 ```python
 {
   'group_id': 123456,
-  'group_name': '群名',
+  'group_name': 'Group Name',
   'member_count': 100,
   'max_member_count': 500
 }
@@ -403,20 +405,20 @@ async def get_group_info(
 
 #### get_group_member_list()
 
-获取群成员列表。
+Get group member list.
 
 ```python
 async def get_group_member_list(group_id: int) -> Dict[str, Any]
 ```
 
-**返回数据：**
+**Return Data:**
 
 ```python
 [
   {
     'user_id': 789,
-    'nickname': '昵称',
-    'card': '群名片',
+    'nickname': 'Nickname',
+    'card': 'Card',
     'role': 'member',  # owner/admin/member
     'join_time': 1640000000,
     'last_sent_time': 1640000000
@@ -429,7 +431,7 @@ async def get_group_member_list(group_id: int) -> Dict[str, Any]
 
 #### get_group_member_info()
 
-获取群成员信息。
+Get group member info.
 
 ```python
 async def get_group_member_info(
@@ -443,7 +445,7 @@ async def get_group_member_info(
 
 #### get_friend_list()
 
-获取好友列表。
+Get friend list.
 
 ```python
 async def get_friend_list() -> Dict[str, Any]
@@ -453,7 +455,7 @@ async def get_friend_list() -> Dict[str, Any]
 
 #### get_stranger_info()
 
-获取陌生人信息。
+Get stranger info.
 
 ```python
 async def get_stranger_info(
@@ -466,7 +468,7 @@ async def get_stranger_info(
 
 #### send_like()
 
-给好友点赞。
+Send like to friend.
 
 ```python
 async def send_like(
@@ -475,17 +477,17 @@ async def send_like(
 ) -> Dict[str, Any]
 ```
 
-**参数：**
+**Parameters:**
 
-| 参数 | 类型 | 说明 | 范围 |
-|------|------|------|------|
-| `user_id` | int | QQ 号 | - |
-| `times` | int | 点赞次数 | 1-10 |
+| Parameter | Type | Description | Range |
+|-----------|------|-------------|-------|
+| `user_id` | int | QQ ID | - |
+| `times` | int | Times | 1-10 |
 
-**示例：**
+**Example:**
 
 ```python
-# 点赞 10 次
+# Like 10 times
 await api.send_like(789, times=10)
 ```
 
@@ -493,7 +495,7 @@ await api.send_like(789, times=10)
 
 #### set_group_kick()
 
-踢出群成员。
+Kick group member.
 
 ```python
 async def set_group_kick(
@@ -503,19 +505,19 @@ async def set_group_kick(
 ) -> Dict[str, Any]
 ```
 
-**参数：**
+**Parameters:**
 
-| 参数 | 类型 | 说明 |
-|------|------|------|
-| `group_id` | int | 群号 |
-| `user_id` | int | 要踢的 QQ 号 |
-| `reject_add_request` | bool | 是否拒绝再次申请 |
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `group_id` | int | Group ID |
+| `user_id` | int | QQ ID to kick |
+| `reject_add_request` | bool | Reject join request again |
 
 ---
 
 #### set_group_ban()
 
-禁言群成员。
+Ban group member.
 
 ```python
 async def set_group_ban(
@@ -525,21 +527,21 @@ async def set_group_ban(
 ) -> Dict[str, Any]
 ```
 
-**参数：**
+**Parameters:**
 
-| 参数 | 类型 | 说明 |
-|------|------|------|
-| `group_id` | int | 群号 |
-| `user_id` | int | QQ 号 |
-| `duration` | int | 禁言时长（秒），0 表示取消禁言 |
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `group_id` | int | Group ID |
+| `user_id` | int | QQ ID |
+| `duration` | int | Duration (seconds), 0 to lift ban |
 
-**示例：**
+**Example:**
 
 ```python
-# 禁言 10 分钟
+# Ban for 10 minutes
 await api.set_group_ban(123456, 789, duration=600)
 
-# 取消禁言
+# Lift ban
 await api.set_group_ban(123456, 789, duration=0)
 ```
 
@@ -547,7 +549,7 @@ await api.set_group_ban(123456, 789, duration=0)
 
 #### set_group_whole_ban()
 
-全员禁言。
+Ban whole group.
 
 ```python
 async def set_group_whole_ban(
@@ -560,7 +562,7 @@ async def set_group_whole_ban(
 
 #### set_group_admin()
 
-设置群管理员。
+Set group admin.
 
 ```python
 async def set_group_admin(
@@ -574,7 +576,7 @@ async def set_group_admin(
 
 #### set_group_card()
 
-设置群名片。
+Set group card.
 
 ```python
 async def set_group_card(
@@ -588,7 +590,7 @@ async def set_group_card(
 
 #### set_group_name()
 
-设置群名。
+Set group name.
 
 ```python
 async def set_group_name(
@@ -601,7 +603,7 @@ async def set_group_name(
 
 #### set_group_leave()
 
-退出群。
+Leave group.
 
 ```python
 async def set_group_leave(
@@ -610,29 +612,29 @@ async def set_group_leave(
 ) -> Dict[str, Any]
 ```
 
-**参数：**
+**Parameters:**
 
-| 参数 | 类型 | 说明 |
-|------|------|------|
-| `group_id` | int | 群号 |
-| `is_dismiss` | bool | 是否解散（仅群主可用） |
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `group_id` | int | Group ID |
+| `is_dismiss` | bool | Dismiss group (Owner only) |
 
 ---
 
 #### get_login_info()
 
-获取登录号信息。
+Get login info.
 
 ```python
 async def get_login_info() -> Dict[str, Any]
 ```
 
-**返回数据：**
+**Return Data:**
 
 ```python
 {
   'user_id': 123456,
-  'nickname': 'Bot昵称'
+  'nickname': 'Bot Nickname'
 }
 ```
 
@@ -640,7 +642,7 @@ async def get_login_info() -> Dict[str, Any]
 
 #### get_status()
 
-获取运行状态。
+Get status.
 
 ```python
 async def get_status() -> Dict[str, Any]
@@ -650,7 +652,7 @@ async def get_status() -> Dict[str, Any]
 
 #### get_version_info()
 
-获取版本信息。
+Get version info.
 
 ```python
 async def get_version_info() -> Dict[str, Any]
@@ -658,39 +660,39 @@ async def get_version_info() -> Dict[str, Any]
 
 ---
 
-## 配置 API
+## Config API
 
 ### get_config()
 
-获取插件配置。
+Get plugin config.
 
 ```python
 async def get_config(key: Optional[str] = None) -> Any
 ```
 
-**参数：**
+**Parameters:**
 
-| 参数 | 类型 | 说明 | 必需 |
-|------|------|------|------|
-| `key` | str | 配置键（为 None 时返回全部配置） |  |
+| Parameter | Type | Description | Required |
+|-----------|------|-------------|----------|
+| `key` | str | Config Key (None returns all) | No |
 
-**返回值：**
+**Returns:**
 
-- 如果指定 `key`：返回对应的配置值，不存在则返回 `None`
-- 如果不指定 `key`：返回完整的配置字典
+- If `key` specified: Config value, `None` if not exists
+- If `key` not specified: Complete config dict
 
-**示例：**
+**Example:**
 
 ```python
-# 获取完整配置
+# Get full config
 config = await api.get_config()
 print(config)  # {'api_key': 'xxx', 'enabled': True}
 
-# 获取单个配置项
+# Get single config item
 api_key = await api.get_config('api_key')
 print(api_key)  # 'xxx'
 
-# 获取不存在的配置
+# Get non-existent config
 value = await api.get_config('non_exist')
 print(value)  # None
 ```
@@ -699,378 +701,379 @@ print(value)  # None
 
 ### set_config()
 
-设置插件配置。
+Set plugin config.
 
 ```python
 async def set_config(key: str, value: Any) -> bool
 ```
 
-**参数：**
+**Parameters:**
 
-| 参数 | 类型 | 说明 | 必需 |
-|------|------|------|------|
-| `key` | str | 配置键 |  |
-| `value` | Any | 配置值（可序列化为 JSON） |  |
+| Parameter | Type | Description | Required |
+|-----------|------|-------------|----------|
+| `key` | str | Config Key | Yes |
+| `value` | Any | Config Value (JSON serializable) | Yes |
 
-**返回值：**
+**Returns:**
 
-- `True`: 设置成功
-- `False`: 设置失败
+- `True`: Success
+- `False`: Failed
 
-**示例：**
+**Example:**
 
 ```python
-# 设置字符串
+# Set string
 await api.set_config('api_key', 'new_api_key')
 
-# 设置数字
+# Set number
 await api.set_config('max_count', 100)
 
-# 设置布尔值
+# Set boolean
 await api.set_config('enabled', True)
 
-# 设置列表
+# Set list
 await api.set_config('admins', [123, 456, 789])
 
-# 设置字典
+# Set dict
 await api.set_config('settings', {
     'theme': 'dark',
-    'language': 'zh-CN'
+    'language': 'en-US'
 })
 ```
 
-**注意事项：**
+**Notes:**
 
-1. 配置会自动保存到数据库
-2. 配置值必须可序列化为 JSON
-3. 不支持存储二进制数据（请使用存储 API）
+1. Config is automatically saved to database.
+2. Value must be JSON serializable.
+3. Binary data not supported (Use Storage API).
 
 ---
 
-## 存储 API
+## Storage API
 
-存储 API 用于持久化二进制数据（如图片、文件等）。
+Storage API is used for persisting binary data (like images, files).
 
 ### get_storage()
 
-获取二进制存储。
+Get binary storage.
 
 ```python
 async def get_storage(key: str) -> Optional[bytes]
 ```
 
-**参数：**
+**Parameters:**
 
-| 参数 | 类型 | 说明 | 必需 |
-|------|------|------|------|
-| `key` | str | 存储键 |  |
+| Parameter | Type | Description | Required |
+|-----------|------|-------------|----------|
+| `key` | str | Storage Key | Yes |
 
-**返回值：**
+**Returns:**
 
-- 成功：返回二进制数据（`bytes`）
-- 失败或不存在：返回 `None`
+- Success: Binary data (`bytes`)
+- Failed or Not Exists: `None`
 
-**示例：**
+**Example:**
 
 ```python
-# 读取数据
+# Read data
 data_bytes = await api.get_storage('user_data')
 if data_bytes:
     import json
     data = json.loads(data_bytes.decode('utf-8'))
     print(data)
 else:
-    print("数据不存在")
+    print("Data not found")
 ```
 
 ---
 
 ### set_storage()
 
-设置二进制存储。
+Set binary storage.
 
 ```python
 async def set_storage(key: str, value: bytes) -> bool
 ```
 
-**参数：**
+**Parameters:**
 
-| 参数 | 类型 | 说明 | 必需 |
-|------|------|------|------|
-| `key` | str | 存储键 |  |
-| `value` | bytes | 二进制数据 |  |
+| Parameter | Type | Description | Required |
+|-----------|------|-------------|----------|
+| `key` | str | Storage Key | Yes |
+| `value` | bytes | Binary Data | Yes |
 
-**返回值：**
+**Returns:**
 
-- `True`: 存储成功
-- `False`: 存储失败
+- `True`: Success
+- `False`: Failed
 
-**示例：**
+**Example:**
 
 ```python
-# 存储 JSON 数据
+# Store JSON data
 import json
 data = {'count': 100, 'users': [123, 456]}
 data_bytes = json.dumps(data).encode('utf-8')
 await api.set_storage('user_data', data_bytes)
 
-# 存储图片
+# Store image
 with open('image.jpg', 'rb') as f:
     image_bytes = f.read()
 await api.set_storage('cached_image', image_bytes)
 ```
 
-**注意事项：**
+**Notes:**
 
-1. 推荐单个存储项不超过 10MB
-2. 数据会自动压缩存储
-3. 支持任意二进制数据
+1. Recommended single item size < 10MB.
+2. Data is automatically compressed.
+3. Supports arbitrary binary data.
 
 ---
 
 ### delete_storage()
 
-删除二进制存储。
+Delete binary storage.
 
 ```python
 async def delete_storage(key: str) -> bool
 ```
 
-**参数：**
+**Parameters:**
 
-| 参数 | 类型 | 说明 | 必需 |
-|------|------|------|------|
-| `key` | str | 存储键 |  |
+| Parameter | Type | Description | Required |
+|-----------|------|-------------|----------|
+| `key` | str | Storage Key | Yes |
 
-**返回值：**
+**Returns:**
 
-- `True`: 删除成功
-- `False`: 删除失败或不存在
+- `True`: Success
+- `False`: Failed or Not Exists
 
-**示例：**
+**Example:**
 
 ```python
-# 删除数据
+# Delete data
 success = await api.delete_storage('user_data')
 if success:
-    print("删除成功")
+    print("Deleted successfully")
 ```
 
 ---
 
 ### list_storage_keys()
 
-列出所有存储键。
+List all storage keys.
 
 ```python
 async def list_storage_keys() -> List[str]
 ```
 
-**返回值：**
+**Returns:**
 
-存储键列表（`List[str]`）
+List of storage keys (`List[str]`)
 
-**示例：**
+**Example:**
 
 ```python
-# 列出所有键
+# List all keys
 keys = await api.list_storage_keys()
-print(f"共有 {len(keys)} 个存储项:")
+print(f"Total {len(keys)} items:")
 for key in keys:
     print(f"- {key}")
 ```
 
 ---
 
-## 事件 API
+## Event API
 
 ### emit_event()
 
-发送自定义事件。
+Emit custom event.
 
 ```python
 async def emit_event(event_name: str, data: Dict[str, Any])
 ```
 
-**参数：**
+**Parameters:**
 
-| 参数 | 类型 | 说明 | 必需 |
-|------|------|------|------|
-| `event_name` | str | 事件名称（会自动加前缀） |  |
-| `data` | Dict | 事件数据 |  |
+| Parameter | Type | Description | Required |
+|-----------|------|-------------|----------|
+| `event_name` | str | Event Name (Auto-prefixed) | Yes |
+| `data` | Dict | Event Data | Yes |
 
-**事件命名：**
+**Event Naming:**
 
-实际发送的事件名称为：`plugin.<plugin_name>.<event_name>`
+Actual emitted event name: `plugin.<plugin_name>.<event_name>`
 
-例如：插件 `my_plugin` 发送事件 `data_updated`，实际事件名为 `plugin.my_plugin.data_updated`
+Example: Plugin `my_plugin` emits `data_updated`, actual name is `plugin.my_plugin.data_updated`.
 
-**示例：**
+**Example:**
 
 ```python
-# 插件 A 发送事件
+# Plugin A emits event
 await api.emit_event('user_joined', {
     'user_id': 789,
     'group_id': 123456
 })
 
-# 插件 B 监听事件
+# Plugin B listens event
 async def on_event(self, event_name, data):
     if event_name == 'plugin.plugin_a.user_joined':
         user_id = data['user_id']
         group_id = data['group_id']
-        # 处理事件
+        # Handle event
 ```
 
 ---
 
-## 工具 API
+## Utility API
 
 ### log()
 
-记录日志。
+Log message.
 
 ```python
 def log(level: str, message: str, **kwargs)
 ```
 
-**参数：**
+**Parameters:**
 
-| 参数 | 类型 | 说明 | 可选值 |
-|------|------|------|--------|
-| `level` | str | 日志级别 | `'debug'`, `'info'`, `'warning'`, `'error'` |
-| `message` | str | 日志消息 | - |
-| `**kwargs` | Any | 额外的上下文信息 | - |
+| Parameter | Type | Description | Values |
+|-----------|------|-------------|--------|
+| `level` | str | Log Level | `'debug'`, `'info'`, `'warning'`, `'error'` |
+| `message` | str | Log Message | - |
+| `**kwargs` | Any | Extra Context | - |
 
-**示例：**
+**Example:**
 
 ```python
-# 信息日志
-api.log('info', '插件已启动')
+# Info Log
+api.log('info', 'Plugin started')
 
-# 警告日志
-api.log('warning', f'用户 {user_id} 尝试非法操作')
+# Warning Log
+api.log('warning', f'User {user_id} tried illegal operation')
 
-# 错误日志
-api.log('error', f'API 调用失败: {error}')
+# Error Log
+api.log('error', f'API call failed: {error}')
 
-# 调试日志（带上下文）
-api.log('debug', '处理消息', user_id=789, group_id=123456)
+# Debug Log (With context)
+api.log('debug', 'Handling message', user_id=789, group_id=123456)
 ```
 
 ---
 
 ### get_plugin_name()
 
-获取插件名称。
+Get plugin name.
 
 ```python
 def get_plugin_name() -> str
 ```
 
-**返回值：**
+**Returns:**
 
-插件名称（格式：`author/name`）
+Plugin name (Format: `author/name`)
 
-**示例：**
+**Example:**
 
 ```python
 plugin_name = api.get_plugin_name()
-print(f"当前插件: {plugin_name}")  # 输出：当前插件: XQNEXT/my_plugin
+print(f"Current Plugin: {plugin_name}")  # Output: Current Plugin: XQNEXT/my_plugin
 ```
 
 ---
 
-## API 最佳实践
+## API Best Practices
 
-### 1. 错误处理
+### 1. Error Handling
 
-始终检查 API 返回值：
+Always check API return values:
 
 ```python
 result = await api.send_group_msg(group_id, message)
 if result['success']:
     message_id = result['data']['message_id']
-    api.log('info', f'消息发送成功: {message_id}')
+    api.log('info', f'Message sent: {message_id}')
 else:
     error = result.get('error', 'Unknown error')
-    api.log('error', f'消息发送失败: {error}')
+    api.log('error', f'Message failed: {error}')
 ```
 
-### 2. 使用快捷方法
+### 2. Use Shortcut Methods
 
-优先使用快捷方法而不是 `call_api`：
+Prefer shortcut methods over `call_api`:
 
 ```python
-#  推荐：使用快捷方法
+#  Recommended: Use shortcut
 await api.send_group_msg(group_id, message)
 
-#  不推荐：使用 call_api
+#  Not Recommended: Use call_api
 await api.call_api('send_group_msg', {'group_id': group_id, 'message': message})
 ```
 
-### 3. 配置缓存
+### 3. Cache Configuration
 
-缓存常用配置避免频繁读取：
+Cache frequently used config to avoid frequent reads:
 
 ```python
 class MyPlugin:
     def __init__(self, api, config):
         self.api = api
-        self.api_key = config.get('api_key')  # 从初始配置获取
+        self.api_key = config.get('api_key')  # Get from initial config
     
     async def on_load(self):
-        # 如果需要最新配置，再从数据库读取
+        # If fresh config needed, read from DB
         fresh_config = await self.api.get_config()
         self.api_key = fresh_config.get('api_key')
 ```
 
-### 4. 存储数据序列化
+### 4. Serialize Storage Data
 
-使用 JSON 序列化复杂数据：
+Use JSON to serialize complex data:
 
 ```python
 import json
 
-# 保存
+# Save
 data = {'users': [123, 456], 'count': 100}
 await api.set_storage('data', json.dumps(data).encode('utf-8'))
 
-# 读取
+# Read
 data_bytes = await api.get_storage('data')
 if data_bytes:
     data = json.loads(data_bytes.decode('utf-8'))
 ```
 
-### 5. 日志分级
+### 5. Log Levels
 
-根据重要程度选择日志级别：
+Choose log level based on importance:
 
 ```python
-# debug: 调试信息
-api.log('debug', f'处理消息: {raw_message}')
+# debug: Debugging info
+api.log('debug', f'Handling message: {raw_message}')
 
-# info: 普通信息
-api.log('info', '插件已初始化')
+# info: Normal info
+api.log('info', 'Plugin initialized')
 
-# warning: 警告（不影响运行）
-api.log('warning', '配置项缺失，使用默认值')
+# warning: Warning (Non-blocking)
+api.log('warning', 'Config missing, using default')
 
-# error: 错误（影响功能）
-api.log('error', f'API 调用失败: {error}')
+# error: Error (Functionality affected)
+api.log('error', f'API call failed: {error}')
 ```
 
 ---
 
-## 下一步
+## Next Steps
 
-现在你已经掌握了所有插件 API，接下来可以：
+Now you have mastered all Plugin APIs, next you can:
 
-1.  [学习 OneBot API 的详细使用](05-onebot-guide.md)
-2.  [深入了解配置与数据管理](06-config-data.md)
-3.  [学习前端 UI 集成](07-ui-integration.md)
+1.  [Learn OneBot API Usage in detail](05-onebot-guide.md)
+2.  [Deep dive into Configuration & Data Management](06-config-data.md)
+3.  [Learn Frontend UI Integration](07-ui-integration.md)
 
 ---
 
-**上一篇**: [← 插件系统架构](03-architecture.md)  
-**下一篇**: [OneBot API 使用 →](05-onebot-guide.md)
+**Previous**: [← Plugin System Architecture](03-architecture.md)  
+**Next**: [OneBot API Guide →](05-onebot-guide.md)
+

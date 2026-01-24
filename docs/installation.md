@@ -1,82 +1,84 @@
-# 安装与配置
+# Installation and Configuration
 
-## 环境要求
+{ [Chinese](installation_CN.md) | English }
 
-### 系统要求
+## System Requirements
 
-- **操作系统**: Windows 10+, Linux, macOS
-- **Python**: Python 3.13 或更高版本
-- **内存**: 建议 2GB 以上
-- **磁盘空间**: 建议 500MB 以上
+### System
 
-### Python 环境
+- **OS**: Windows 10+, Linux, macOS
+- **Python**: Python 3.13 or higher
+- **Memory**: 2GB+ recommended
+- **Disk**: 500MB+ recommended
 
-确保已安装 Python 3.10 或更高版本：
+### Python Environment
+
+Ensure Python 3.10 or higher is installed:
 
 ```bash
 python --version
 ```
 
-如果未安装 Python，请访问 [Python 官网](https://www.python.org/) 下载安装。
+If not installed, visit [Python Official Site](https://www.python.org/) to download and install.
 
-### 依赖服务
+### Dependent Services
 
-- **OneBot 实现**: 需要连接一个 OneBot v11 协议的实现（如 go-cqhttp）
-- **数据库**: SQLite（已包含，无需额外安装）
+- **OneBot Implementation**: Requires connecting to a OneBot v11 protocol implementation (e.g., go-cqhttp)
+- **Database**: SQLite (included, no extra installation required)
 
-## 安装步骤
+## Installation Steps
 
-### 1. 获取项目
+### 1. Get the Project
 
-#### 从 Git 仓库克隆
+#### Clone from Git
 
 ```bash
 git clone <repository-url>
 cd RuaBot_v0.0.1
 ```
 
-#### 或下载源码包
+#### Or Download Source Code
 
-下载并解压源码包到目标目录。
+Download and extract the source code to the target directory.
 
-### 2. 安装 Python 依赖
+### 2. Install Python Dependencies
 
-#### 使用 pip 安装
+#### Using pip
 
 ```bash
 pip install -r requirements.txt
 ```
 
-#### 使用虚拟环境（推荐）
+#### Using Virtual Environment (Recommended)
 
 ```bash
-# 创建虚拟环境
+# Create virtual environment
 python -m venv venv
 
-# 激活虚拟环境
+# Activate virtual environment
 # Windows
 venv\Scripts\activate
 # Linux/macOS
 source venv/bin/activate
 
-# 安装依赖
+# Install dependencies
 pip install -r requirements.txt
 ```
 
-### 3. 安装前端依赖（可选）
+### 3. Install Frontend Dependencies (Optional)
 
-如果需要开发或修改 Web UI：
+If you need to develop or modify the Web UI:
 
 ```bash
 cd webui
 npm install
 ```
 
-### 4. 配置项目
+### 4. Configure Project
 
-#### 编辑配置文件
+#### Edit Configuration File
 
-编辑项目根目录下的 `config.toml` 文件：
+Edit `config.toml` in the project root directory:
 
 ```toml
 [app]
@@ -105,31 +107,31 @@ username = "admin"
 password = "admin123"
 ```
 
-#### 配置说明
+#### Configuration Description
 
-**服务器配置**
-- `host`: Web 服务器监听地址
-- `port`: Web 服务器端口
+**Server Config**
+- `host`: Web server listening address
+- `port`: Web server port
 
-**OneBot 配置**
-- `connection_type`: 连接类型（`ws_reverse` 或 `ws_forward`）
-- `ws_reverse_host`: WebSocket 反向连接监听地址
-- `ws_reverse_port`: WebSocket 反向连接端口
-- `ws_reverse_path`: WebSocket 反向连接路径
+**OneBot Config**
+- `connection_type`: Connection type (`ws_reverse` or `ws_forward`)
+- `ws_reverse_host`: WebSocket reverse connection listening address
+- `ws_reverse_port`: WebSocket reverse connection port
+- `ws_reverse_path`: WebSocket reverse connection path
 
-**数据库配置**
-- `url`: 数据库连接 URL（SQLite 无需修改）
+**Database Config**
+- `url`: Database connection URL (SQLite usually needs no modification)
 
-**Web UI 配置**
-- `enabled`: 是否启用 Web UI
-- `username`: Web UI 登录用户名
-- `password`: Web UI 登录密码
+**Web UI Config**
+- `enabled`: Whether to enable Web UI
+- `username`: Web UI login username
+- `password`: Web UI login password
 
-### 5. 初始化数据库
+### 5. Initialize Database
 
-数据库会在首次启动时自动创建，无需手动初始化。
+The database will be automatically created on the first startup, no manual initialization required.
 
-### 6. 启动服务
+### 6. Start Service
 
 #### Windows
 
@@ -137,7 +139,7 @@ password = "admin123"
 start.bat
 ```
 
-或直接运行：
+Or run directly:
 
 ```bash
 python src/main.py
@@ -150,44 +152,44 @@ chmod +x start.sh
 ./start.sh
 ```
 
-或直接运行：
+Or run directly:
 
 ```bash
 python src/main.py
 ```
 
-### 7. 验证安装
+### 7. Verify Installation
 
-启动成功后，访问以下地址验证：
+After successful startup, visit the following addresses to verify:
 
 - **Web UI**: http://localhost:8000/
-- **API 文档**: http://localhost:8000/docs
-- **默认登录**: admin / admin123
+- **API Docs**: http://localhost:8000/docs
+- **Default Login**: admin / admin123
 
-## 配置详解
+## Configuration Details
 
-### 应用配置
+### App Config
 
 ```toml
 [app]
-name = "RuaBot"              # 应用名称
-version = "0.0.1"             # 应用版本
-environment = "development"   # 运行环境 (development/production)
-debug = false                 # 调试模式
-log_level = "INFO"           # 日志级别
+name = "RuaBot"              # App name
+version = "0.0.1"             # App version
+environment = "development"   # Runtime environment (development/production)
+debug = false                 # Debug mode
+log_level = "INFO"           # Log level
 ```
 
-### 服务器配置
+### Server Config
 
 ```toml
 [server]
-host = "0.0.0.0"             # 监听地址 (0.0.0.0 表示所有接口)
-port = 8000                   # 监听端口
+host = "0.0.0.0"             # Listening address (0.0.0.0 means all interfaces)
+port = 8000                   # Listening port
 ```
 
-### OneBot 配置
+### OneBot Config
 
-#### WebSocket 反向连接（推荐）
+#### WebSocket Reverse (Recommended)
 
 ```toml
 [onebot]
@@ -196,11 +198,11 @@ connection_type = "ws_reverse"
 ws_reverse_host = "0.0.0.0"
 ws_reverse_port = 8080
 ws_reverse_path = "/onebot/v11/ws"
-access_token = ""             # 访问令牌（可选）
-secret = ""                   # 签名密钥（可选）
+access_token = ""             # Access token (optional)
+secret = ""                   # Signature secret (optional)
 ```
 
-#### WebSocket 正向连接
+#### WebSocket Forward
 
 ```toml
 [onebot]
@@ -210,7 +212,7 @@ ws_url = "ws://127.0.0.1:5700"
 access_token = ""
 ```
 
-#### HTTP 连接
+#### HTTP
 
 ```toml
 [onebot]
@@ -220,16 +222,16 @@ http_url = "http://localhost:5700"
 access_token = ""
 ```
 
-### 数据库配置
+### Database Config
 
 ```toml
 [database]
 url = "sqlite+aiosqlite:///./data/onebot_framework.db"
 ```
 
-SQLite 数据库文件会自动创建在 `data` 目录下。
+SQLite database file will be automatically created in the `data` directory.
 
-### 安全配置
+### Security Config
 
 ```toml
 [security]
@@ -237,36 +239,36 @@ secret_key = "your-secret-key-change-this-in-production"
 access_token_expire_minutes = 30
 ```
 
-**重要**: 生产环境请修改 `secret_key` 为随机字符串。
+**Important**: Change `secret_key` to a random string in production environment.
 
-### 插件配置
+### Plugin Config
 
 ```toml
 [plugins]
-dir = "./plugins"            # 插件目录
-auto_load = true             # 自动加载插件
+dir = "./plugins"            # Plugin directory
+auto_load = true             # Auto load plugins
 ```
 
-### Web UI 配置
+### Web UI Config
 
 ```toml
 [web_ui]
-enabled = true               # 启用 Web UI
-username = "admin"           # 登录用户名
-password = "admin123"        # 登录密码
+enabled = true               # Enable Web UI
+username = "admin"           # Login username
+password = "admin123"        # Login password
 ```
 
-### AI 配置
+### AI Config
 
 ```toml
 [ai]
-thread_pool_enabled = true   # 启用线程池
-thread_pool_workers = 5      # 线程池工作线程数
+thread_pool_enabled = true   # Enable thread pool
+thread_pool_workers = 5      # Thread pool workers
 ```
 
-### 腾讯云配置（可选）
+### Tencent Cloud Config (Optional)
 
-如果需要使用腾讯云 TTS 功能：
+If you need to use Tencent Cloud TTS function:
 
 ```toml
 [tencent_cloud]
@@ -274,51 +276,51 @@ secret_id = "your-secret-id"
 secret_key = "your-secret-key"
 ```
 
-## 环境变量配置
+## Environment Variable Configuration
 
-除了配置文件，还可以通过环境变量进行配置：
+Besides configuration file, you can also configure via environment variables:
 
 ```bash
-# 服务器配置
+# Server Config
 export HOST=0.0.0.0
 export PORT=8000
 
-# OneBot 配置
+# OneBot Config
 export ONEBOT_CONNECTION_TYPE=ws_reverse
 export ONEBOT_WS_REVERSE_PORT=8080
 
-# 数据库配置
+# Database Config
 export DATABASE_URL=sqlite+aiosqlite:///./data/onebot_framework.db
 
-# 安全配置
+# Security Config
 export SECRET_KEY=your-secret-key
 
-# Web UI 配置
+# Web UI Config
 export WEB_UI_USERNAME=admin
 export WEB_UI_PASSWORD=admin123
 ```
 
-环境变量会覆盖配置文件中的对应设置。
+Environment variables will override corresponding settings in the configuration file.
 
-## Docker 部署（可选）
+## Docker Deployment (Optional)
 
-### 使用 Docker Compose
+### Using Docker Compose
 
-项目提供了 Docker 支持，可以使用 Docker Compose 快速部署：
+The project supports Docker, you can use Docker Compose for quick deployment:
 
 ```bash
 cd docker
 docker-compose up -d
 ```
 
-### 构建 Docker 镜像
+### Build Docker Image
 
 ```bash
 cd docker
 docker build -t ruabot:latest .
 ```
 
-### 运行 Docker 容器
+### Run Docker Container
 
 ```bash
 docker run -d \
@@ -329,87 +331,87 @@ docker run -d \
   ruabot:latest
 ```
 
-## 常见问题
+## FAQ
 
-### 1. 端口被占用
+### 1. Port Occupied
 
-如果启动时提示端口被占用，可以：
+If prompted that the port is occupied during startup, you can:
 
-- 修改 `config.toml` 中的端口号
-- 或关闭占用端口的程序
+- Modify port number in `config.toml`
+- Or close the program occupying the port
 
-### 2. 数据库连接失败
+### 2. Database Connection Failed
 
-- 确保 `data` 目录存在且有写权限
-- 检查数据库文件路径是否正确
+- Ensure `data` directory exists and is writable
+- Check if database file path is correct
 
-### 3. OneBot 连接失败
+### 3. OneBot Connection Failed
 
-- 检查 OneBot 实现是否正常运行
-- 检查连接配置是否正确
-- 检查防火墙设置
+- Check if OneBot implementation is running normally
+- Check if connection configuration is correct
+- Check firewall settings
 
-### 4. 插件加载失败
+### 4. Plugin Load Failed
 
-- 检查插件目录是否存在
-- 检查插件配置文件是否正确
-- 查看日志文件获取详细错误信息
+- Check if plugin directory exists
+- Check if plugin configuration file is correct
+- View log file for detailed error information
 
-### 5. Web UI 无法访问
+### 5. Web UI Inaccessible
 
-- 检查 Web UI 是否启用
-- 检查端口是否正确
-- 检查防火墙设置
+- Check if Web UI is enabled
+- Check if port is correct
+- Check firewall settings
 
-### 6. 依赖安装失败
+### 6. Dependency Installation Failed
 
-- 确保 Python 版本符合要求
-- 尝试使用国内镜像源：
+- Ensure Python version meets requirements
+- Try using domestic mirror source:
   ```bash
   pip install -r requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple
   ```
 
-## 更新升级
+## Update & Upgrade
 
-### 更新代码
+### Update Code
 
 ```bash
 git pull
 ```
 
-### 更新依赖
+### Update Dependencies
 
 ```bash
 pip install -r requirements.txt --upgrade
 ```
 
-### 数据库迁移
+### Database Migration
 
-数据库结构变更时会自动迁移，无需手动操作。
+Database structure changes will be automatically migrated, no manual operation required.
 
-## 卸载
+## Uninstall
 
-### 停止服务
+### Stop Service
 
-停止运行中的服务。
+Stop the running service.
 
-### 删除文件
+### Delete Files
 
-删除项目目录即可。
+Delete the project directory.
 
-### 清理数据（可选）
+### Clean Data (Optional)
 
-如需完全清理，删除以下目录：
+If you need to completely clean up, delete the following directories:
 
-- `data/` - 数据目录
-- `logs/` - 日志目录
-- `plugins/` - 插件目录（如果不需要保留插件）
+- `data/` - Data directory
+- `logs/` - Log directory
+- `plugins/` - Plugin directory (if you don't need to keep plugins)
 
-## 生产环境部署建议
+## Production Deployment Suggestions
 
-### 1. 使用进程管理
+### 1. Use Process Management
 
-推荐使用 systemd (Linux) 或 supervisor 管理进程：
+Recommend using systemd (Linux) or supervisor to manage processes:
 
 ```ini
 [program:ruabot]
@@ -420,9 +422,9 @@ autorestart=true
 user=ruabot
 ```
 
-### 2. 使用反向代理
+### 2. Use Reverse Proxy
 
-推荐使用 Nginx 作为反向代理：
+Recommend using Nginx as reverse proxy:
 
 ```nginx
 server {
@@ -437,24 +439,24 @@ server {
 }
 ```
 
-### 3. 配置 HTTPS
+### 3. Configure HTTPS
 
-使用 Let's Encrypt 配置 HTTPS：
+Use Let's Encrypt to configure HTTPS:
 
 ```bash
 certbot --nginx -d your-domain.com
 ```
 
-### 4. 安全加固
+### 4. Security Hardening
 
-- 修改默认密码
-- 配置防火墙
-- 限制访问 IP
-- 定期更新依赖
+- Change default password
+- Configure firewall
+- Restrict access IP
+- Regularly update dependencies
 
-### 5. 监控和日志
+### 5. Monitoring and Logs
 
-- 配置日志轮转
-- 设置监控告警
-- 定期备份数据
+- Configure log rotation
+- Set up monitoring alerts
+- Regularly backup data
 

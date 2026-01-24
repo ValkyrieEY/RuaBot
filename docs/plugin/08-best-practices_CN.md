@@ -1,14 +1,14 @@
-# Best Practices & Complete Example
+# 最佳实践与完整示例
 
-{ [Chinese](08-best-practices_CN.md) | English }
+{ Chinese | [English](08-best-practices.md) }
 
-> **Doc Version**: v2.0
-> **Last Updated**: 2026-01-23
-> **Difficulty**: Advanced
+> **文档版本**: v2.0  
+> **更新日期**: 2026-01-23  
+> **难度等级**: 高级
 
-## Complete Plugin Example
+## 完整插件示例
 
-Here is a fully functional, production-ready plugin example showcasing all best practices.
+以下是一个功能完整、生产就绪的插件示例，展示了所有最佳实践。
 
 ### plugin.json
 
@@ -17,37 +17,37 @@ Here is a fully functional, production-ready plugin example showcasing all best 
   "name": "advanced_plugin",
   "version": "2.0.0",
   "author": "XQNEXT",
-  "description": "Advanced Plugin Example - Showcasing All Best Practices",
+  "description": "高级插件示例 - 展示所有最佳实践",
   "entry": "main.py",
   "dependencies": [],
   "config_schema": {
     "enabled": {
       "type": "boolean",
       "default": true,
-      "description": "Enable Plugin"
+      "description": "是否启用插件"
     },
     "api_key": {
       "type": "string",
       "default": "",
-      "description": "API Key",
+      "description": "API 密钥",
       "required": true
     },
     "admins": {
       "type": "array",
       "default": [],
-      "description": "Admin QQ ID List"
+      "description": "管理员QQ号列表"
     },
     "max_retry": {
       "type": "number",
       "default": 3,
-      "description": "Max retry count on API call failure",
+      "description": "API调用失败时的最大重试次数",
       "min": 1,
       "max": 10
     },
     "cache_ttl": {
       "type": "number",
       "default": 3600,
-      "description": "Cache TTL (seconds)",
+      "description": "缓存过期时间（秒）",
       "min": 60,
       "max": 86400
     }
@@ -65,16 +65,16 @@ Here is a fully functional, production-ready plugin example showcasing all best 
 ### main.py
 
 ```python
-"""Advanced Plugin Example
+"""高级插件示例
 
-Showcasing all best practices:
-- Config Validation
-- Data Persistence
-- Memory Cache
-- Error Handling
-- Async Programming
-- Permission Management
-- Logging
+展示所有最佳实践：
+- 配置验证
+- 数据持久化
+- 内存缓存
+- 错误处理
+- 异步编程
+- 权限管理
+- 日志记录
 """
 
 import asyncio
@@ -85,92 +85,92 @@ from concurrent.futures import ThreadPoolExecutor
 
 
 class AdvancedPlugin:
-    """Advanced Plugin Class"""
+    """高级插件类"""
     
     def __init__(self, api, config: Dict[str, Any]):
-        """Initialize Plugin
+        """初始化插件
         
         Args:
-            api: PluginAPI Object
-            config: Plugin Config
+            api: PluginAPI 对象
+            config: 插件配置
         """
         self.api = api
         
-        # Validate Config
+        # 验证配置
         self._validate_config(config)
         
-        # Read Config
+        # 读取配置
         self.enabled = config.get('enabled', True)
-        self.api_key = config['api_key']  # Required, validated
+        self.api_key = config['api_key']  # 必需，已验证
         self.admins = set(config.get('admins', []))
         self.max_retry = config.get('max_retry', 3)
         self.cache_ttl = config.get('cache_ttl', 3600)
         
-        # Memory Cache
+        # 内存缓存
         self.cache: Dict[str, tuple] = {}  # {key: (value, expire_time)}
         
-        # Persistent Data
+        # 持久化数据
         self.user_data: Dict[str, Any] = {}
         
-        # Thread Pool (For CPU-bound tasks)
+        # 线程池（用于CPU密集型任务）
         self.executor = ThreadPoolExecutor(
             max_workers=2,
             thread_name_prefix="advanced_"
         )
         
-        # Periodic Task
+        # 定时任务
         self.cleanup_task: Optional[asyncio.Task] = None
     
     def _validate_config(self, config: Dict[str, Any]):
-        """Validate Config
+        """验证配置
         
         Args:
-            config: Config Dictionary
+            config: 配置字典
             
         Raises:
-            ValueError: Invalid Config
+            ValueError: 配置无效
         """
-        # Check required fields
+        # 检查必需字段
         if 'api_key' not in config or not config['api_key']:
-            raise ValueError("API Key cannot be empty")
+            raise ValueError("API密钥不能为空")
         
-        # Check type and range
+        # 检查类型和范围
         if 'max_retry' in config:
             max_retry = config['max_retry']
             if not isinstance(max_retry, int) or max_retry < 1 or max_retry > 10:
-                raise ValueError("max_retry must be an integer between 1-10")
+                raise ValueError("max_retry 必须是 1-10 的整数")
         
         if 'cache_ttl' in config:
             cache_ttl = config['cache_ttl']
             if not isinstance(cache_ttl, int) or cache_ttl < 60:
-                raise ValueError("cache_ttl must be an integer greater than 60")
+                raise ValueError("cache_ttl 必须是大于60的整数")
     
     async def on_load(self):
-        """Called when plugin loads"""
+        """插件加载时调用"""
         self.api.log("info", "=" * 50)
-        self.api.log("info", "Advanced Plugin Loading...")
+        self.api.log("info", "Advanced Plugin 开始加载...")
         
         try:
-            # Load persistent data
+            # 加载持久化数据
             await self._load_data()
             
-            # Start periodic task
+            # 启动定时任务
             self.cleanup_task = asyncio.create_task(self._cleanup_loop())
             
-            self.api.log("info", f"Plugin Loaded! Config: enabled={self.enabled}, cache_ttl={self.cache_ttl}")
-            self.api.log("info", f"Admin Count: {len(self.admins)}")
-            self.api.log("info", f"User Data Count: {len(self.user_data)}")
+            self.api.log("info", f"插件加载成功！配置: enabled={self.enabled}, cache_ttl={self.cache_ttl}")
+            self.api.log("info", f"管理员数量: {len(self.admins)}")
+            self.api.log("info", f"用户数据数量: {len(self.user_data)}")
             self.api.log("info", "=" * 50)
         except Exception as e:
-            self.api.log("error", f"Plugin Load Failed: {e}")
+            self.api.log("error", f"插件加载失败: {e}")
             raise
     
     async def on_unload(self):
-        """Called when plugin unloads"""
-        self.api.log("info", "Advanced Plugin Unloading...")
+        """插件卸载时调用"""
+        self.api.log("info", "Advanced Plugin 正在卸载...")
         
         try:
-            # Cancel periodic task
+            # 取消定时任务
             if self.cleanup_task:
                 self.cleanup_task.cancel()
                 try:
@@ -178,34 +178,34 @@ class AdvancedPlugin:
                 except asyncio.CancelledError:
                     pass
             
-            # Save data
+            # 保存数据
             await self._save_data()
             
-            # Shutdown thread pool
+            # 关闭线程池
             self.executor.shutdown(wait=True)
             
-            self.api.log("info", "Plugin Unloaded")
+            self.api.log("info", "插件已卸载")
         except Exception as e:
-            self.api.log("error", f"Plugin Unload Error: {e}")
+            self.api.log("error", f"插件卸载出错: {e}")
     
     async def on_event(self, event_name: str, data: Dict[str, Any]):
-        """Handle Event
+        """处理事件
         
         Args:
-            event_name: Event Name
-            data: Event Data
+            event_name: 事件名称
+            data: 事件数据
         """
-        # Handle message events only
+        # 只处理消息事件
         if event_name == "onebot.message":
             await self.handle_message(data)
     
     async def handle_message(self, event: Dict[str, Any]):
-        """Handle Message Event
+        """处理消息事件
         
         Args:
-            event: OneBot Message Event
+            event: OneBot 消息事件
         """
-        # Check if enabled
+        # 检查插件是否启用
         if not self.enabled:
             return
         
@@ -214,18 +214,18 @@ class AdvancedPlugin:
             raw_message = event.get('raw_message', '').strip()
             user_id = event['user_id']
             
-            # Handle Command
+            # 处理命令
             if raw_message.startswith('/'):
                 await self._handle_command(event, raw_message)
         except Exception as e:
-            self.api.log("error", f"Handle Message Failed: {e}")
+            self.api.log("error", f"处理消息失败: {e}")
     
     async def _handle_command(self, event: Dict[str, Any], command: str):
-        """Handle Command
+        """处理命令
         
         Args:
-            event: Message Event
-            command: Command String
+            event: 消息事件
+            command: 命令字符串
         """
         parts = command.split()
         cmd = parts[0].lower()
@@ -240,94 +240,94 @@ class AdvancedPlugin:
             await self._cmd_admin(event, parts)
     
     async def _cmd_help(self, event: Dict[str, Any]):
-        """Help Command"""
+        """帮助命令"""
         help_text = """
-Advanced Plugin Help
+Advanced Plugin 帮助
 ━━━━━━━━━━━━━━━━━━━━━━
-/help - Show this help
-/stats - Show statistics
-/cache clear - Clear cache (Admin)
-/admin <QQ> - Add admin (Admin required)
+/help - 显示此帮助
+/stats - 显示统计信息
+/cache clear - 清空缓存（管理员）
+/admin <QQ号> - 添加管理员（需要管理员权限）
 ━━━━━━━━━━━━━━━━━━━━━━
         """.strip()
         
         await self._send_reply(event, help_text)
     
     async def _cmd_stats(self, event: Dict[str, Any]):
-        """Stats Command"""
+        """统计命令"""
         stats = f"""
-Plugin Statistics
+插件统计
 ━━━━━━━━━━━━━━━━━━━━━━
-Users: {len(self.user_data)}
-Admins: {len(self.admins)}
-Cache Items: {len(self.cache)}
-Status: {'Enabled' if self.enabled else 'Disabled'}
+用户数量: {len(self.user_data)}
+管理员数量: {len(self.admins)}
+缓存项数: {len(self.cache)}
+状态: {'启用' if self.enabled else '禁用'}
 ━━━━━━━━━━━━━━━━━━━━━━
         """.strip()
         
         await self._send_reply(event, stats)
     
     async def _cmd_cache(self, event: Dict[str, Any], parts: List[str]):
-        """Cache Command"""
+        """缓存命令"""
         user_id = event['user_id']
         
-        # Check Permission
+        # 检查权限
         if not self._is_admin(user_id):
-            await self._send_reply(event, " Permission Denied")
+            await self._send_reply(event, " 权限不足")
             return
         
         if len(parts) < 2 or parts[1] != 'clear':
-            await self._send_reply(event, "Usage: /cache clear")
+            await self._send_reply(event, "用法: /cache clear")
             return
         
-        # Clear Cache
+        # 清空缓存
         count = len(self.cache)
         self.cache.clear()
-        await self._send_reply(event, f" Cleared {count} cache items")
+        await self._send_reply(event, f" 已清空 {count} 个缓存项")
     
     async def _cmd_admin(self, event: Dict[str, Any], parts: List[str]):
-        """Admin Command"""
+        """管理员命令"""
         user_id = event['user_id']
         
-        # Check Permission
+        # 检查权限
         if not self._is_admin(user_id):
-            await self._send_reply(event, " Permission Denied")
+            await self._send_reply(event, " 权限不足")
             return
         
         if len(parts) < 2:
-            await self._send_reply(event, "Usage: /admin <QQ>")
+            await self._send_reply(event, "用法: /admin <QQ号>")
             return
         
-        # Add Admin
+        # 添加管理员
         try:
             new_admin = int(parts[1])
             self.admins.add(new_admin)
             
-            # Save to Config
+            # 保存到配置
             await self.api.set_config('admins', list(self.admins))
             
-            await self._send_reply(event, f" Added Admin: {new_admin}")
-            self.api.log("info", f"Add Admin: {new_admin} (Operator: {user_id})")
+            await self._send_reply(event, f" 已添加管理员: {new_admin}")
+            self.api.log("info", f"添加管理员: {new_admin} (操作者: {user_id})")
         except ValueError:
-            await self._send_reply(event, " QQ Format Error")
+            await self._send_reply(event, " QQ号格式错误")
     
     def _is_admin(self, user_id: int) -> bool:
-        """Check if is admin
+        """检查是否是管理员
         
         Args:
-            user_id: QQ ID
+            user_id: QQ 号
             
         Returns:
-            Is Admin or not
+            是否是管理员
         """
         return user_id in self.admins
     
     async def _send_reply(self, event: Dict[str, Any], message: str):
-        """Send Reply
+        """发送回复
         
         Args:
-            event: Message Event
-            message: Reply Content
+            event: 消息事件
+            message: 回复内容
         """
         message_type = event.get('message_type')
         
@@ -336,15 +336,15 @@ Status: {'Enabled' if self.enabled else 'Disabled'}
         elif message_type == 'private':
             await self.api.send_private_msg(event['user_id'], message)
     
-    # ==================== Cache Management ====================
+    # ==================== 缓存管理 ====================
     
     def set_cache(self, key: str, value: Any, ttl: Optional[int] = None):
-        """Set Cache
+        """设置缓存
         
         Args:
-            key: Cache Key
-            value: Cache Value
-            ttl: TTL (seconds), None uses default
+            key: 缓存键
+            value: 缓存值
+            ttl: 过期时间（秒），None使用默认值
         """
         if ttl is None:
             ttl = self.cache_ttl
@@ -353,27 +353,27 @@ Status: {'Enabled' if self.enabled else 'Disabled'}
         self.cache[key] = (value, expire_time)
     
     def get_cache(self, key: str) -> Optional[Any]:
-        """Get Cache
+        """获取缓存
         
         Args:
-            key: Cache Key
+            key: 缓存键
             
         Returns:
-            Cache Value, None if not exists or expired
+            缓存值，不存在或过期则返回 None
         """
         if key not in self.cache:
             return None
         
         value, expire_time = self.cache[key]
         if datetime.now() > expire_time:
-            # Expired, delete
+            # 过期，删除
             del self.cache[key]
             return None
         
         return value
     
     def _cleanup_cache(self):
-        """Cleanup Expired Cache"""
+        """清理过期缓存"""
         now = datetime.now()
         expired_keys = [
             key for key, (_, expire_time) in self.cache.items()
@@ -384,54 +384,54 @@ Status: {'Enabled' if self.enabled else 'Disabled'}
             del self.cache[key]
         
         if expired_keys:
-            self.api.log("debug", f"Cleaned {len(expired_keys)} expired cache items")
+            self.api.log("debug", f"清理了 {len(expired_keys)} 个过期缓存")
     
     async def _cleanup_loop(self):
-        """Cleanup Loop (Run every 5 minutes)"""
+        """清理循环（每5分钟执行一次）"""
         while True:
             try:
-                await asyncio.sleep(300)  # 5 minutes
+                await asyncio.sleep(300)  # 5分钟
                 self._cleanup_cache()
             except asyncio.CancelledError:
                 break
             except Exception as e:
-                self.api.log("error", f"Cleanup Task Error: {e}")
+                self.api.log("error", f"清理任务出错: {e}")
     
-    # ==================== Data Persistence ====================
+    # ==================== 数据持久化 ====================
     
     async def _load_data(self):
-        """Load Persistent Data"""
+        """加载持久化数据"""
         data_bytes = await self.api.get_storage('user_data')
         if data_bytes:
             try:
                 self.user_data = json.loads(data_bytes.decode('utf-8'))
-                self.api.log("info", f"Loaded {len(self.user_data)} user data")
+                self.api.log("info", f"已加载 {len(self.user_data)} 个用户数据")
             except Exception as e:
-                self.api.log("error", f"Load Data Failed: {e}")
+                self.api.log("error", f"加载数据失败: {e}")
                 self.user_data = {}
         else:
             self.user_data = {}
     
     async def _save_data(self):
-        """Save Persistent Data"""
+        """保存持久化数据"""
         try:
             data_bytes = json.dumps(self.user_data, ensure_ascii=False).encode('utf-8')
             await self.api.set_storage('user_data', data_bytes)
-            self.api.log("info", "Data Saved")
+            self.api.log("info", "数据已保存")
         except Exception as e:
-            self.api.log("error", f"Save Data Failed: {e}")
+            self.api.log("error", f"保存数据失败: {e}")
 
 
-# Plugin Entry Point
+# 插件入口点
 async def create_plugin(api, config: Dict[str, Any]):
-    """Create Plugin Instance
+    """创建插件实例
     
     Args:
-        api: PluginAPI Object
-        config: Plugin Config
+        api: PluginAPI 对象
+        config: 插件配置
         
     Returns:
-        Plugin Instance
+        插件实例
     """
     plugin = AdvancedPlugin(api, config)
     await plugin.on_load()
@@ -440,106 +440,105 @@ async def create_plugin(api, config: Dict[str, Any]):
 
 ---
 
-## Code Quality Checklist
+## 代码质量检查清单
 
-###  Basic Requirements
-- [ ] Implement `create_plugin` function
-- [ ] Implement `on_load` and `on_unload` methods
-- [ ] Implement `on_event` method to handle events
-- [ ] Use `async def` for all asynchronous functions
-- [ ] Use `await` for all asynchronous calls
+###  基础要求
+- [ ] 实现 `create_plugin` 函数
+- [ ] 实现 `on_load` 和 `on_unload` 方法
+- [ ] 实现 `on_event` 方法处理事件
+- [ ] 所有异步函数使用 `async def`
+- [ ] 所有异步调用使用 `await`
 
-###  Configuration Management
-- [ ] Define `config_schema` in `plugin.json`
-- [ ] Validate config type and range
-- [ ] Provide reasonable default values
-- [ ] Cache frequently used config in memory
+###  配置管理
+- [ ] 在 `plugin.json` 中定义 `config_schema`
+- [ ] 验证配置的类型和范围
+- [ ] 提供合理的默认值
+- [ ] 缓存常用配置到内存
 
-###  Error Handling
-- [ ] Use try-except to catch exceptions
-- [ ] Log detailed error logs
-- [ ] Return friendly error messages to users
-- [ ] Prevent plugin crash from affecting framework
+###  错误处理
+- [ ] 使用 try-except 捕获异常
+- [ ] 记录详细的错误日志
+- [ ] 向用户返回友好的错误信息
+- [ ] 防止插件崩溃影响框架
 
-###  Data Management
-- [ ] Save data in `on_unload`
-- [ ] Use JSON to serialize data
-- [ ] Handle data loading failure
-- [ ] Consider data migration and backward compatibility
+###  数据管理
+- [ ] 在 `on_unload` 中保存数据
+- [ ] 使用 JSON 序列化数据
+- [ ] 处理数据加载失败的情况
+- [ ] 考虑数据迁移和向后兼容
 
-###  Performance Optimization
-- [ ] Use memory cache to reduce I/O
-- [ ] Use thread pool for CPU-bound operations
-- [ ] Avoid blocking event loop
-- [ ] Execute independent tasks concurrently
+###  性能优化
+- [ ] 使用内存缓存减少I/O
+- [ ] CPU密集型操作使用线程池
+- [ ] 避免阻塞事件循环
+- [ ] 并发执行独立任务
 
-###  Security
-- [ ] Validate user input
-- [ ] Check permission before sensitive operations
-- [ ] Prevent injection attacks
-- [ ] Do not output sensitive info in logs
+###  安全性
+- [ ] 验证用户输入
+- [ ] 检查权限后执行敏感操作
+- [ ] 防止注入攻击
+- [ ] 不在日志中输出敏感信息
 
-###  Maintainability
-- [ ] Clear code structure and responsibilities
-- [ ] Add appropriate comments and docstrings
-- [ ] Use Type Hinting
-- [ ] Follow Python Coding Style (PEP 8)
+###  可维护性
+- [ ] 代码结构清晰，职责分明
+- [ ] 添加适当的注释和文档字符串
+- [ ] 使用类型提示
+- [ ] 遵循 Python 编码规范（PEP 8）
 
 ---
 
-## Common Pitfalls
+## 常见陷阱
 
-### 1. Forgot await
+### 1. 忘记 await
 
 ```python
-#  Incorrect
-result = api.send_group_msg(123456, 'test')  # result is coroutine, not result!
+#  错误
+result = api.send_group_msg(123456, 'test')  # result 是 coroutine，不是结果！
 
-#  Correct
+#  正确
 result = await api.send_group_msg(123456, 'test')
 ```
 
-### 2. Blocking Event Loop
+### 2. 阻塞事件循环
 
 ```python
-#  Incorrect: Block for 5 seconds
+#  错误：阻塞5秒
 import time
 time.sleep(5)
 
-#  Correct: Async wait
+#  正确：异步等待
 await asyncio.sleep(5)
 ```
 
-### 3. Not Saving Data
+### 3. 不保存数据
 
 ```python
-#  Incorrect: Data loss
+#  错误：数据丢失
 def add_user(self, user_id):
     self.users.append(user_id)
-    # Not Saved!
+    # 没有保存！
 
-#  Correct: Save timely
+#  正确：及时保存
 def add_user(self, user_id):
     self.users.append(user_id)
     asyncio.create_task(self._save_data())
 ```
 
-### 4. No Permission Check
+### 4. 不检查权限
 
 ```python
-#  Incorrect: Anyone can execute
+#  错误：任何人都可以执行
 async def ban_user(self, event, target_id):
     await self.api.set_group_kick(group_id, target_id)
 
-#  Correct: Check permission
+#  正确：检查权限
 async def ban_user(self, event, target_id):
     if not self._is_admin(event['user_id']):
-        return "Permission Denied"
+        return "权限不足"
     await self.api.set_group_kick(group_id, target_id)
 ```
 
 ---
 
-**Previous**: [← Advanced Features](07-advanced-features.md)  
-**Back to Index**: [Doc Home](../README.md)
-
+**上一篇**: [← 高级特性](07-advanced-features_CN.md)  
+**返回目录**: [文档首页](../README_CN.md)

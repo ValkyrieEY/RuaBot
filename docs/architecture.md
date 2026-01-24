@@ -1,575 +1,577 @@
-# 系统架构与逻辑原理
+# System Architecture and Logic Principle
 
-## 整体架构
+{ [Chinese](architecture_CN.md) | English }
 
-RuaBot 采用分层架构设计，各层职责清晰，便于维护和扩展。
+## Overall Architecture
 
-### 架构层次
+RuaBot adopts a layered architecture design, with clear responsibilities for each layer, facilitating maintenance and expansion.
+
+### Architecture Layers
 
 ```
 ┌─────────────────────────────────────────┐
-│         表示层 (Presentation)           │
-│  ┌──────────────┐  ┌──────────────┐   │
-│  │   Web UI     │  │   REST API   │   │
-│  └──────────────┘  └──────────────┘   │
+│         Presentation Layer              │
+│  ┌──────────────┐  ┌──────────────┐     │
+│  │   Web UI     │  │   REST API   │     │
+│  └──────────────┘  └──────────────┘     │
 └─────────────────────────────────────────┘
                   │
 ┌─────────────────────────────────────────┐
-│         应用层 (Application)             │
-│  ┌──────────────┐  ┌──────────────┐   │
-│  │   Router     │  │   Security   │   │
-│  └──────────────┘  └──────────────┘   │
+│         Application Layer               │
+│  ┌──────────────┐  ┌──────────────┐     │
+│  │   Router     │  │   Security   │     │
+│  └──────────────┘  └──────────────┘     │
 └─────────────────────────────────────────┘
                   │
 ┌─────────────────────────────────────────┐
-│         业务层 (Business)                │
-│  ┌──────────────┐  ┌──────────────┐   │
-│  │   Plugins    │  │      AI      │   │
-│  └──────────────┘  └──────────────┘   │
-│  ┌──────────────┐  ┌──────────────┐   │
-│  │   Protocol   │  │   EventBus   │   │
-│  └──────────────┘  └──────────────┘   │
+│         Business Layer                  │
+│  ┌──────────────┐  ┌──────────────┐     │
+│  │   Plugins    │  │      AI      │     │
+│  └──────────────┘  └──────────────┘     │
+│  ┌──────────────┐  ┌──────────────┐     │
+│  │   Protocol   │  │   EventBus   │     │
+│  └──────────────┘  └──────────────┘     │
 └─────────────────────────────────────────┘
                   │
 ┌─────────────────────────────────────────┐
-│         核心层 (Core)                    │
-│  ┌──────────────┐  ┌──────────────┐   │
-│  │    Config    │  │   Database   │   │
-│  └──────────────┘  └──────────────┘   │
-│  ┌──────────────┐  ┌──────────────┐   │
-│  │    Logger    │  │   Storage    │   │
-│  └──────────────┘  └──────────────┘   │
+│         Core Layer                      │
+│  ┌──────────────┐  ┌──────────────┐     │
+│  │    Config    │  │   Database   │     │
+│  └──────────────┘  └──────────────┘     │
+│  ┌──────────────┐  ┌──────────────┐     │
+│  │    Logger    │  │   Storage    │     │
+│  └──────────────┘  └──────────────┘     │
 └─────────────────────────────────────────┘
                   │
 ┌─────────────────────────────────────────┐
-│         协议层 (Protocol)                │
+│         Protocol Layer                  │
 │         OneBot v11 Protocol             │
 └─────────────────────────────────────────┘
 ```
 
-## 核心模块说明
+## Core Module Description
 
-### 1. Core 模块
+### 1. Core Module
 
-核心模块提供基础服务，是整个框架的基石。
+The Core module provides basic services and is the cornerstone of the entire framework.
 
-#### 配置管理 (Config)
+#### Configuration Management (Config)
 
-- **功能**: 统一的配置管理系统
-- **特性**: 
-  - 支持 TOML 配置文件
-  - 支持环境变量覆盖
-  - 支持热重载
-  - 类型安全的配置访问
-- **实现**: `src/core/config.py`
+- **Function**: Unified configuration management system.
+- **Features**: 
+  - Supports TOML configuration files.
+  - Supports environment variable overrides.
+  - Supports hot reload.
+  - Type-safe configuration access.
+- **Implementation**: `src/core/config.py`
 
-#### 数据库 (Database)
+#### Database (Database)
 
-- **功能**: 数据持久化服务
-- **特性**:
-  - 异步数据库操作
-  - SQLAlchemy ORM
-  - 支持 SQLite
-  - 数据库迁移
-- **实现**: `src/core/database.py`
+- **Function**: Data persistence service.
+- **Features**:
+  - Asynchronous database operations.
+  - SQLAlchemy ORM.
+  - Supports SQLite.
+  - Database migrations.
+- **Implementation**: `src/core/database.py`
 
-#### 日志系统 (Logger)
+#### Logging System (Logger)
 
-- **功能**: 分级日志记录
-- **特性**:
-  - 多级别日志 (DEBUG, INFO, WARNING, ERROR)
-  - 文件日志和控制台日志
-  - 日志轮转
-  - 结构化日志
-- **实现**: `src/core/logger.py`
+- **Function**: Graded logging.
+- **Features**:
+  - Multi-level logging (DEBUG, INFO, WARNING, ERROR).
+  - File logging and console logging.
+  - Log rotation.
+  - Structured logging.
+- **Implementation**: `src/core/logger.py`
 
-#### 事件总线 (EventBus)
+#### Event Bus (EventBus)
 
-- **功能**: 事件发布和订阅机制
-- **特性**:
-  - 异步事件处理
-  - 事件过滤
-  - 事件优先级
-  - 事件拦截
-- **实现**: `src/core/event_bus.py`
+- **Function**: Event publishing and subscription mechanism.
+- **Features**:
+  - Asynchronous event processing.
+  - Event filtering.
+  - Event priority.
+  - Event interception.
+- **Implementation**: `src/core/event_bus.py`
 
-#### 存储 (Storage)
+#### Storage (Storage)
 
-- **功能**: 通用存储服务
-- **特性**:
-  - 键值存储
-  - 插件数据隔离
-  - 数据持久化
-- **实现**: `src/core/storage.py`
+- **Function**: General storage service.
+- **Features**:
+  - Key-value storage.
+  - Plugin data isolation.
+  - Data persistence.
+- **Implementation**: `src/core/storage.py`
 
-### 2. Plugin 模块
+### 2. Plugin Module
 
-插件系统是框架扩展性的核心。
+The plugin system is the core of the framework's extensibility.
 
-#### 插件管理器 (PluginManager)
+#### Plugin Manager (PluginManager)
 
-- **功能**: 插件的生命周期管理
-- **特性**:
-  - 插件加载和卸载
-  - 插件热重载
-  - 插件依赖管理
-  - 插件配置管理
-- **实现**: `src/plugins/manager.py`
+- **Function**: Plugin lifecycle management.
+- **Features**:
+  - Plugin loading and unloading.
+  - Plugin hot reload.
+  - Plugin dependency management.
+  - Plugin configuration management.
+- **Implementation**: `src/plugins/manager.py`
 
-#### 插件接口 (PluginInterface)
+#### Plugin Interface (PluginInterface)
 
-- **功能**: 标准化的插件接口
-- **特性**:
-  - 生命周期钩子
-  - 事件处理接口
-  - 能力注册接口
-- **实现**: `src/plugins/interface.py`
+- **Function**: Standardized plugin interface.
+- **Features**:
+  - Lifecycle hooks.
+  - Event handling interface.
+  - Capability registration interface.
+- **Implementation**: `src/plugins/interface.py`
 
-#### 适配器系统 (Adapter)
+#### Adapter System (Adapter)
 
-- **功能**: 插件适配器管理
-- **特性**:
-  - 多种适配器类型
-  - 插件加载适配
-  - 运行时环境提供
-- **实现**: `src/plugins/runtime/`
+- **Function**: Plugin adapter management.
+- **Features**:
+  - Multiple adapter types.
+  - Plugin loading adaptation.
+  - Runtime environment provision.
+- **Implementation**: `src/plugins/runtime/`
 
-#### 能力注册 (CapabilityRegistry)
+#### Capability Registration (CapabilityRegistry)
 
-- **功能**: 插件能力注册和发现
-- **特性**:
-  - 能力注册
-  - 能力查询
-  - 能力依赖
-- **实现**: `src/plugins/capability_registry.py`
+- **Function**: Plugin capability registration and discovery.
+- **Features**:
+  - Capability registration.
+  - Capability query.
+  - Capability dependencies.
+- **Implementation**: `src/plugins/capability_registry.py`
 
-#### 拦截器 (Interceptor)
+#### Interceptor (Interceptor)
 
-- **功能**: 事件拦截和处理
-- **特性**:
-  - 事件拦截
-  - 事件修改
-  - 事件过滤
-- **实现**: `src/plugins/interceptor.py`
+- **Function**: Event interception and handling.
+- **Features**:
+  - Event interception.
+  - Event modification.
+  - Event filtering.
+- **Implementation**: `src/plugins/interceptor.py`
 
-### 3. AI 模块
+### 3. AI Module
 
-AI 模块提供智能交互能力。
+The AI module provides intelligent interaction capabilities.
 
-#### AI 管理器 (AIManager)
+#### AI Manager (AIManager)
 
-- **功能**: AI 功能统一管理
-- **特性**:
-  - AI 配置管理
-  - 记忆管理
-  - 模型切换
-- **实现**: `src/ai/ai_manager.py`
+- **Function**: Unified management of AI functions.
+- **Features**:
+  - AI configuration management.
+  - Memory management.
+  - Model switching.
+- **Implementation**: `src/ai/ai_manager.py`
 
-#### 模型管理 (ModelManager)
+#### Model Management (ModelManager)
 
-- **功能**: LLM 模型管理
-- **特性**:
-  - 多模型支持
-  - 模型切换
-  - 模型配置
-- **实现**: `src/ai/model_manager.py`
+- **Function**: LLM model management.
+- **Features**:
+  - Multi-model support.
+  - Model switching.
+  - Model configuration.
+- **Implementation**: `src/ai/model_manager.py`
 
-#### 消息处理 (MessageHandler)
+#### Message Processing (MessageHandler)
 
-- **功能**: 消息的预处理和后处理
-- **特性**:
-  - 消息解析
-  - 消息过滤
-  - 消息转换
-- **实现**: `src/ai/message_handler.py`
+- **Function**: Message pre-processing and post-processing.
+- **Features**:
+  - Message parsing.
+  - Message filtering.
+  - Message conversion.
+- **Implementation**: `src/ai/message_handler.py`
 
-#### 回复生成 (Replyer)
+#### Reply Generation (Replyer)
 
-- **功能**: 智能回复生成
-- **特性**:
-  - 上下文理解
-  - 风格适配
-  - 回复优化
-- **实现**: `src/ai/replyer.py`
+- **Function**: Intelligent reply generation.
+- **Features**:
+  - Context understanding.
+  - Style adaptation.
+  - Reply optimization.
+- **Implementation**: `src/ai/replyer.py`
 
-#### 表达学习 (ExpressionLearner)
+#### Expression Learning (ExpressionLearner)
 
-- **功能**: 学习用户的表达风格
-- **特性**:
-  - 风格提取
-  - 模式识别
-  - 风格适配
-- **实现**: `src/ai/expression_learner.py`
+- **Function**: Learning user expression styles.
+- **Features**:
+  - Style extraction.
+  - Pattern recognition.
+  - Style adaptation.
+- **Implementation**: `src/ai/expression_learner.py`
 
-#### 知识管理 (KnowledgeManager)
+#### Knowledge Management (KnowledgeManager)
 
-- **功能**: 知识图谱管理
-- **特性**:
-  - 知识提取
-  - 知识存储
-  - 知识检索
-- **实现**: `src/ai/knowledge/`
+- **Function**: Knowledge graph management.
+- **Features**:
+  - Knowledge extraction.
+  - Knowledge storage.
+  - Knowledge retrieval.
+- **Implementation**: `src/ai/knowledge/`
 
-#### 记忆管理 (MemoryRetrieval)
+#### Memory Management (MemoryRetrieval)
 
-- **功能**: 对话记忆管理
-- **特性**:
-  - 记忆存储
-  - 记忆检索
-  - 记忆更新
-- **实现**: `src/ai/memory_retrieval.py`
+- **Function**: Conversation memory management.
+- **Features**:
+  - Memory storage.
+  - Memory retrieval.
+  - Memory updates.
+- **Implementation**: `src/ai/memory_retrieval.py`
 
-### 4. Protocol 模块
+### 4. Protocol Module
 
-协议模块处理 OneBot 协议。
+The protocol module handles the OneBot protocol.
 
-#### OneBot 协议 (OneBot)
+#### OneBot Protocol (OneBot)
 
-- **功能**: OneBot v11 协议实现
-- **特性**:
-  - 消息接收
-  - 消息发送
-  - 事件处理
-  - API 调用
-- **实现**: `src/protocol/onebot.py`
+- **Function**: OneBot v11 protocol implementation.
+- **Features**:
+  - Message reception.
+  - Message sending.
+  - Event handling.
+  - API calls.
+- **Implementation**: `src/protocol/onebot.py`
 
-#### 消息处理 (Message)
+#### Message Processing (Message)
 
-- **功能**: 消息的解析和构建
-- **特性**:
-  - 消息类型识别
-  - 消息内容解析
-  - 消息构建
-- **实现**: `src/protocol/message.py`
+- **Function**: Message parsing and construction.
+- **Features**:
+  - Message type identification.
+  - Message content parsing.
+  - Message construction.
+- **Implementation**: `src/protocol/message.py`
 
-#### 事件处理 (Events)
+#### Event Processing (Events)
 
-- **功能**: 事件的接收和分发
-- **特性**:
-  - 事件类型识别
-  - 事件数据解析
-  - 事件分发
-- **实现**: `src/protocol/events.py`
+- **Function**: Event reception and distribution.
+- **Features**:
+  - Event type identification.
+  - Event data parsing.
+  - Event distribution.
+- **Implementation**: `src/protocol/events.py`
 
-### 5. Security 模块
+### 5. Security Module
 
-安全模块提供安全功能。
+The security module provides security functions.
 
-#### 认证授权 (Auth)
+#### Authentication & Authorization (Auth)
 
-- **功能**: 用户认证和授权
-- **特性**:
-  - 登录认证
-  - Token 管理
-  - 会话管理
-- **实现**: `src/security/auth.py`
+- **Function**: User authentication and authorization.
+- **Features**:
+  - Login authentication.
+  - Token management.
+  - Session management.
+- **Implementation**: `src/security/auth.py`
 
-#### 权限管理 (Permissions)
+#### Permission Management (Permissions)
 
-- **功能**: 细粒度权限控制
-- **特性**:
-  - 权限定义
-  - 权限检查
-  - 权限继承
-- **实现**: `src/security/permissions.py`
+- **Function**: Granular permission control.
+- **Features**:
+  - Permission definition.
+  - Permission checking.
+  - Permission inheritance.
+- **Implementation**: `src/security/permissions.py`
 
-#### 访问控制 (AccessControl)
+#### Access Control (AccessControl)
 
-- **功能**: 访问控制列表管理
-- **特性**:
-  - ACL 定义
-  - ACL 检查
-  - ACL 更新
-- **实现**: `src/security/access_control.py`
+- **Function**: Access control list management.
+- **Features**:
+  - ACL definition.
+  - ACL checking.
+  - ACL updates.
+- **Implementation**: `src/security/access_control.py`
 
-#### 审计日志 (Audit)
+#### Audit Logging (Audit)
 
-- **功能**: 安全审计日志
-- **特性**:
-  - 操作记录
-  - 日志查询
-  - 日志分析
-- **实现**: `src/security/audit.py`
+- **Function**: Security audit logging.
+- **Features**:
+  - Operation recording.
+  - Log querying.
+  - Log analysis.
+- **Implementation**: `src/security/audit.py`
 
-## 工作流程
+## Workflow
 
-### 消息处理流程
+### Message Processing Flow
 
 ```
-用户消息
+User Message
     │
     ▼
-OneBot 协议接收
+OneBot Protocol Reception
     │
     ▼
-事件总线发布消息事件
+Event Bus Publishes Message Event
     │
-    ├──► 拦截器处理
+    ├──► Interceptor Processing
     │
-    ├──► 插件订阅处理
+    ├──► Plugin Subscription Processing
     │
-    └──► AI 模块处理
+    └──► AI Module Processing
          │
-         ├──► 消息记录
-         ├──► 记忆检索
-         ├──► 上下文构建
-         ├──► AI 模型调用
-         ├──► 回复生成
-         └──► 回复发送
+         ├──► Message Recording
+         ├──► Memory Retrieval
+         ├──► Context Construction
+         ├──► AI Model Call
+         ├──► Reply Generation
+         └──► Reply Sending
 ```
 
-### 插件加载流程
+### Plugin Loading Flow
 
 ```
-插件发现
+Plugin Discovery
     │
     ▼
-读取 plugin.json
+Read plugin.json
     │
     ▼
-检查依赖
+Check Dependencies
     │
     ▼
-选择适配器
+Select Adapter
     │
     ▼
-加载插件代码
+Load Plugin Code
     │
     ▼
-创建插件实例
+Create Plugin Instance
     │
     ▼
-调用 on_load
+Call on_load
     │
     ▼
-注册能力
+Register Capabilities
     │
     ▼
-调用 on_enable
+Call on_enable
     │
     ▼
-插件就绪
+Plugin Ready
 ```
 
-### AI 回复流程
+### AI Reply Flow
 
 ```
-消息接收
+Message Reception
     │
     ▼
-消息预处理
+Message Pre-processing
     │
     ▼
-记忆检索
+Memory Retrieval
     │
     ▼
-上下文构建
+Context Construction
     │
-    ├──► 群组记忆
-    ├──► 用户记忆
-    └──► 会话记忆
-    │
-    ▼
-AI 模型调用
-    │
-    ├──► 模型选择
-    ├──► 提示词构建
-    └──► 生成回复
+    ├──► Group Memory
+    ├──► User Memory
+    └──► Session Memory
     │
     ▼
-回复后处理
+AI Model Call
     │
-    ├──► 风格适配
-    ├──► 内容优化
-    └──► 表情选择
-    │
-    ▼
-回复发送
+    ├──► Model Selection
+    ├──► Prompt Construction
+    └──► Generate Reply
     │
     ▼
-记忆更新
+Reply Post-processing
+    │
+    ├──► Style Adaptation
+    ├──► Content Optimization
+    └──► Expression Selection
+    │
+    ▼
+Reply Sending
+    │
+    ▼
+Memory Update
 ```
 
-## 核心机制
+## Core Mechanisms
 
-### 事件驱动机制
+### Event-Driven Mechanism
 
-RuaBot 采用事件驱动架构，所有功能都通过事件进行通信：
+RuaBot uses an event-driven architecture where all functions communicate via events:
 
-1. **事件发布**: 系统或插件发布事件到事件总线
-2. **事件订阅**: 插件或模块订阅感兴趣的事件
-3. **事件处理**: 订阅者异步处理事件
-4. **事件拦截**: 拦截器可以拦截和修改事件
+1. **Event Publishing**: System or plugins publish events to the event bus.
+2. **Event Subscription**: Plugins or modules subscribe to interested events.
+3. **Event Processing**: Subscribers process events asynchronously.
+4. **Event Interception**: Interceptors can intercept and modify events.
 
-### 插件生命周期
+### Plugin Lifecycle
 
-插件拥有完整的生命周期：
+Plugins have a complete lifecycle:
 
-1. **发现**: 系统发现插件目录
-2. **加载**: 加载插件代码和配置
-3. **初始化**: 调用 `on_load` 钩子
-4. **启用**: 调用 `on_enable` 钩子
-5. **运行**: 插件正常运行
-6. **禁用**: 调用 `on_disable` 钩子
-7. **卸载**: 调用 `on_unload` 钩子
+1. **Discovery**: System discovers plugin directory.
+2. **Loading**: Load plugin code and configuration.
+3. **Initialization**: Call `on_load` hook.
+4. **Enable**: Call `on_enable` hook.
+5. **Run**: Plugin runs normally.
+6. **Disable**: Call `on_disable` hook.
+7. **Unload**: Call `on_unload` hook.
 
-### 配置管理机制
+### Configuration Management Mechanism
 
-配置管理支持多层级配置：
+Configuration management supports multi-level configuration:
 
-1. **默认配置**: 代码中的默认值
-2. **配置文件**: TOML 配置文件
-3. **环境变量**: 环境变量覆盖
-4. **运行时配置**: 运行时动态配置
+1. **Default Configuration**: Default values in code.
+2. **Configuration File**: TOML configuration file.
+3. **Environment Variables**: Environment variable overrides.
+4. **Runtime Configuration**: Dynamic configuration at runtime.
 
-### 权限检查机制
+### Permission Check Mechanism
 
-权限检查采用链式检查：
+Permission checking uses chain checking:
 
-1. **全局权限**: 检查全局权限设置
-2. **群组权限**: 检查群组权限设置
-3. **用户权限**: 检查用户权限设置
-4. **工具权限**: 检查工具权限设置
+1. **Global Permissions**: Check global permission settings.
+2. **Group Permissions**: Check group permission settings.
+3. **User Permissions**: Check user permission settings.
+4. **Tool Permissions**: Check tool permission settings.
 
-### 记忆管理机制
+### Memory Management Mechanism
 
-记忆管理采用分层存储：
+Memory management uses layered storage:
 
-1. **会话记忆**: 当前会话的上下文
-2. **用户记忆**: 用户级别的历史
-3. **群组记忆**: 群组级别的历史
-4. **全局记忆**: 全局共享的知识
+1. **Session Memory**: Context of current session.
+2. **User Memory**: User-level history.
+3. **Group Memory**: Group-level history.
+4. **Global Memory**: Globally shared knowledge.
 
-## 数据流
+## Data Flow
 
-### 消息数据流
+### Message Data Flow
 
 ```
-OneBot 消息
+OneBot Message
     │
     ▼
-消息解析
+Message Parsing
     │
     ▼
-事件构建
+Event Construction
     │
     ▼
-事件总线
+Event Bus
     │
-    ├──► 插件处理
-    └──► AI 处理
+    ├──► Plugin Processing
+    └──► AI Processing
          │
-         ├──► 消息记录
-         ├──► 记忆检索
-         ├──► AI 生成
-         └──► 回复构建
+         ├──► Message Recording
+         ├──► Memory Retrieval
+         ├──► AI Generation
+         └──► Reply Construction
               │
               ▼
-         OneBot 回复
+         OneBot Reply
 ```
 
-### 配置数据流
+### Configuration Data Flow
 
 ```
-配置文件 (TOML)
+Configuration File (TOML)
     │
     ▼
-配置解析
+Configuration Parsing
     │
     ▼
-环境变量覆盖
+Environment Variable Override
     │
     ▼
-配置对象
+Configuration Object
     │
-    ├──► 缓存
-    └──► 应用
+    ├──► Cache
+    └──► Application
 ```
 
-### 插件数据流
+### Plugin Data Flow
 
 ```
-插件目录
+Plugin Directory
     │
-    ├──► plugin.json (元数据)
-    ├──► system.json (系统数据)
-    └──► data/config.json (配置数据)
-    │
-    ▼
-插件加载
+    ├──► plugin.json (Metadata)
+    ├──► system.json (System Data)
+    └──► data/config.json (Config Data)
     │
     ▼
-插件实例
+Plugin Loading
     │
-    ├──► 注册能力
-    ├──► 订阅事件
-    └──► 提供服务
+    ▼
+Plugin Instance
+    │
+    ├──► Register Capabilities
+    ├──► Subscribe to Events
+    └──► Provide Services
 ```
 
-## 性能优化
+## Performance Optimization
 
-### 异步处理
+### Asynchronous Processing
 
-- 所有 I/O 操作都是异步的
-- 事件处理采用异步机制
-- 数据库操作采用异步 ORM
+- All I/O operations are asynchronous.
+- Event processing uses asynchronous mechanisms.
+- Database operations use asynchronous ORM.
 
-### 缓存机制
+### Caching Mechanism
 
-- 配置缓存
-- 插件元数据缓存
-- AI 配置缓存
-- 记忆缓存
+- Configuration caching.
+- Plugin metadata caching.
+- AI configuration caching.
+- Memory caching.
 
-### 连接池
+### Connection Pooling
 
-- 数据库连接池
-- HTTP 连接池
-- WebSocket 连接管理
+- Database connection pool.
+- HTTP connection pool.
+- WebSocket connection management.
 
-### 资源管理
+### Resource Management
 
-- 线程池管理
-- 内存管理
-- 文件句柄管理
+- Thread pool management.
+- Memory management.
+- File handle management.
 
-## 扩展性设计
+## Extensibility Design
 
-### 插件扩展
+### Plugin Extension
 
-- 标准化的插件接口
-- 灵活的适配器系统
-- 完善的生命周期管理
+- Standardized plugin interface.
+- Flexible adapter system.
+- Comprehensive lifecycle management.
 
-### 协议扩展
+### Protocol Extension
 
-- 支持协议扩展
-- 支持自定义消息类型
-- 支持自定义事件类型
+- Supports protocol extension.
+- Supports custom message types.
+- Supports custom event types.
 
-### AI 扩展
+### AI Extension
 
-- 支持多种 LLM 模型
-- 支持自定义 AI 功能
-- 支持自定义学习算法
+- Supports multiple LLM models.
+- Supports custom AI features.
+- Supports custom learning algorithms.
 
-## 安全性设计
+## Security Design
 
-### 认证授权
+### Authentication & Authorization
 
-- Token 认证
-- 会话管理
-- 权限验证
+- Token authentication.
+- Session management.
+- Permission verification.
 
-### 数据安全
+### Data Security
 
-- 配置加密
-- 敏感数据保护
-- 审计日志
+- Configuration encryption.
+- Sensitive data protection.
+- Audit logging.
 
-### 访问控制
+### Access Control
 
-- IP 白名单
-- 频率限制
-- 请求验证
+- IP whitelist.
+- Rate limiting.
+- Request verification.
 

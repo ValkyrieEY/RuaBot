@@ -1,56 +1,58 @@
-# AI 功能详解
+# AI Features
 
-## AI 系统概述
+{ [Chinese](ai-features_CN.md) | English }
 
-RuaBot 深度集成了 AI 功能，提供了完整的智能对话系统。AI 系统支持多种 LLM 模型，具备表达学习、智能回复、知识管理、记忆系统等核心功能。
+## AI System Overview
 
-### 核心特性
+RuaBot deeply integrates AI features, providing a complete intelligent dialogue system. The AI system supports various LLM models and features core functions such as expression learning, intelligent reply, knowledge management, and memory systems.
 
-- **多模型支持**: 支持 OpenAI、MCP 等多种 LLM 模型
-- **表达学习**: 自动学习用户的说话风格和表达习惯
-- **智能回复**: 生成符合群聊风格的智能回复
-- **黑话理解**: 识别和理解群聊中的黑话、俚语
-- **知识管理**: 支持知识图谱的构建和管理
-- **记忆系统**: 维护对话历史和上下文记忆
-- **持续学习**: 不断优化表达方式和回复质量
+### Core Features
 
-## 系统架构
+- **Multi-Model Support**: Supports various LLM models like OpenAI, MCP, etc.
+- **Expression Learning**: Automatically learns user speaking styles and expression habits.
+- **Intelligent Response**: Generates intelligent responses that fit the group chat style.
+- **Slang Understanding**: Identifies and understands slang and jargon in group chats.
+- **Knowledge Management**: Supports construction and management of knowledge graphs.
+- **Memory System**: Maintains conversation history and context memory.
+- **Continuous Learning**: Continuously optimizes expression methods and response quality.
 
-### AI 模块组成
+## System Architecture
+
+### AI Module Composition
 
 ```
-AI 模块
-├── 模型管理 (ModelManager)
-│   ├── 模型配置
-│   ├── 模型切换
-│   └── 模型调用
-├── 消息处理 (MessageHandler)
-│   ├── 消息预处理
-│   ├── 消息过滤
-│   └── 消息转换
-├── 回复生成 (Replyer)
-│   ├── 上下文构建
-│   ├── AI 调用
-│   └── 回复优化
-├── 学习系统
-│   ├── 表达学习 (ExpressionLearner)
-│   ├── 风格适配 (ExpressionSelector)
-│   └── 黑话理解 (JargonMiner)
-├── 知识管理
-│   ├── 知识提取 (OpenIE)
-│   ├── 知识存储 (KGStorage)
-│   └── 知识检索 (KGManager)
-└── 记忆管理
-    ├── 记忆存储
-    ├── 记忆检索
-    └── 记忆更新
+AI Module
+├── Model Management (ModelManager)
+│   ├── Model Configuration
+│   ├── Model Switching
+│   └── Model Invocation
+├── Message Processing (MessageHandler)
+│   ├── Message Pre-processing
+│   ├── Message Filtering
+│   └── Message Conversion
+├── Reply Generation (Replyer)
+│   ├── Context Construction
+│   ├── AI Invocation
+│   └── Reply Optimization
+├── Learning System
+│   ├── Expression Learning (ExpressionLearner)
+│   ├── Style Adaptation (ExpressionSelector)
+│   └── Slang Understanding (JargonMiner)
+├── Knowledge Management
+│   ├── Knowledge Extraction (OpenIE)
+│   ├── Knowledge Storage (KGStorage)
+│   └── Knowledge Retrieval (KGManager)
+└── Memory Management
+    ├── Memory Storage
+    ├── Memory Retrieval
+    └── Memory Update
 ```
 
-## 配置说明
+## Configuration Guide
 
-### 全局配置
+### Global Configuration
 
-在 Web UI 或通过 API 配置全局 AI 设置：
+Configure global AI settings via Web UI or API:
 
 ```json
 {
@@ -65,9 +67,9 @@ AI 模块
 }
 ```
 
-### 群组配置
+### Group Configuration
 
-为特定群组配置 AI 行为：
+Configure AI behavior for specific groups:
 
 ```json
 {
@@ -83,9 +85,9 @@ AI 模块
 }
 ```
 
-### 用户配置
+### User Configuration
 
-为特定用户配置 AI 行为：
+Configure AI behavior for specific users:
 
 ```json
 {
@@ -97,34 +99,34 @@ AI 模块
 }
 ```
 
-### 配置继承
+### Configuration Inheritance
 
-- 群组配置继承全局配置
-- 用户配置继承群组配置和全局配置
-- 子级配置会覆盖父级配置
+- Group configuration inherits global configuration.
+- User configuration inherits group and global configuration.
+- Child configuration overrides parent configuration.
 
-## 模型管理
+## Model Management
 
-### 支持的模型
+### Supported Models
 
-#### OpenAI 模型
+#### OpenAI Models
 
 - GPT-3.5-turbo
 - GPT-4
 - GPT-4-turbo
-- 其他 OpenAI 兼容模型
+- Other OpenAI compatible models
 
-#### MCP 模型
+#### MCP Models
 
-通过 MCP (Model Context Protocol) 协议支持多种模型。
+Supports various models via MCP (Model Context Protocol).
 
-### 添加模型
+### Adding Models
 
-通过 Web UI 或 API 添加新模型：
+Add new models via Web UI or API:
 
 ```python
 {
-  "name": "模型名称",
+  "name": "Model Name",
   "type": "openai",
   "api_key": "your-api-key",
   "base_url": "https://api.openai.com/v1",
@@ -132,44 +134,44 @@ AI 模块
 }
 ```
 
-### 模型切换
+### Model Switching
 
-可以在运行时切换模型，切换后立即生效。
+Models can be switched at runtime and take effect immediately.
 
-## 预设管理
+## Preset Management
 
-### 创建预设
+### Creating Presets
 
-预设定义了 AI 的行为风格和提示词：
+Presets define AI behavior style and prompts:
 
 ```json
 {
-  "name": "预设名称",
-  "system_prompt": "你是一个友好的助手...",
+  "name": "Preset Name",
+  "system_prompt": "You are a friendly assistant...",
   "temperature": 0.7,
   "max_tokens": 2000
 }
 ```
 
-### 预设应用
+### Preset Application
 
-可以为不同场景创建不同的预设：
-- 日常聊天预设
-- 技术问答预设
-- 娱乐互动预设
+Different presets can be created for different scenarios:
+- Daily chat preset
+- Technical Q&A preset
+- Entertainment interaction preset
 
-## 表达学习
+## Expression Learning
 
-### 工作原理
+### How it Works
 
-表达学习系统会分析群聊中的消息，提取用户的表达风格：
+The expression learning system analyzes messages in group chats to extract user expression styles:
 
-1. **消息收集**: 收集群聊中的消息
-2. **风格提取**: 分析消息的语言风格、用词习惯
-3. **模式识别**: 识别常见的表达模式
-4. **风格适配**: 在生成回复时应用学习到的风格
+1. **Message Collection**: Collect messages from group chats.
+2. **Style Extraction**: Analyze message language style and word usage habits.
+3. **Pattern Recognition**: Identify common expression patterns.
+4. **Style Adaptation**: Apply learned styles when generating replies.
 
-### 学习配置
+### Learning Configuration
 
 ```json
 {
@@ -180,65 +182,65 @@ AI 模块
 }
 ```
 
-### 风格适配
+### Style Adaptation
 
-系统会自动选择最合适的表达风格：
-- 根据群组风格选择
-- 根据对话上下文选择
-- 根据用户偏好选择
+The system automatically selects the most suitable expression style:
+- Based on group style
+- Based on conversation context
+- Based on user preference
 
-## 智能回复
+## Intelligent Reply
 
-### 回复生成流程
-
-```
-消息接收
-    │
-    ▼
-消息预处理
-    │
-    ▼
-记忆检索
-    │
-    ├──► 群组记忆
-    ├──► 用户记忆
-    └──► 会话记忆
-    │
-    ▼
-上下文构建
-    │
-    ├──► 系统提示词
-    ├──► 对话历史
-    ├──► 相关知识
-    └──► 风格提示
-    │
-    ▼
-AI 模型调用
-    │
-    ▼
-回复后处理
-    │
-    ├──► 风格适配
-    ├──► 内容优化
-    └──► 表情选择
-    │
-    ▼
-回复发送
-```
-
-### 触发方式
-
-#### 命令触发
-
-使用特定命令触发 AI 回复：
+### Reply Generation Process
 
 ```
-@bot 你好
+Message Reception
+    │
+    ▼
+Message Pre-processing
+    │
+    ▼
+Memory Retrieval
+    │
+    ├──► Group Memory
+    ├──► User Memory
+    └──► Session Memory
+    │
+    ▼
+Context Construction
+    │
+    ├──► System Prompt
+    ├──► Conversation History
+    ├──► Related Knowledge
+    └──► Style Prompt
+    │
+    ▼
+AI Model Call
+    │
+    ▼
+Reply Post-processing
+    │
+    ├──► Style Adaptation
+    ├──► Content Optimization
+    └──► Expression Selection
+    │
+    ▼
+Reply Sending
 ```
 
-#### 概率触发
+### Trigger Methods
 
-根据配置的概率自动回复：
+#### Command Trigger
+
+Trigger AI reply using specific commands:
+
+```
+@bot hello
+```
+
+#### Probability Trigger
+
+Automatically reply based on configured probability:
 
 ```json
 {
@@ -246,36 +248,36 @@ AI 模型调用
 }
 ```
 
-#### 关键词触发
+#### Keyword Trigger
 
-检测到特定关键词时触发：
+Trigger when specific keywords are detected:
 
 ```json
 {
-  "trigger_keywords": ["问题", "帮助", "怎么"]
+  "trigger_keywords": ["question", "help", "how"]
 }
 ```
 
-### 回复优化
+### Reply Optimization
 
-系统会对生成的回复进行优化：
+The system optimizes generated replies:
 
-- **风格适配**: 应用学习到的表达风格
-- **长度控制**: 控制回复长度
-- **内容过滤**: 过滤不当内容
-- **表情添加**: 自动添加合适的表情
+- **Style Adaptation**: Apply learned expression styles.
+- **Length Control**: Control reply length.
+- **Content Filtering**: Filter inappropriate content.
+- **Emoji Addition**: Automatically add appropriate emojis.
 
-## 黑话理解
+## Slang Understanding
 
-### 功能说明
+### Feature Description
 
-黑话理解系统能够识别和理解群聊中的黑话、俚语：
+The slang understanding system can identify and understand slang and jargon in group chats:
 
-1. **黑话挖掘**: 自动挖掘群聊中的黑话
-2. **黑话学习**: 学习黑话的含义和用法
-3. **黑话理解**: 在对话中理解和使用黑话
+1. **Slang Mining**: Automatically mine slang from group chats.
+2. **Slang Learning**: Learn the meaning and usage of slang.
+3. **Slang Understanding**: Understand and use slang in conversations.
 
-### 配置
+### Configuration
 
 ```json
 {
@@ -285,53 +287,53 @@ AI 模型调用
 }
 ```
 
-## 知识管理
+## Knowledge Management
 
-### 知识图谱
+### Knowledge Graph
 
-系统支持构建知识图谱来存储和管理知识：
+The system supports building knowledge graphs to store and manage knowledge:
 
-#### 知识提取
+#### Knowledge Extraction
 
-从对话中自动提取知识：
+Automatically extract knowledge from conversations:
 
 ```python
 {
-  "entity": "实体",
-  "relation": "关系",
-  "target": "目标实体"
+  "entity": "Entity",
+  "relation": "Relation",
+  "target": "Target Entity"
 }
 ```
 
-#### 知识存储
+#### Knowledge Storage
 
-知识存储在向量数据库中，支持快速检索。
+Knowledge is stored in a vector database for fast retrieval.
 
-#### 知识检索
+#### Knowledge Retrieval
 
-在生成回复时检索相关知识：
+Retrieve relevant knowledge when generating replies:
 
 ```python
 {
-  "query": "查询内容",
+  "query": "Query Content",
   "top_k": 5
 }
 ```
 
-### 知识更新
+### Knowledge Update
 
-知识图谱会持续更新：
-- 自动从对话中提取新知识
-- 定期更新知识关系
-- 清理过时知识
+The knowledge graph is continuously updated:
+- Automatically extract new knowledge from conversations.
+- Periodically update knowledge relations.
+- Clean up obsolete knowledge.
 
-## 记忆管理
+## Memory Management
 
-### 记忆类型
+### Memory Types
 
-#### 群组记忆
+#### Group Memory
 
-存储群组级别的对话历史：
+Store group-level conversation history:
 
 ```python
 {
@@ -342,9 +344,9 @@ AI 模型调用
 }
 ```
 
-#### 用户记忆
+#### User Memory
 
-存储用户级别的对话历史：
+Store user-level conversation history:
 
 ```python
 {
@@ -355,9 +357,9 @@ AI 模型调用
 }
 ```
 
-#### 会话记忆
+#### Session Memory
 
-存储当前会话的上下文：
+Store context of the current session:
 
 ```python
 {
@@ -367,37 +369,37 @@ AI 模型调用
 }
 ```
 
-### 记忆检索
+### Memory Retrieval
 
-在生成回复时检索相关记忆：
+Retrieve relevant memory when generating replies:
 
 ```python
 {
   "memory_type": "group",
   "target_id": "123456789",
-  "query": "查询内容",
+  "query": "Query Content",
   "limit": 10
 }
 ```
 
-### 记忆更新
+### Memory Update
 
-记忆会随着对话自动更新：
-- 新消息添加到记忆
-- 定期清理旧记忆
-- 压缩长记忆
+Memory automatically updates with conversations:
+- Add new messages to memory.
+- Periodically clean up old memory.
+- Compress long memory.
 
-## 高级功能
+## Advanced Features
 
-### Dream 系统
+### Dream System
 
-Dream 系统是一个高级的 AI 功能，支持：
+The Dream System is an advanced AI feature supporting:
 
-- **自主思考**: AI 可以自主思考和分析
-- **任务规划**: 规划复杂的任务
-- **工具使用**: 使用各种工具完成任务
+- **Autonomous Thinking**: AI can think and analyze autonomously.
+- **Task Planning**: Plan complex tasks.
+- **Tool Usage**: Use various tools to complete tasks.
 
-#### 配置
+#### Configuration
 
 ```json
 {
@@ -407,9 +409,9 @@ Dream 系统是一个高级的 AI 功能，支持：
 }
 ```
 
-### 频率控制
+### Frequency Control
 
-控制 AI 回复的频率，避免过度回复：
+Control AI reply frequency to avoid spamming:
 
 ```json
 {
@@ -420,104 +422,104 @@ Dream 系统是一个高级的 AI 功能，支持：
 }
 ```
 
-### 群组画像
+### Group Profile
 
-系统会为每个群组生成画像：
+The system generates profiles for each group:
 
 ```json
 {
   "group_id": "123456789",
   "profile": {
-    "topic": "技术讨论",
-    "style": "正式",
-    "activity": "高"
+    "topic": "Tech Discussion",
+    "style": "Formal",
+    "activity": "High"
   }
 }
 ```
 
-### 用户画像
+### User Profile
 
-系统会为每个用户生成画像：
+The system generates profiles for each user:
 
 ```json
 {
   "user_id": "987654321",
   "profile": {
-    "interests": ["编程", "游戏"],
-    "style": "轻松",
-    "activity": "中"
+    "interests": ["Coding", "Gaming"],
+    "style": "Relaxed",
+    "activity": "Medium"
   }
 }
 ```
 
-## 最佳实践
+## Best Practices
 
-### 1. 模型选择
+### 1. Model Selection
 
-- 日常聊天使用 GPT-3.5-turbo
-- 复杂任务使用 GPT-4
-- 根据需求选择合适的模型
+- Use GPT-3.5-turbo for daily chat.
+- Use GPT-4 for complex tasks.
+- Choose appropriate models based on needs.
 
-### 2. 预设配置
+### 2. Preset Configuration
 
-- 为不同场景创建不同预设
-- 定期优化预设提示词
-- 测试预设效果
+- Create different presets for different scenarios.
+- Periodically optimize preset prompts.
+- Test preset effects.
 
-### 3. 记忆管理
+### 3. Memory Management
 
-- 定期清理旧记忆
-- 控制记忆大小
-- 优化记忆检索
+- Periodically clean up old memory.
+- Control memory size.
+- Optimize memory retrieval.
 
-### 4. 频率控制
+### 4. Frequency Control
 
-- 设置合理的回复频率
-- 避免过度回复
-- 根据群组活跃度调整
+- Set reasonable reply frequency.
+- Avoid excessive replies.
+- Adjust based on group activity.
 
-### 5. 学习优化
+### 5. Learning Optimization
 
-- 定期检查学习效果
-- 调整学习参数
-- 清理无效学习数据
+- Periodically check learning effects.
+- Adjust learning parameters.
+- Clean up invalid learning data.
 
-## 性能优化
+## Performance Optimization
 
-### 缓存机制
+### Caching Mechanism
 
-- 模型响应缓存
-- 记忆检索缓存
-- 知识检索缓存
+- Model response caching.
+- Memory retrieval caching.
+- Knowledge retrieval caching.
 
-### 异步处理
+### Asynchronous Processing
 
-所有 AI 操作都是异步的，不会阻塞主线程。
+All AI operations are asynchronous and do not block the main thread.
 
-### 批量处理
+### Batch Processing
 
-支持批量处理多个请求，提高效率。
+Supports batch processing of multiple requests to improve efficiency.
 
-## 监控和调试
+## Monitoring and Debugging
 
-### 日志查看
+### Log Viewing
 
-查看 AI 相关的日志：
+View AI-related logs:
 
 ```bash
 tail -f logs/onebot_framework.log | grep AI
 ```
 
-### 性能监控
+### Performance Monitoring
 
-通过 Web UI 监控 AI 性能：
-- 响应时间
-- 调用次数
-- 错误率
+Monitor AI performance via Web UI:
+- Response time
+- Call count
+- Error rate
 
-### 调试模式
+### Debug Mode
 
-启用调试模式查看详细信息：
+Enable debug mode to view detailed information:
 
 ```json
 {
@@ -526,53 +528,54 @@ tail -f logs/onebot_framework.log | grep AI
 }
 ```
 
-## 常见问题
+## FAQ
 
-### 1. AI 不回复
+### 1. AI Not Replying
 
-**问题**: 配置了 AI 但没有回复。
+**Issue**: AI configured but not replying.
 
-**解决方案**:
-- 检查 AI 是否启用
-- 检查触发条件是否正确
-- 查看日志确认是否有错误
-- 检查模型配置是否正确
+**Solution**:
+- Check if AI is enabled.
+- Check if trigger conditions are correct.
+- Check logs for errors.
+- Check if model configuration is correct.
 
-### 2. 回复质量不佳
+### 2. Poor Reply Quality
 
-**问题**: AI 回复质量不理想。
+**Issue**: AI reply quality is not ideal.
 
-**解决方案**:
-- 优化系统提示词
-- 调整温度参数
-- 增加上下文记忆
-- 使用更好的模型
+**Solution**:
+- Optimize system prompts.
+- Adjust temperature parameter.
+- Increase context memory.
+- Use a better model.
 
-### 3. 记忆占用过大
+### 3. Excessive Memory Usage
 
-**问题**: 记忆数据占用过多空间。
+**Issue**: Memory data takes up too much space.
 
-**解决方案**:
-- 定期清理旧记忆
-- 限制记忆长度
-- 压缩记忆数据
+**Solution**:
+- Periodically clean up old memory.
+- Limit memory length.
+- Compress memory data.
 
-### 4. 学习效果不明显
+### 4. Learning Effect Not Obvious
 
-**问题**: 表达学习效果不明显。
+**Issue**: Expression learning effect is not obvious.
 
-**解决方案**:
-- 增加学习样本
-- 调整学习参数
-- 检查学习数据质量
+**Solution**:
+- Increase learning samples.
+- Adjust learning parameters.
+- Check learning data quality.
 
-## 参考资源
+## Reference Resources
 
-- [模型管理 API](../src/ai/model_manager.py)
-- [回复生成器](../src/ai/replyer.py)
-- [表达学习器](../src/ai/expression_learner.py)
-- [知识管理器](../src/ai/knowledge/)
+- [Model Manager API](../src/ai/model_manager.py)
+- [Reply Generator](../src/ai/replyer.py)
+- [Expression Learner](../src/ai/expression_learner.py)
+- [Knowledge Manager](../src/ai/knowledge/)
 
 ---
 
-更多详细信息请参考相关 API 文档和源码。
+For more details, please refer to relevant API documentation and source code.
+

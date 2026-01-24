@@ -1,203 +1,206 @@
-# XQNEXT 插件开发文档
+# XQNEXT Plugin Development Documentation
 
-> **版本**: v2.0  
-> **更新日期**: 2026-01-23
+{ [Chinese](README_CN.md) | English }
 
-欢迎来到 XQNEXT 插件开发文档！这套文档将帮助你从零开始开发功能强大的 QQ 机器人插件。
+> **Version**: v2.0
+> **Last Updated**: 2026-01-23
 
----
-
-## 文档目录
-
-### 入门教程
-
-1. **[插件系统概述](01-overview.md)** 入门
-   - 了解 XQNEXT 插件系统的核心特点
-   - 插件架构概览
-   - 为什么选择 XQNEXT
-
-2. **[快速开始](02-quickstart.md)** 入门 | 15分钟
-   - 创建第一个插件
-   - Hello World 示例
-   - 回声插件示例
-   - 常见问题解答
-
-### 深入理解
-
-3. **[插件系统架构](03-architecture.md)** 进阶 | 20分钟
-   - 整体架构设计
-   - 进程隔离原理
-   - 通信机制详解
-   - 事件流转机制
-   - 生命周期管理
-
-### API 参考
-
-4. **[插件 API 参考](04-api-reference.md)** 中级 | 30分钟
-   - 完整的 PluginAPI 文档
-   - 消息 API
-   - OneBot API 快捷方法
-   - 配置 API
-   - 存储 API
-   - 事件 API
-   - 工具 API
-
-### 功能指南
-
-5. **[配置与数据管理](05-config-data.md)** 中级
-   - 三层配置体系
-   - 配置定义与验证
-   - 数据持久化
-   - 线程池使用
-   - 缓存策略
-
-6. **[前端 UI 集成](06-ui-integration.md)** 中级
-   - 配置 Schema 定义
-   - 支持的字段类型
-   - 前端表单自动生成
-   - 配置读取与更新
-
-7. **[高级特性](07-advanced-features.md)** 高级
-   - 事件系统深入
-   - 异步编程最佳实践
-   - 错误处理与重试
-   - 性能优化
-   - 安全性考虑
-
-8. **[最佳实践与示例](08-best-practices.md)** 高级
-   - 完整的生产级插件示例
-   - 代码质量检查清单
-   - 常见陷阱避免
-   - 测试与调试
+Welcome to the XQNEXT Plugin Development Documentation! This set of documentation will help you start developing powerful QQ bot plugins from scratch.
 
 ---
 
-## 快速导航
+## Table of Contents
 
-### 我想...
+### Getting Started
 
-- **创建第一个插件** → [快速开始](02-quickstart.md)
-- **了解插件原理** → [插件系统架构](03-architecture.md)
-- **查API用法** → [插件 API 参考](04-api-reference.md)
-- **学习最佳实践** → [最佳实践与示例](08-best-practices.md)
-- **配置UI界面** → [前端 UI 集成](06-ui-integration.md)
-- **保存插件数据** → [配置与数据管理](05-config-data.md)
+1. **[Plugin System Overview](01-overview.md)** Beginner
+   - Understand core features of XQNEXT plugin system
+   - Plugin architecture overview
+   - Why choose XQNEXT
+
+2. **[Quick Start](02-quickstart.md)** Beginner | 15 min
+   - Create your first plugin
+   - Hello World example
+   - Echo plugin example
+   - FAQ
+
+### In-Depth Understanding
+
+3. **[Plugin System Architecture](03-architecture.md)** Intermediate | 20 min
+   - Overall architecture design
+   - Process isolation principle
+   - Communication mechanism detailed
+   - Event flow mechanism
+   - Lifecycle management
+
+### API Reference
+
+4. **[Plugin API Reference](04-api-reference.md)** Intermediate | 30 min
+   - Complete PluginAPI documentation
+   - Message API
+   - OneBot API shortcuts
+   - Configuration API
+   - Storage API
+   - Event API
+   - Tool API
+
+### Functional Guides
+
+5. **[Configuration & Data Management](05-config-data.md)** Intermediate
+   - Three-layer configuration system
+   - Configuration definition and validation
+   - Data persistence
+   - Thread pool usage
+   - Caching strategy
+
+6. **[Frontend UI Integration](06-ui-integration.md)** Intermediate
+   - Configuration Schema definition
+   - Supported field types
+   - Frontend form auto-generation
+   - Configuration reading and updating
+
+7. **[Advanced Features](07-advanced-features.md)** Advanced
+   - Event system deep dive
+   - Async programming best practices
+   - Error handling and retry
+   - Performance optimization
+   - Security considerations
+
+8. **[Best Practices & Examples](08-best-practices.md)** Advanced
+   - Complete production-grade plugin examples
+   - Code quality checklist
+   - Common pitfalls to avoid
+   - Testing and debugging
 
 ---
 
-## 学习路径
+## Quick Navigation
 
-### 初学者路径
+### I want to...
+
+- **Create my first plugin** → [Quick Start](02-quickstart.md)
+- **Understand plugin principles** → [Plugin System Architecture](03-architecture.md)
+- **Check API usage** → [Plugin API Reference](04-api-reference.md)
+- **Learn best practices** → [Best Practices & Examples](08-best-practices.md)
+- **Configure UI interface** → [Frontend UI Integration](06-ui-integration.md)
+- **Save plugin data** → [Configuration & Data Management](05-config-data.md)
+
+---
+
+## Learning Path
+
+### Beginner Path
 
 ```
-1. 插件系统概述 (5分钟)
+1. Plugin System Overview (5 min)
    ↓
-2. 快速开始 (15分钟)
+2. Quick Start (15 min)
    ↓
-3. 插件 API 参考 (浏览常用API)
+3. Plugin API Reference (Browse common APIs)
    ↓
-4. 配置与数据管理
+4. Configuration & Data Management
    ↓
-5. 前端 UI 集成
+5. Frontend UI Integration
 ```
 
-### 进阶路径
+### Advanced Path
 
 ```
-完成初学者路径
+Complete Beginner Path
    ↓
-6. 插件系统架构 (深入理解)
+6. Plugin System Architecture (Deep understanding)
    ↓
-7. 高级特性 (异步、性能、安全)
+7. Advanced Features (Async, Performance, Security)
    ↓
-8. 最佳实践与示例 (生产级代码)
+8. Best Practices & Examples (Production-grade code)
 ```
 
 ---
 
-## 插件示例
+## Plugin Examples
 
-框架自带了几个示例插件，可以作为参考：
+The framework comes with several example plugins for reference:
 
-| 插件 | 位置 | 难度 | 特性 |
-|------|------|------|------|
-| Hello Plugin | `plugins/hello_plugin/` |  | 基础消息处理 |
-| Like Plugin | `plugins/like_plugin/` |  | 数据持久化、限流 |
-| Kawaii Status | `plugins/kawaii_status/` |  | 线程池、图片处理 |
+| Plugin | Location | Difficulty | Features |
+|--------|----------|------------|----------|
+| Hello Plugin | `plugins/hello_plugin/` |  | Basic message handling |
+| Like Plugin | `plugins/like_plugin/` |  | Data persistence, rate limiting |
+| Kawaii Status | `plugins/kawaii_status/` |  | Thread pool, image processing |
 
 ---
 
-## 开发工具
+## Development Tools
 
-### VS Code 推荐插件
+### VS Code Recommended Extensions
 
-- **Python** - 基础 Python 支持
-- **Pylance** - 类型检查和智能提示
-- **Python Docstring Generator** - 自动生成文档字符串
+- **Python** - Basic Python support
+- **Pylance** - Type checking and IntelliSense
+- **Python Docstring Generator** - Auto-generate docstrings
 
-### 调试技巧
+### Debugging Tips
 
 ```python
-# 使用日志调试
-self.api.log("debug", f"变量值: {variable}")
+# Use log for debugging
+self.api.log("debug", f"Variable value: {variable}")
 
-# 查看框架日志
+# View framework logs
 tail -f logs/xqnext.log
 ```
 
 ---
 
-## 获取帮助
+## Get Help
 
-遇到问题？可以通过以下方式获取帮助：
+Running into issues? Get help via:
 
--  查看文档（当前正在阅读）
--  加入讨论群：QQ群 615122348
--  报告 Bug：[GitHub Issues](https://github.com/ValkyrieEY/RuaBot/issues)
--  邮件支持：2477194503@qq.com
-
----
-
-## 常见问题
-
-### Q: 插件开发需要什么基础？
-
-**A**: 需要基础的 Python 知识和简单的异步编程概念（`async/await`）。
-
-### Q: 插件可以做什么？
-
-**A**: 
--  接收和发送消息
--  群管理（踢人、禁言等）
--  持久化数据
--  定时任务
--  调用外部 API
--  生成图片、语音等多媒体内容
-
-### Q: 插件会影响框架稳定性吗？
-
-**A**: 不会。插件运行在独立进程中，崩溃不会影响框架和其他插件。
-
-### Q: 如何调试插件？
-
-**A**: 使用 `api.log()` 输出日志，查看框架日志文件，或使用 Python 调试器。
-
-### Q: 插件可以安装依赖吗？
-
-**A**: 可以。在 `plugin.json` 的 `dependencies` 字段中声明，或创建 `requirements.txt`。
+-  Check documentation (You are reading it)
+-  Join Discussion Group: QQ Group 615122348
+-  Report Bug: [GitHub Issues](https://github.com/ValkyrieEY/RuaBot/issues)
+-  Email Support: 2477194503@qq.com
 
 ---
 
-## 贡献
+## FAQ
 
-发现文档问题或有改进建议？欢迎提交 PR 或 Issue！
+### Q: What basics are needed for plugin development?
+
+**A**: Basic Python knowledge and simple asynchronous programming concepts (`async/await`) are required.
+
+### Q: What can plugins do?
+
+**A**:
+-  Receive and send messages
+-  Group management (kick, mute, etc.)
+-  Persist data
+-  Scheduled tasks
+-  Call external APIs
+-  Generate multimedia content like images, voice
+
+### Q: Will plugins affect framework stability?
+
+**A**: No. Plugins run in independent processes; crashes will not affect the framework or other plugins.
+
+### Q: How to debug plugins?
+
+**A**: Use `api.log()` to output logs, view framework log files, or use a Python debugger.
+
+### Q: Can plugins install dependencies?
+
+**A**: Yes. Declare in the `dependencies` field of `plugin.json` or create `requirements.txt`.
 
 ---
 
-**开始学习**: [插件系统概述 →](01-overview.md)
+## Contribution
+
+Found documentation issues or have improvement suggestions? PRs or Issues are welcome!
+
+---
+
+**Start Learning**: [Plugin System Overview →](01-overview.md)
 
 ---
 
 <p align="center">
   Made with love by XQNEXT Team
 </p>
+

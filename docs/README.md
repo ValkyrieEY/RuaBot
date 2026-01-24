@@ -1,104 +1,106 @@
-# RuaBot 文档中心
+# RuaBot Documentation Center
 
-欢迎来到 RuaBot 文档中心。这里包含了项目的完整文档，帮助您快速了解和使用 RuaBot 框架。
+{ [Chinese](README_CN.md) | English }
 
-## 文档目录
+Welcome to the RuaBot Documentation Center. This contains the complete documentation for the project to help you quickly understand and use the RuaBot framework.
 
-### 基础文档
+## Table of Contents
 
-- [项目介绍](project-introduction.md)
-  - 项目概述
-  - 核心特性
-  - 架构设计
-  - 核心概念
+### Basic Documentation
 
-- [系统架构](architecture.md)
-  - 整体架构
-  - 模块说明
-  - 工作流程
-  - 核心机制
-  - 数据流
+- [Project Introduction](project-introduction.md)
+  - Project Overview
+  - Core Features
+  - Architecture Design
+  - Core Concepts
 
-### 使用指南
+- [System Architecture](architecture.md)
+  - Overall Architecture
+  - Module Description
+  - Workflow
+  - Core Mechanisms
+  - Data Flow
 
-- [安装与配置](installation.md)
-  - 环境要求
-  - 安装步骤
-  - 配置说明
-  - 启动运行
-  - 常见问题
+### User Guide
 
-- [快速开始](quickstart.md)
-  - 基本使用
-  - 第一个插件
-  - 配置 AI
-  - 常用操作
+- [Installation & Configuration](installation.md)
+  - Requirements
+  - Installation Steps
+  - Configuration Guide
+  - Startup
+  - FAQ
 
-### 开发文档
+- [Quick Start](quickstart.md)
+  - Basic Usage
+  - First Plugin
+  - AI Configuration
+  - Common Operations
 
-- [插件开发指南](plugin/README.md.md)
-  - 插件基础
-  - 开发流程
-  - API 参考
-  - 最佳实践
-  - 示例代码
+### Development Documentation
 
-- [API 参考](api-reference.md)
-  - 核心 API
-  - 插件 API
+- [Plugin Development Guide](plugin/README.md)
+  - Plugin Basics
+  - Development Flow
+  - API Reference
+  - Best Practices
+  - Example Code
+
+- [API Reference](api-reference.md)
+  - Core API
+  - Plugin API
   - AI API
-  - 事件 API
+  - Event API
 
-### 高级功能
+### Advanced Features
 
-- [AI 功能详解](ai-features.md)
-  - AI 系统概述
-  - 配置说明
-  - 模型管理
-  - 高级功能
-  - 最佳实践
+- [AI Features](ai-features.md)
+  - AI System Overview
+  - Configuration
+  - Model Management
+  - Advanced Features
+  - Best Practices
 
-- [事件系统](event-system.md)
-  - 事件总线
-  - 事件类型
-  - 事件处理
-  - 自定义事件
+- [Event System](event-system.md)
+  - Event Bus
+  - Event Types
+  - Event Handling
+  - Custom Events
 
-- [权限管理](permissions.md)
-  - 权限系统
-  - 权限配置
-  - 权限检查
-  - 自定义权限
+- [Permission Management](permissions.md)
+  - Permission System
+  - Permission Config
+  - Permission Check
+  - Custom Permissions
 
-## 文档导航
+## Documentation Navigation
 
-### 按使用场景
+### By Scenario
 
-**我是新用户**
-1. 阅读 [项目介绍](project-introduction.md) 了解项目
-2. 查看 [安装与配置](installation.md) 进行安装
-3. 参考 [快速开始](quickstart.md) 开始使用
+**I am a new user**
+1. Read [Project Introduction](project-introduction.md) to understand the project
+2. View [Installation & Configuration](installation.md) to install
+3. Refer to [Quick Start](quickstart.md) to start using
 
-**我要开发插件**
-1. 阅读 [插件开发指南](plugin-development.md)
-2. 参考 [API 参考](api-reference.md)
-3. 查看示例插件代码
+**I want to develop plugins**
+1. Read [Plugin Development Guide](plugin/README.md)
+2. Refer to [API Reference](api-reference.md)
+3. View example plugin code
 
-**我要配置 AI**
-1. 阅读 [AI 功能详解](ai-features.md)
-2. 了解模型配置
-3. 学习高级功能
+**I want to configure AI**
+1. Read [AI Features](ai-features.md)
+2. Understand model configuration
+3. Learn advanced features
 
-**我要深入理解系统**
-1. 阅读 [系统架构](architecture.md)
-2. 了解 [事件系统](event-system.md)
-3. 学习 [权限管理](permissions.md)
+**I want to understand the system deeply**
+1. Read [System Architecture](architecture.md)
+2. Understand [Event System](event-system.md)
+3. Learn [Permission Management](permissions.md)
 
-## 更新日志
+## Changelog
 
-文档会随着项目更新而持续更新，请定期查看最新版本。
+Documentation will be updated continuously with the project. Please check the latest version regularly.
 
-## 反馈与贡献
+## Feedback & Contribution
 
-如果您发现文档中的问题或有改进建议，欢迎提交 Issue 或 Pull Request。
+If you find issues in the documentation or have suggestions for improvement, please submit an Issue or Pull Request.
 

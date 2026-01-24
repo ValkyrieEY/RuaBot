@@ -1,87 +1,89 @@
-# 项目介绍
+# Project Introduction
 
-## 项目概述
+{ [Chinese](project-introduction_CN.md) | English }
 
-RuaBot 是一个基于 OneBot v11 协议的现代化 QQ 机器人框架，旨在为开发者提供一个功能强大、易于扩展、性能优异的机器人开发平台。
+## Project Overview
 
-### 设计理念
+RuaBot is a modern QQ bot framework based on the OneBot v11 protocol, designed to provide developers with a powerful, easily extensible, and high-performance bot development platform.
 
-RuaBot 的设计遵循以下核心理念：
+### Design Philosophy
 
-- **模块化**: 采用模块化设计，各功能模块独立，便于维护和扩展
-- **可扩展性**: 提供完善的插件系统，支持第三方插件开发
-- **高性能**: 基于多线程/异步架构，支持高并发处理
-- **易用性**: 提供友好的 API 和 Web 管理界面
-- **智能化**: 深度集成 AI 功能，支持自然语言处理和智能回复
+RuaBot's design follows these core principles:
 
-### 项目定位
+- **Modularity**: Adopts a modular design where each functional module is independent, facilitating maintenance and expansion.
+- **Extensibility**: Provides a comprehensive plugin system supporting third-party plugin development.
+- **High Performance**: Based on multi-threading/asynchronous architecture, supporting high concurrency processing.
+- **Ease of Use**: Provides friendly APIs and a Web management interface.
+- **Intelligence**: Deep integration of AI features, supporting natural language processing and intelligent responses.
 
-RuaBot 适用于以下场景：
+### Positioning
 
-- QQ 群聊机器人开发
-- 智能客服系统
-- 自动化任务处理
-- 内容管理和分发
-- 数据收集和分析
+RuaBot is suitable for the following scenarios:
 
-## 核心特性
+- QQ group chat bot development
+- Intelligent customer service systems
+- Automated task processing
+- Content management and distribution
+- Data collection and analysis
 
-### 1. 插件系统
+## Core Features
 
-RuaBot 提供了完整的插件系统，支持：
+### 1. Plugin System
 
-- **热加载**: 插件可以在运行时动态加载和卸载
-- **热重载**: 支持插件代码更新后自动重载
-- **依赖管理**: 支持插件之间的依赖关系管理
-- **生命周期管理**: 提供完整的插件生命周期钩子
-- **配置管理**: 每个插件拥有独立的配置系统
-- **适配器系统**: 支持多种插件适配器
+RuaBot provides a complete plugin system supporting:
 
-### 2. AI 集成
+- **Hot Loading**: Plugins can be dynamically loaded and unloaded at runtime.
+- **Hot Reloading**: Supports automatic reloading after plugin code updates.
+- **Dependency Management**: Supports management of dependencies between plugins.
+- **Lifecycle Management**: Provides complete plugin lifecycle hooks.
+- **Configuration Management**: Each plugin has an independent configuration system.
+- **Adapter System**: Supports multiple plugin adapters.
 
-RuaBot 深度集成了 AI 功能：
+### 2. AI Integration
 
-- **多模型支持**: 支持 OpenAI、MCP 等多种 LLM 模型
-- **表达学习**: 自动学习用户的说话风格和表达习惯
-- **智能回复**: 生成符合群聊风格的智能回复
-- **黑话理解**: 识别和理解群聊中的黑话、俚语
-- **知识管理**: 支持知识图谱的构建和管理
-- **记忆系统**: 维护对话历史和上下文记忆
-- **持续学习**: 不断优化表达方式和回复质量
+RuaBot deeply integrates AI capabilities:
 
-### 3. 事件驱动架构
+- **Multi-Model Support**: Supports various LLM models like OpenAI, MCP, etc.
+- **Expression Learning**: Automatically learns user speaking styles and expression habits.
+- **Intelligent Response**: Generates intelligent responses that fit the group chat style.
+- **Slang Understanding**: Identifies and understands slang and jargon in group chats.
+- **Knowledge Management**: Supports construction and management of knowledge graphs.
+- **Memory System**: Maintains conversation history and context memory.
+- **Continuous Learning**: Continuously optimizes expression methods and response quality.
 
-采用事件驱动架构，提供：
+### 3. Event-Driven Architecture
 
-- **事件总线**: 统一的事件发布和订阅机制
-- **异步处理**: 所有事件处理都是异步的
-- **事件拦截**: 支持事件拦截和修改
-- **事件过滤**: 支持事件过滤和处理优先级
+Adopts an event-driven architecture, providing:
 
-### 4. 权限管理
+- **Event Bus**: Unified event publishing and subscription mechanism.
+- **Asynchronous Processing**: All event processing is asynchronous.
+- **Event Interception**: Supports event interception and modification.
+- **Event Filtering**: Supports event filtering and processing priorities.
 
-完善的权限管理系统：
+### 4. Permission Management
 
-- **细粒度控制**: 支持用户、群组、工具等多维度权限控制
-- **权限继承**: 支持权限继承和覆盖
-- **动态权限**: 支持运行时权限检查和修改
-- **审计日志**: 记录所有权限相关的操作
+A comprehensive permission management system:
 
-### 5. Web 管理界面
+- **Granular Control**: Supports multi-dimensional permission control for users, groups, tools, etc.
+- **Permission Inheritance**: Supports permission inheritance and overriding.
+- **Dynamic Permissions**: Supports runtime permission checking and modification.
+- **Audit Logging**: Records all permission-related operations.
 
-现代化的 Web 管理界面：
+### 5. Web Management Interface
 
-- **实时配置**: 支持实时配置修改和生效
-- **插件管理**: 可视化的插件管理界面
-- **AI 配置**: 便捷的 AI 模型和配置管理
-- **系统监控**: 实时系统状态监控
-- **日志查看**: 在线日志查看和分析
+A modern Web management interface:
 
-## 架构设计
+- **Real-time Configuration**: Supports real-time configuration modification and application.
+- **Plugin Management**: Visualized plugin management interface.
+- **AI Configuration**: Convenient AI model and configuration management.
+- **System Monitoring**: Real-time system status monitoring.
+- **Log Viewing**: Online log viewing and analysis.
 
-### 整体架构
+## Architecture Design
 
-RuaBot 采用分层架构设计：
+### Overall Architecture
+
+RuaBot uses a layered architecture design:
 
 ```
 ┌─────────────────────────────────────┐
@@ -117,154 +119,154 @@ RuaBot 采用分层架构设计：
 └─────────────────────────────────────┘
 ```
 
-### 核心模块
+### Core Modules
 
-#### 1. Core 模块
+#### 1. Core Module
 
-核心模块提供基础功能：
+The Core module provides basic functions:
 
-- **配置管理**: 统一的配置管理系统，支持热重载
-- **数据库**: 异步数据库操作和模型管理
-- **日志系统**: 分级日志记录和管理
-- **事件总线**: 事件发布和订阅机制
+- **Configuration Management**: Unified configuration management system supporting hot reload.
+- **Database**: Asynchronous database operations and model management.
+- **Log System**: Graded log recording and management.
+- **Event Bus**: Event publishing and subscription mechanism.
 
-#### 2. Plugin 模块
+#### 2. Plugin Module
 
-插件系统模块：
+Plugin system module:
 
-- **插件管理器**: 插件的加载、卸载、重载
-- **插件接口**: 标准化的插件接口定义
-- **适配器系统**: 支持多种插件适配器
-- **能力注册**: 插件能力注册和发现
+- **Plugin Manager**: Loading, unloading, and reloading of plugins.
+- **Plugin Interface**: Standardized plugin interface definition.
+- **Adapter System**: Supports multiple plugin adapters.
+- **Capability Registration**: Plugin capability registration and discovery.
 
-#### 3. AI 模块
+#### 3. AI Module
 
-AI 功能模块：
+AI function module:
 
-- **模型管理**: LLM 模型的管理和切换
-- **消息处理**: 消息的预处理和后处理
-- **回复生成**: 智能回复的生成和优化
-- **学习系统**: 表达学习和风格适配
-- **知识管理**: 知识图谱的构建和管理
-- **记忆管理**: 对话历史和上下文的维护
+- **Model Management**: Management and switching of LLM models.
+- **Message Processing**: Pre-processing and post-processing of messages.
+- **Response Generation**: Generation and optimization of intelligent responses.
+- **Learning System**: Expression learning and style adaptation.
+- **Knowledge Management**: Construction and management of knowledge graphs.
+- **Memory Management**: Maintenance of conversation history and context.
 
-#### 4. Protocol 模块
+#### 4. Protocol Module
 
-协议处理模块：
+Protocol processing module:
 
-- **OneBot 协议**: OneBot v11 协议的实现
-- **消息处理**: 消息的解析和构建
-- **事件处理**: 事件的接收和分发
-- **响应处理**: 响应的构建和发送
+- **OneBot Protocol**: Implementation of OneBot v11 protocol.
+- **Message Processing**: Parsing and construction of messages.
+- **Event Processing**: Reception and distribution of events.
+- **Response Processing**: Construction and sending of responses.
 
-#### 5. Security 模块
+#### 5. Security Module
 
-安全模块：
+Security module:
 
-- **认证授权**: 用户认证和授权
-- **权限管理**: 细粒度的权限控制
-- **访问控制**: 访问控制列表管理
-- **审计日志**: 安全审计日志
+- **Authentication & Authorization**: User authentication and authorization.
+- **Permission Management**: Granular permission control.
+- **Access Control**: Access control list management.
+- **Audit Logging**: Security audit logs.
 
-## 核心概念
+## Core Concepts
 
-### 插件 (Plugin)
+### Plugin
 
-插件是 RuaBot 的基本扩展单元。每个插件：
+Plugins are the basic unit of extension for RuaBot. Each plugin:
 
-- 拥有独立的目录和配置
-- 实现标准的插件接口
-- 可以订阅和处理事件
-- 可以注册和提供能力
-- 拥有独立的生命周期
+- Has an independent directory and configuration.
+- Implements standard plugin interfaces.
+- Can subscribe to and handle events.
+- Can register and provide capabilities.
+- Has an independent lifecycle.
 
-### 事件 (Event)
+### Event
 
-事件是系统内部通信的基本单位：
+Events are the basic unit of internal system communication:
 
-- **消息事件**: 接收到的消息
-- **系统事件**: 系统状态变化
-- **插件事件**: 插件生命周期事件
-- **自定义事件**: 用户定义的事件
+- **Message Event**: Received messages.
+- **System Event**: System status changes.
+- **Plugin Event**: Plugin lifecycle events.
+- **Custom Event**: User-defined events.
 
-### 适配器 (Adapter)
+### Adapter
 
-适配器是插件和框架之间的桥梁：
+Adapters bridge plugins and the framework:
 
-- 负责插件的加载和初始化
-- 提供插件运行环境
-- 处理插件与框架的交互
-- 支持多种插件类型
+- Responsible for plugin loading and initialization.
+- Provide the plugin execution environment.
+- Handle interactions between plugins and the framework.
+- Support multiple plugin types.
 
-### AI 配置 (AI Config)
+### AI Config
 
-AI 配置定义了 AI 的行为：
+AI Config defines AI behavior:
 
-- **全局配置**: 全局 AI 设置
-- **群组配置**: 群组级别的 AI 配置
-- **用户配置**: 用户级别的 AI 配置
-- **预设配置**: 预设的 AI 配置模板
+- **Global Config**: Global AI settings.
+- **Group Config**: Group-level AI configuration.
+- **User Config**: User-level AI configuration.
+- **Preset Config**: Preset AI configuration templates.
 
-### 记忆 (Memory)
+### Memory
 
-记忆存储了对话的上下文：
+Memory stores conversation context:
 
-- **群组记忆**: 群组级别的对话历史
-- **用户记忆**: 用户级别的对话历史
-- **会话记忆**: 单次会话的上下文
+- **Group Memory**: Group-level conversation history.
+- **User Memory**: User-level conversation history.
+- **Session Memory**: Single session context.
 
-## 技术栈
+## Technology Stack
 
-### 后端技术
+### Backend
 
-- **Python 3.10+**: 主要开发语言
-- **FastAPI**: Web 框架
-- **SQLAlchemy**: ORM 框架
-- **asyncio**: 异步编程
-- **Pydantic**: 数据验证
+- **Python 3.10+**: Primary development language.
+- **FastAPI**: Web framework.
+- **SQLAlchemy**: ORM framework.
+- **asyncio**: Asynchronous programming.
+- **Pydantic**: Data validation.
 
-### 前端技术
+### Frontend
 
-- **React**: UI 框架
-- **TypeScript**: 类型安全
-- **Tailwind CSS**: 样式框架
-- **Vite**: 构建工具
+- **React**: UI framework.
+- **TypeScript**: Type safety.
+- **Tailwind CSS**: Style framework.
+- **Vite**: Build tool.
 
-### AI 技术
+### AI
 
-- **OpenAI API**: LLM 服务
-- **MCP Protocol**: 模型上下文协议
-- **向量数据库**: 知识存储
-- **NLP 技术**: 自然语言处理
+- **OpenAI API**: LLM service.
+- **MCP Protocol**: Model Context Protocol.
+- **Vector Database**: Knowledge storage.
+- **NLP Technology**: Natural Language Processing.
 
-## 项目优势
+## Project Advantages
 
-1. **完整的生态**: 提供从开发到部署的完整解决方案
-2. **易于扩展**: 插件系统使得功能扩展变得简单
-3. **高性能**: 异步架构保证高并发性能
-4. **智能化**: 深度集成 AI，提供智能交互能力
-5. **现代化**: 采用最新的技术栈和最佳实践
-6. **文档完善**: 提供详细的文档和示例
+1. **Complete Ecosystem**: Provides a complete solution from development to deployment.
+2. **Easy Extension**: The plugin system makes functional extension simple.
+3. **High Performance**: Asynchronous architecture ensures high concurrency performance.
+4. **Intelligence**: Deeply integrated AI provides intelligent interaction capabilities.
+5. **Modern**: Uses the latest technology stack and best practices.
+6. **Comprehensive Documentation**: Provides detailed documentation and examples.
 
-## 适用场景
+## Scenarios
 
-RuaBot 适用于以下场景：
+RuaBot is suitable for:
 
-- **群聊管理**: 群聊内容管理、用户管理
-- **智能客服**: 自动回复、问题解答
-- **内容分发**: 新闻推送、内容推荐
-- **数据收集**: 数据采集、统计分析
-- **自动化任务**: 定时任务、自动化流程
-- **娱乐互动**: 游戏、抽奖、互动功能
+- **Group Chat Management**: Group content management, user management.
+- **Intelligent Customer Service**: Auto-reply, Q&A.
+- **Content Distribution**: News push, content recommendation.
+- **Data Collection**: Data collection, statistical analysis.
+- **Automated Tasks**: Scheduled tasks, automated workflows.
+- **Entertainment Interaction**: Games, lucky draws, interactive features.
 
-## 未来规划
+## Future Plans
 
-RuaBot 将持续改进和扩展：
+RuaBot will continue to improve and expand:
 
-- 支持更多 LLM 模型
-- 增强 AI 能力
-- 优化性能
-- 完善文档
-- 扩展插件生态
-- 增强安全性
+- Support more LLM models.
+- Enhance AI capabilities.
+- Optimize performance.
+- Improve documentation.
+- Expand plugin ecosystem.
+- Enhance security.
 

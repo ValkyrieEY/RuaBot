@@ -1,5 +1,4 @@
 # Docker Compose for XQNEXT Framework
-version: '3.8'
 
 services:
   xqnext:
@@ -22,8 +21,8 @@ services:
       - ../logs:/app/logs
       - ../plugins:/app/plugins
       
-      # 配置文件（只读）
-      - ../config.toml:/app/config.toml:ro
+      # 配置文件（可读写，允许 WebUI 更新配置）
+      - ../config.toml:/app/config.toml
     
     environment:
       # 时区

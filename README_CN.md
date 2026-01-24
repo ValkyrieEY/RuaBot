@@ -6,7 +6,7 @@
 
 ## RuaBot QQ Framework
 
-{ [Chinese](README_CN.md) | English }
+{ Chinese | [English](README.md) }
 
 [![Core](https://img.shields.io/badge/RuaBot-Core-blue)](https://github.com/ValkyrieEY/RuaBot/)
 <img src="https://img.shields.io/badge/Language-Python-coral" alt="Language">
@@ -14,9 +14,9 @@
 <img src="https://img.shields.io/static/v1?label=LICENSE&message=MIT&color=lightrey" alt="Badge">
 
 
-A modern bot development platform based on OneBot v11/12 protocol
+基于 OneBot v11/12 协议的现代化机器人开发平台
 
-[Introduction](docs/README.md) | [Quick Start](docs/installation.md) | [Plugin Dev](docs/plugin-development.md) | [AI Features](docs/ai-features.md)
+[项目介绍](docs/README_CN.md) | [快速开始](docs/installation_CN.md) | [插件开发](docs/plugin/README_CN.md) | [AI 功能](docs/ai-features_CN.md)
 
 </div>
 
@@ -24,23 +24,22 @@ A modern bot development platform based on OneBot v11/12 protocol
 
 > [!Important]
 > 
-> **RuaBot is a powerful, multi-threaded, loosely coupled, and easily extensible QQ bot framework built on the OneBot v11 protocol. The framework provides a complete plugin system, strong AI integration capabilities, a modern Web management interface, as well as a comprehensive permission management and event-driven architecture.**
+> **RuaBot 是一个功能强大、多线程、低耦合性、易于扩展的 QQ 机器人框架，基于 OneBot v11 协议构建。框架提供了完整的插件系统、强大的 AI 集成能力、现代化的 Web 管理界面，以及完善的权限管理和事件驱动架构**
 
-## Documentation Navigation
+## 文档导航
 
-For detailed documentation, please visit the [Documentation Center](docs/README.md):
+详细文档请查看 [文档中心](docs/README_CN.md)：
 
-- [Introduction](docs/project-introduction.md) - Project overview, architecture design, core concepts
-- [Architecture](docs/architecture.md) - System architecture, workflow, core mechanisms
-- [Installation](docs/installation.md) - Requirements, installation steps, configuration
-- [Plugin Development](docs/plugin/README.md.md) - Dev guide, API reference, examples
-- [AI Features](docs/ai-features.md) - AI system intro, config guide, advanced features
+- [项目介绍](docs/project-introduction_CN.md) - 项目概述、架构设计、核心概念
+- [系统架构](docs/architecture_CN.md) - 系统架构、工作流程、核心机制
+- [安装配置](docs/installation_CN.md) - 环境要求、安装步骤、配置说明
+- [插件开发](docs/plugin/README_CN.md) - 插件开发指南、API 参考、示例
+- [AI 功能](docs/ai-features_CN.md) - AI 系统介绍、配置说明、高级功能
 
-## License
+## 许可证
 
 MIT License
 
-## Contribution
+## 贡献
 
-Issues and Pull Requests are welcome.
-
+欢迎提交 Issue 和 Pull Request。

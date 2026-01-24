@@ -1,30 +1,32 @@
-# 前端 UI 集成指南
+# Frontend UI Integration Guide
 
-> **文档版本**: v2.0  
-> **更新日期**: 2026-01-23  
-> **难度等级**: 中级
+{ [Chinese](06-ui-integration_CN.md) | English }
 
-## 概述
+> **Doc Version**: v2.0
+> **Last Updated**: 2026-01-23
+> **Difficulty**: Intermediate
 
-XQNEXT 插件可以通过 `config_schema` 自动生成前端配置界面，用户可以在 Web UI 中修改插件配置，无需手动编辑文件。
+## Overview
+
+XQNEXT plugins can automatically generate frontend configuration interfaces through `config_schema`. Users can modify plugin configurations in the Web UI without manually editing files.
 
 ---
 
-## 配置Schema
+## Config Schema
 
-### 基本结构
+### Basic Structure
 
-在 `plugin.json` 中定义 `config_schema`：
+Define `config_schema` in `plugin.json`:
 
 ```json
 {
   "name": "my_plugin",
   "config_schema": {
-    "字段名": {
-      "type": "字段类型",
-      "default": "默认值",
-      "description": "字段描述",
-      "label": "显示标签",
+    "field_name": {
+      "type": "field_type",
+      "default": "default_value",
+      "description": "Field Description",
+      "label": "Display Label",
       "required": true/false
     }
   }
@@ -33,86 +35,86 @@ XQNEXT 插件可以通过 `config_schema` 自动生成前端配置界面，用�
 
 ---
 
-## 支持的字段类型
+## Supported Field Types
 
-### 1. string（字符串）
+### 1. string
 
 ```json
 {
   "api_key": {
     "type": "string",
     "default": "",
-    "description": "API 密钥",
+    "description": "API Key",
     "label": "API Key",
     "required": true
   }
 }
 ```
 
-**前端显示：** 文本输入框
+**Frontend Display:** Text Input Box
 
 ---
 
-### 2. number（数字）
+### 2. number
 
 ```json
 {
   "timeout": {
     "type": "number",
     "default": 30,
-    "description": "超时时间（秒）",
+    "description": "Timeout (seconds)",
     "min": 1,
     "max": 300
   }
 }
 ```
 
-**前端显示：** 数字输入框
+**Frontend Display:** Number Input Box
 
-**可选属性：**
-- `min`: 最小值
-- `max`: 最大值
+**Optional Properties:**
+- `min`: Minimum value
+- `max`: Maximum value
 
 ---
 
-### 3. boolean（布尔值）
+### 3. boolean
 
 ```json
 {
   "enabled": {
     "type": "boolean",
     "default": true,
-    "description": "是否启用插件"
+    "description": "Enable Plugin"
   }
 }
 ```
 
-**前端显示：** 开关按钮
+**Frontend Display:** Toggle Switch
 
 ---
 
-### 4. array（数组）
+### 4. array
 
 ```json
 {
   "admins": {
     "type": "array",
     "default": [],
-    "description": "管理员QQ号列表（每行一个）"
+    "description": "Admin QQ ID List (One per line)"
   }
 }
 ```
 
-**前端显示：** 文本域（多行输入）
+**Frontend Display:** Text Area (Multi-line input)
 
-**用户输入格式：**
+**User Input Format:**
 ```
 123456
 789012
 345678
 ```
 
-或
+Or
 
 ```
 123456, 789012, 345678
@@ -120,359 +122,359 @@ XQNEXT 插件可以通过 `config_schema` 自动生成前端配置界面，用�
 
 ---
 
-### 5. select（下拉选择）
+### 5. select
 
 ```json
 {
   "theme": {
     "type": "select",
     "default": "light",
-    "description": "主题",
+    "description": "Theme",
     "options": [
-      {"value": "light", "label": "亮色"},
-      {"value": "dark", "label": "暗色"},
-      {"value": "auto", "label": "自动"}
+      {"value": "light", "label": "Light"},
+      {"value": "dark", "label": "Dark"},
+      {"value": "auto", "label": "Auto"}
     ]
   }
 }
 ```
 
-**前端显示：** 下拉选择框
+**Frontend Display:** Dropdown Select Box
 
 ---
 
-### 6. textarea（多行文本）
+### 6. textarea
 
 ```json
 {
   "custom_reply": {
     "type": "textarea",
     "default": "",
-    "description": "自定义回复内容",
+    "description": "Custom Reply Content",
     "rows": 5
   }
 }
 ```
 
-**前端显示：** 多行文本框
+**Frontend Display:** Multi-line Text Box
 
-**可选属性：**
-- `rows`: 行数（默认3）
+**Optional Properties:**
+- `rows`: Number of rows (Default 3)
 
 ---
 
-## 完整示例
+## Complete Example
 
 ```json
 {
   "name": "weather_plugin",
   "version": "1.0.0",
   "author": "YourName",
-  "description": "天气查询插件",
+  "description": "Weather Plugin",
   "config_schema": {
     "api_key": {
       "type": "string",
       "default": "",
-      "description": "天气API密钥（在 https://example.com 申请）",
-      "label": "API 密钥",
+      "description": "Weather API Key (Apply at https://example.com)",
+      "label": "API Key",
       "required": true
     },
     "default_city": {
       "type": "string",
-      "default": "北京",
-      "description": "默认查询城市",
-      "label": "默认城市"
+      "default": "Beijing",
+      "description": "Default Query City",
+      "label": "Default City"
     },
     "cache_time": {
       "type": "number",
       "default": 3600,
-      "description": "缓存时间（秒）",
-      "label": "缓存时长",
+      "description": "Cache Time (seconds)",
+      "label": "Cache Duration",
       "min": 60,
       "max": 86400
     },
     "enabled": {
       "type": "boolean",
       "default": true,
-      "description": "是否启用插件",
-      "label": "启用"
+      "description": "Enable Plugin",
+      "label": "Enabled"
     },
     "admins": {
       "type": "array",
       "default": [],
-      "description": "管理员QQ号列表（每行一个）",
-      "label": "管理员列表"
+      "description": "Admin QQ ID List (One per line)",
+      "label": "Admin List"
     },
     "unit": {
       "type": "select",
       "default": "metric",
-      "description": "温度单位",
-      "label": "单位",
+      "description": "Temperature Unit",
+      "label": "Unit",
       "options": [
-        {"value": "metric", "label": "摄氏度 (°C)"},
-        {"value": "imperial", "label": "华氏度 (°F)"}
+        {"value": "metric", "label": "Celsius (°C)"},
+        {"value": "imperial", "label": "Fahrenheit (°F)"}
       ]
     },
     "welcome_message": {
       "type": "textarea",
-      "default": "欢迎使用天气查询插件！\n发送 /天气 [城市名] 查询天气",
-      "description": "欢迎消息",
-      "label": "欢迎消息",
+      "default": "Welcome to Weather Plugin!\nSend /weather [city] to query weather",
+      "description": "Welcome Message",
+      "label": "Welcome Message",
       "rows": 3
     }
   },
   "default_config": {
     "api_key": "",
-    "default_city": "北京",
+    "default_city": "Beijing",
     "cache_time": 3600,
     "enabled": true,
     "admins": [],
     "unit": "metric",
-    "welcome_message": "欢迎使用天气查询插件！\n发送 /天气 [城市名] 查询天气"
+    "welcome_message": "Welcome to Weather Plugin!\nSend /weather [city] to query weather"
   }
 }
 ```
 
 ---
 
-## 前端显示效果
+## Frontend Display Effect
 
-用户在 Web UI 的插件管理页面中，点击"配置"按钮后会看到：
+When users click the "Config" button on the plugin management page in Web UI, they will see:
 
 ```
 ┌─────────────────────────────────────┐
-│ weather_plugin 配置                 │
+│ weather_plugin Config               │
 ├─────────────────────────────────────┤
-│ API 密钥 *                          │
+│ API Key *                           │
 │ [____________________________]      │
-│ 天气API密钥（在 https://... 申请）  │
+│ Weather API Key (Apply at...)       │
 │                                     │
-│ 默认城市                            │
-│ [北京_____________________]        │
-│ 默认查询城市                        │
+│ Default City                        │
+│ [Beijing__________________]         │
+│ Default Query City                  │
 │                                     │
-│ 缓存时长                            │
+│ Cache Duration                      │
 │ [3600] ◀──────▶ (60 ~ 86400)      │
-│ 缓存时间（秒）                      │
+│ Cache Time (seconds)                │
 │                                     │
-│ 启用                                │
+│ Enabled                             │
 │ [ON  OFF]                           │
-│ 是否启用插件                        │
+│ Enable Plugin                       │
 │                                     │
-│ 管理员列表                          │
+│ Admin List                          │
 │ [                              ]    │
 │ [                              ]    │
 │ [                              ]    │
-│ 管理员QQ号列表（每行一个）          │
+│ Admin QQ ID List (One per line)     │
 │                                     │
-│ 单位                                │
-│ [摄氏度 (°C) ▼]                    │
-│ 温度单位                            │
+│ Unit                                │
+│ [Celsius (°C) ▼]                    │
+│ Temperature Unit                    │
 │                                     │
-│ 欢迎消息                            │
-│ [欢迎使用天气查询插件！        ]    │
-│ [发送 /天气 [城市名] 查询天气  ]    │
+│ Welcome Message                     │
+│ [Welcome to Weather Plugin!      ]  │
+│ [Send /weather [city] to query   ]  │
 │ [                              ]    │
-│ 欢迎消息                            │
+│ Welcome Message                     │
 │                                     │
-│ [保存]  [取消]                      │
+│ [Save]  [Cancel]                    │
 └─────────────────────────────────────┘
 ```
 
 ---
 
-## 从前端获取配置
+## Getting Config from Frontend
 
-### 在插件中读取用户配置
+### Reading User Config in Plugin
 
 ```python
 class WeatherPlugin:
     def __init__(self, api, config):
         self.api = api
-        # 读取配置
+        # Read Config
         self.api_key = config.get('api_key', '')
-        self.default_city = config.get('default_city', '北京')
+        self.default_city = config.get('default_city', 'Beijing')
         self.cache_time = config.get('cache_time', 3600)
         self.enabled = config.get('enabled', True)
         self.admins = config.get('admins', [])
         self.unit = config.get('unit', 'metric')
         self.welcome_message = config.get('welcome_message', '')
         
-        # 验证必需配置
+        # Validate Required Config
         if not self.api_key:
-            self.api.log("error", "API密钥未设置！")
+            self.api.log("error", "API Key not set!")
 ```
 
-### 运行时更新配置
+### Runtime Config Update
 
 ```python
 async def update_cache_time(self, new_time: int):
-    """更新缓存时间"""
-    # 修改内存中的值
+    """Update Cache Time"""
+    # Modify value in memory
     self.cache_time = new_time
     
-    # 保存到数据库
+    # Save to database
     await self.api.set_config('cache_time', new_time)
     
-    # 注意：配置不会立即生效，需要重载插件
-    self.api.log("info", f"缓存时间已更新为 {new_time} 秒，请重载插件生效")
+    # Note: Config won't take effect immediately until reload
+    self.api.log("info", f"Cache time updated to {new_time}s, please reload plugin to take effect")
 ```
 
 ---
 
-## 高级技巧
+## Advanced Tips
 
-### 1. 密码字段
+### 1. Password Field
 
-虽然目前没有专门的 `password` 类型，但可以使用 `string` 类型并在描述中提示：
+Although currently there is no dedicated `password` type, you can use `string` type and prompt in the description:
 
 ```json
 {
   "password": {
     "type": "string",
     "default": "",
-    "description": "密码（将以明文存储，请注意安全）",
-    "label": "密码"
+    "description": "Password (Stored in plain text, please be careful)",
+    "label": "Password"
   }
 }
 ```
 
-### 2. 条件显示
+### 2. Conditional Display
 
-目前不支持条件显示，但可以在插件代码中处理：
+Conditional display is currently not supported, but can be handled in plugin code:
 
 ```python
 def __init__(self, api, config):
     self.mode = config.get('mode', 'simple')
     
-    # 根据模式读取不同的配置
+    # Read different config based on mode
     if self.mode == 'advanced':
         self.advanced_option = config.get('advanced_option', '')
 ```
 
-### 3. 配置组
+### 3. Config Grouping
 
-使用 label 和 description 进行分组：
+Use label and description for grouping:
 
 ```json
 {
   "_group_basic": {
     "type": "string",
-    "default": "=== 基础配置 ===",
+    "default": "=== Basic Config ===",
     "description": "",
-    "label": "基础配置"
+    "label": "Basic Config"
   },
   "api_key": {
     "type": "string",
     "default": "",
-    "description": "API密钥"
+    "description": "API Key"
   },
   "_group_advanced": {
     "type": "string",
-    "default": "=== 高级配置 ===",
+    "default": "=== Advanced Config ===",
     "description": "",
-    "label": "高级配置"
+    "label": "Advanced Config"
   },
   "timeout": {
     "type": "number",
     "default": 30,
-    "description": "超时时间"
+    "description": "Timeout"
   }
 }
 ```
 
 ---
 
-## 配置验证
+## Configuration Validation
 
-### 在插件中验证配置
+### Validating Config in Plugin
 
 ```python
 class MyPlugin:
     def __init__(self, api, config):
         self.api = api
         
-        # 验证配置
+        # Validate Config
         try:
             self._validate_config(config)
         except ValueError as e:
-            self.api.log("error", f"配置验证失败: {e}")
+            self.api.log("error", f"Config validation failed: {e}")
             raise
         
-        # 读取配置
+        # Read Config
         self.api_key = config['api_key']
     
     def _validate_config(self, config: dict):
-        """验证配置"""
-        # 检查必需字段
+        """Validate Config"""
+        # Check required fields
         if 'api_key' not in config or not config['api_key']:
-            raise ValueError("API密钥不能为空")
+            raise ValueError("API Key cannot be empty")
         
-        # 检查类型
+        # Check type
         if 'timeout' in config:
             if not isinstance(config['timeout'], (int, float)):
-                raise ValueError("超时时间必须是数字")
+                raise ValueError("Timeout must be a number")
             if config['timeout'] < 1:
-                raise ValueError("超时时间不能小于1秒")
+                raise ValueError("Timeout cannot be less than 1 second")
         
-        # 检查范围
+        # Check range
         if 'admins' in config:
             if not isinstance(config['admins'], list):
-                raise ValueError("管理员列表必须是数组")
+                raise ValueError("Admin list must be an array")
 ```
 
 ---
 
-## 最佳实践
+## Best Practices
 
-### 1. 提供清晰的描述
+### 1. Provide Clear Description
 
 ```json
 {
   "api_key": {
     "type": "string",
     "default": "",
-    "description": "在 https://api.example.com 申请API密钥，免费版每天100次请求",
-    "label": "API 密钥"
+    "description": "Apply API Key at https://api.example.com, free version 100 requests/day",
+    "label": "API Key"
   }
 }
 ```
 
-### 2. 设置合理的默认值
+### 2. Set Reasonable Default Values
 
 ```json
 {
   "retry_count": {
     "type": "number",
     "default": 3,
-    "description": "失败后的重试次数（建议3-5次）",
+    "description": "Retry count after failure (Suggested 3-5)",
     "min": 1,
     "max": 10
   }
 }
 ```
 
-### 3. 使用 label 提升可读性
+### 3. Use Label to Improve Readability
 
 ```json
 {
   "max_results": {
     "type": "number",
     "default": 10,
-    "description": "每次查询返回的最大结果数",
-    "label": "最大结果数"
+    "description": "Max results returned per query",
+    "label": "Max Results"
   }
 }
 ```
 
-### 4. 标记必需字段
+### 4. Mark Required Fields
 
 ```json
 {
   "api_key": {
     "type": "string",
     "default": "",
-    "description": "API 密钥",
+    "description": "API Key",
     "required": true
   }
 }
@@ -480,30 +482,30 @@ class MyPlugin:
 
 ---
 
-## 常见问题
+## FAQ
 
-### Q: 配置修改后何时生效？
+### Q: When does config modification take effect?
 
-配置保存后，需要重载插件才能生效。点击插件页面的"重载"按钮。
+After saving the configuration, you need to reload the plugin to take effect. Click the "Reload" button on the plugin page.
 
-### Q: 可以隐藏某些配置吗？
+### Q: Can I hide certain configurations?
 
-目前不支持隐藏配置。如果不想在前端显示，可以不在 `config_schema` 中定义，只在 `default_config` 中定义。
+Currently hiding configurations is not supported. If you don't want to display it on the frontend, you can define it only in `default_config` instead of `config_schema`.
 
-### Q: 可以自定义UI吗？
+### Q: Can I customize UI?
 
-目前不支持自定义UI。UI 会根据 `config_schema` 自动生成。
+Currently customizing UI is not supported. UI is automatically generated based on `config_schema`.
 
-### Q: array 类型如何输入？
+### Q: How to input array type?
 
-用户可以每行输入一个值，或用逗号/空格分隔多个值：
+Users can input one value per line, or separate multiple values with comma/space:
 
 ```
 123456
 789012
 ```
 
-或
+Or
 
 ```
 123456, 789012, 345678
@@ -511,7 +513,6 @@ class MyPlugin:
 
 ---
 
-**上一篇**: [← 配置与数据管理](05-config-data.md)  
-**下一篇**: [高级特性 →](07-advanced-features.md)
-
+**Previous**: [← Configuration & Data Management](05-config-data.md)  
+**Next**: [Advanced Features →](07-advanced-features.md)
 

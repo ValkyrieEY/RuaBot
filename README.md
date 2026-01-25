@@ -44,3 +44,9 @@ MIT License
 
 Issues and Pull Requests are welcome.
 
+Special thanks to the developers who contributed to the project！
+
+<a href="https://github.com/ValkyrieEY/RuaBot/graphs/contributors">
+  <img src="https://contrib.rocks/image?repo=ValkyrieEY/RuaBot" />
+</a>
+

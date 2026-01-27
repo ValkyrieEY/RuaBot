@@ -43,3 +43,10 @@ MIT License
 ## 贡献
 
 欢迎提交 Issue 和 Pull Request。
+
+特别鸣谢以下为项目做出贡献的开发者们！
+
+<a href="https://github.com/ValkyrieEY/RuaBot/graphs/contributors">
+  <img src="https://contrib.rocks/image?repo=ValkyrieEY/RuaBot" />
+</a>
+

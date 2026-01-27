@@ -384,14 +384,15 @@ class OneBotAdapter(ProtocolAdapter):
             return
         
         # Check if it's a self message (user_id == self_id)
+        # BUT allow message_sent events (self-sent messages) for chat history
         user_id = data.get("user_id")
         self_id = data.get("self_id")
-        if user_id and self_id and str(user_id) == str(self_id):
-            logger.debug("Skipping self message", user_id=user_id)
+        if user_id and self_id and str(user_id) == str(self_id) and post_type != "message_sent":
+            logger.debug("Skipping self message", user_id=user_id, post_type=post_type)
             return
         
         # Log received event (similar to old project)
-        if post_type == "message":
+        if post_type == "message" or post_type == "message_sent":
             message_type = data.get("message_type", "unknown")
             group_id = data.get("group_id")
             message_text = data.get("raw_message", "")
@@ -424,6 +425,24 @@ class OneBotAdapter(ProtocolAdapter):
                 "type": "message",
                 "envelope": envelope.to_dict(),  # Convert to dict for serialization
                 "raw": data
+            })
+        elif post_type == "message_sent":
+            # Handle self-sent messages for chat history
+            # Mark as is_self=True so it can be identified in history
+            data_with_self_flag = data.copy()
+            data_with_self_flag["is_self"] = True
+            
+            envelope = self._parse_message_event(data_with_self_flag)
+            logger.debug(
+                "Processing self-sent message event",
+                message_id=envelope.message_id,
+                message_type=envelope.message_type,
+                user_id=envelope.user_id
+            )
+            await self._emit_event({
+                "type": "message",  # Emit as message type for history
+                "envelope": envelope.to_dict(),
+                "raw": data_with_self_flag
             })
         elif post_type == "notice":
             notice_type = data.get("notice_type", "unknown")

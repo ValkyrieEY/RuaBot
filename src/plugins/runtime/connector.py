@@ -9,14 +9,75 @@ import sys
 import os
 from pathlib import Path
 from typing import Optional, Dict, Any, Callable, Coroutine
+import asyncio
 from datetime import datetime
 
 from ...core.logger import get_logger
 from ...core.event_bus import EventBus
 from ...core.database import DatabaseManager
-from ..interceptor import InterceptorRegistry
+from ..interceptor import InterceptorRegistry, MessageInterceptor, InterceptorResult
 
 logger = get_logger(__name__)
+
+
+class ProxyMessageInterceptor(MessageInterceptor):
+    """代理拦截器 - 通过消息传递调用插件运行时的拦截逻辑"""
+    
+    def __init__(self, plugin_id: str, connector, priority: int = 100):
+        """初始化代理拦截器
+        
+        Args:
+            plugin_id: 插件ID
+            connector: PluginRuntimeConnector实例
+            priority: 优先级
+        """
+        super().__init__(plugin_id, priority)
+        self.connector = connector
+        self.plugin_id = plugin_id
+    
+    async def intercept_message(
+        self,
+        action: str,
+        params: Dict[str, Any],
+        source_plugin: Optional[str] = None
+    ) -> InterceptorResult:
+        """拦截消息 - 通过消息传递到插件运行时执行拦截逻辑"""
+        import uuid
+        
+        # 发送拦截请求到插件运行时
+        request_id = str(uuid.uuid4())
+        future = asyncio.get_event_loop().create_future()
+        
+        # 临时存储future（需要在connector中实现）
+        if not hasattr(self.connector, '_interceptor_futures'):
+            self.connector._interceptor_futures = {}
+        self.connector._interceptor_futures[request_id] = future
+        
+        # 发送拦截请求
+        await self.connector._send_to_runtime({
+            'type': 'intercept_message',
+            'data': {
+                'request_id': request_id,
+                'plugin_id': self.plugin_id,
+                'action': action,
+                'params': params,
+                'source_plugin': source_plugin
+            }
+        })
+        
+        try:
+            # 等待响应（超时1秒）
+            result = await asyncio.wait_for(future, timeout=1.0)
+            return result
+        except asyncio.TimeoutError:
+            # 超时则放行
+            logger.warning(f"拦截器响应超时: {self.plugin_id}, 放行消息")
+            return InterceptorResult(allow=True)
+        except Exception as e:
+            logger.error(f"拦截器执行错误: {self.plugin_id}, {e}")
+            return InterceptorResult(allow=True)
+        finally:
+            self.connector._interceptor_futures.pop(request_id, None)
 
 
 class PluginRuntimeConnector:
@@ -66,6 +127,9 @@ class PluginRuntimeConnector:
         
         # Interceptor registry for high-privilege plugins
         self.interceptor_registry = InterceptorRegistry()
+        
+        # Interceptor futures for async communication
+        self._interceptor_futures: Dict[str, asyncio.Future] = {}
     
     async def initialize(self):
         """Initialize plugin runtime."""
@@ -266,6 +330,43 @@ class PluginRuntimeConnector:
         elif msg_type == 'heartbeat':
             # Heartbeat response
             logger.debug("Received heartbeat from runtime")
+        
+        elif msg_type == 'register_interceptor':
+            # Plugin wants to register an interceptor
+            plugin_id = data.get('plugin_id')
+            priority = data.get('priority', 100)
+            
+            logger.info(f"Registering interceptor for plugin: {plugin_id}, priority: {priority}")
+            
+            # Create proxy interceptor
+            proxy_interceptor = ProxyMessageInterceptor(plugin_id, self, priority=priority)
+            self.interceptor_registry.register_message_interceptor(proxy_interceptor)
+            logger.info(f"✅ 拦截器已注册: {plugin_id}")
+        
+        elif msg_type == 'unregister_interceptor':
+            # Plugin wants to unregister an interceptor
+            plugin_id = data.get('plugin_id')
+            
+            logger.info(f"Unregistering interceptor for plugin: {plugin_id}")
+            self.interceptor_registry.unregister_message_interceptor(plugin_id)
+            logger.info(f"✅ 拦截器已取消注册: {plugin_id}")
+        
+        elif msg_type == 'intercept_message_response':
+            # Response from plugin runtime for intercept_message request
+            request_id = data.get('request_id')
+            allow = data.get('allow', True)
+            modified_data = data.get('modified_data')
+            block_reason = data.get('block_reason')
+            
+            if request_id in self._interceptor_futures:
+                future = self._interceptor_futures.pop(request_id)
+                if not future.done():
+                    result = InterceptorResult(
+                        allow=allow,
+                        modified_data=modified_data,
+                        block_reason=block_reason
+                    )
+                    future.set_result(result)
         
         elif msg_type == 'api_call':
             # Plugin wants to call OneBot API

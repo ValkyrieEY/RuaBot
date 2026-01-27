@@ -50,6 +50,11 @@ class ApiClient {
     return response.data
   }
 
+  // Get image proxy URL
+  getImageProxyUrl(imageUrl: string): string {
+    return `${API_BASE_URL}/chat/image-proxy?url=${encodeURIComponent(imageUrl)}`
+  }
+
   async put<T = any>(url: string, data?: any, config?: any): Promise<T> {
     const response = await this.client.put<T>(url, data, config)
     return response.data
@@ -123,6 +128,13 @@ class ApiClient {
       headers: {
         'Content-Type': 'multipart/form-data',
       },
+    })
+    return response.data
+  }
+
+  async installPluginFromGitHub(repoUrl: string): Promise<any> {
+    const response = await this.client.post('/plugins/install-from-github', {
+      repo_url: repoUrl
     })
     return response.data
   }
@@ -371,6 +383,17 @@ class ApiClient {
 
   async getAllMCPTools(): Promise<any[]> {
     const response = await this.client.get('/ai/mcp/tools')
+    return response.data
+  }
+
+  // Splash screen APIs
+  async checkSplashScreen(): Promise<{ should_show: boolean; reason?: string }> {
+    const response = await this.client.get('/splash/check')
+    return response.data
+  }
+
+  async markSplashScreenShown(): Promise<any> {
+    const response = await this.client.post('/splash/mark-shown')
     return response.data
   }
 }

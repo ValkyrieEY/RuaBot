@@ -17,6 +17,7 @@ import {
   Radio,
   MessagesSquare,
   Bot,
+  Info,
 } from 'lucide-react'
 import { cn } from '@/utils/cn'
 import { api } from '@/utils/api'
@@ -70,6 +71,7 @@ export default function Layout({ children }: LayoutProps) {
       { path: '/security', icon: Shield, label: t('nav.security'), enabled: true },
       { path: '/audit', icon: FileText, label: t('nav.audit'), enabled: true },
       { path: '/system', icon: Settings, label: t('nav.system'), enabled: true },
+      { path: '/about', icon: Info, label: '关于', enabled: true },
     ]
   }, [t, i18n.language, aiAvailable])
 
@@ -175,10 +177,17 @@ export default function Layout({ children }: LayoutProps) {
         )}
 
         {/* Main Content */}
-        <main className="flex-1 p-4 sm:p-6 lg:p-8 min-h-[calc(100vh-4rem)] lg:ml-64 max-w-full overflow-x-hidden w-full">
-          <div className="max-w-full">
-            {children}
-          </div>
+        <main className="flex-1 lg:ml-64 max-w-full w-full">
+          {/* Check if this is ChatPage (full height, no padding) or regular page (with padding) */}
+          {location.pathname === '/chat' ? (
+            children
+          ) : (
+            <div className="p-4 sm:p-6 lg:p-8 min-h-[calc(100vh-4rem)] max-w-full overflow-x-hidden">
+              <div className="max-w-full">
+                {children}
+              </div>
+            </div>
+          )}
         </main>
       </div>
     </div>

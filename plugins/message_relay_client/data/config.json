@@ -1,0 +1,9 @@
+{
+  "official_bot_appid": "",
+  "official_bot_qq": "",
+  "api_url": "",
+  "relay_secret": "",
+  "max_messages_per_batch": 5,
+  "enabled": true
+}
+

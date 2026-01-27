@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { useTranslation } from 'react-i18next'
+import { useToast } from '@/components/Toast'
 import { api, type PluginInfo } from '@/utils/api'
 import { 
   Play, 
@@ -11,7 +12,8 @@ import {
   X,
   Save,
   CheckCircle,
-  Trash2
+  Trash2,
+  Download
 } from 'lucide-react'
 
 interface PluginConfigModalProps {
@@ -278,6 +280,7 @@ function UploadModal({ isOpen, onClose, onSuccess }: UploadModalProps) {
   const [uploading, setUploading] = useState(false)
   const [error, setError] = useState('')
   const [success, setSuccess] = useState(false)
+  const [isDragging, setIsDragging] = useState(false)
 
   const handleUpload = async () => {
     if (!file) {
@@ -302,6 +305,40 @@ function UploadModal({ isOpen, onClose, onSuccess }: UploadModalProps) {
       setError(err.response?.data?.detail || '上传失败')
     } finally {
       setUploading(false)
+    }
+  }
+
+  const handleDragEnter = (e: React.DragEvent) => {
+    e.preventDefault()
+    e.stopPropagation()
+    setIsDragging(true)
+  }
+
+  const handleDragLeave = (e: React.DragEvent) => {
+    e.preventDefault()
+    e.stopPropagation()
+    setIsDragging(false)
+  }
+
+  const handleDragOver = (e: React.DragEvent) => {
+    e.preventDefault()
+    e.stopPropagation()
+  }
+
+  const handleDrop = (e: React.DragEvent) => {
+    e.preventDefault()
+    e.stopPropagation()
+    setIsDragging(false)
+
+    const files = e.dataTransfer.files
+    if (files && files.length > 0) {
+      const droppedFile = files[0]
+      if (droppedFile.name.endsWith('.zip')) {
+        setFile(droppedFile)
+        setError('')
+      } else {
+        setError('只支持 ZIP 文件')
+      }
     }
   }
 
@@ -332,14 +369,68 @@ function UploadModal({ isOpen, onClose, onSuccess }: UploadModalProps) {
             <>
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-2">
-                  选择 ZIP 文件
+                  选择或拖入 ZIP 文件
                 </label>
-                <input
-                  type="file"
-                  accept=".zip"
-                  onChange={(e) => setFile(e.target.files?.[0] || null)}
-                  className="input w-full"
-                />
+                
+                {/* Drag and Drop Zone */}
+                <div
+                  onDragEnter={handleDragEnter}
+                  onDragOver={handleDragOver}
+                  onDragLeave={handleDragLeave}
+                  onDrop={handleDrop}
+                  className={`
+                    relative border-2 border-dashed rounded-lg p-8 text-center transition-colors cursor-pointer
+                    ${isDragging 
+                      ? 'border-primary-500 bg-primary-50' 
+                      : 'border-gray-300 hover:border-primary-400 hover:bg-gray-50'
+                    }
+                  `}
+                  onClick={() => document.getElementById('file-upload')?.click()}
+                >
+                  <input
+                    id="file-upload"
+                    type="file"
+                    accept=".zip"
+                    onChange={(e) => {
+                      const selectedFile = e.target.files?.[0]
+                      if (selectedFile) {
+                        setFile(selectedFile)
+                        setError('')
+                      }
+                    }}
+                    className="hidden"
+                  />
+                  
+                  <Upload className={`w-12 h-12 mx-auto mb-3 ${isDragging ? 'text-primary-500' : 'text-gray-400'}`} />
+                  
+                  {file ? (
+                    <div className="space-y-2">
+                      <p className="text-sm font-medium text-gray-900">{file.name}</p>
+                      <p className="text-xs text-gray-500">
+                        {(file.size / 1024 / 1024).toFixed(2)} MB
+                      </p>
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation()
+                          setFile(null)
+                        }}
+                        className="text-sm text-primary-600 hover:text-primary-700"
+                      >
+                        重新选择
+                      </button>
+                    </div>
+                  ) : (
+                    <div className="space-y-1">
+                      <p className="text-sm text-gray-600">
+                        {isDragging ? '松开鼠标上传文件' : '拖入文件或点击选择'}
+                      </p>
+                      <p className="text-xs text-gray-500">
+                        支持 .zip 格式
+                      </p>
+                    </div>
+                  )}
+                </div>
               </div>
               
               {error && (
@@ -375,13 +466,132 @@ function UploadModal({ isOpen, onClose, onSuccess }: UploadModalProps) {
   )
 }
 
+interface GitHubInstallModalProps {
+  isOpen: boolean
+  onClose: () => void
+  onSuccess: () => void
+}
+
+function GitHubInstallModal({ isOpen, onClose, onSuccess }: GitHubInstallModalProps) {
+  const [repoUrl, setRepoUrl] = useState('')
+  const [installing, setInstalling] = useState(false)
+  const [error, setError] = useState('')
+  const [success, setSuccess] = useState(false)
+
+  const handleInstall = async () => {
+    if (!repoUrl.trim()) {
+      setError('请输入 GitHub 仓库地址')
+      return
+    }
+
+    setInstalling(true)
+    setError('')
+    setSuccess(false)
+
+    try {
+      await api.installPluginFromGitHub(repoUrl.trim())
+      setSuccess(true)
+      setTimeout(() => {
+        onSuccess()
+        onClose()
+        setRepoUrl('')
+        setSuccess(false)
+      }, 1500)
+    } catch (err: any) {
+      setError(err.response?.data?.detail || '安装失败')
+    } finally {
+      setInstalling(false)
+    }
+  }
+
+  if (!isOpen) return null
+
+  return (
+    <div className="fixed inset-0 bg-black bg-opacity-50 z-50 flex items-center justify-center p-4">
+      <div className="bg-white rounded-lg shadow-xl max-w-md w-full">
+        <div className="flex items-center justify-between p-6 border-b border-gray-200">
+          <h2 className="text-xl font-bold text-gray-900">
+            从 GitHub 安装插件
+          </h2>
+          <button
+            onClick={onClose}
+            className="p-2 hover:bg-gray-100 rounded-lg transition-colors"
+          >
+            <X className="w-5 h-5" />
+          </button>
+        </div>
+        
+        <div className="p-6 space-y-4">
+          {success ? (
+            <div className="flex items-center gap-2 text-green-600">
+              <CheckCircle className="w-5 h-5" />
+              <span>安装成功！</span>
+            </div>
+          ) : (
+            <>
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-2">
+                  GitHub 仓库地址
+                </label>
+                <input
+                  type="text"
+                  value={repoUrl}
+                  onChange={(e) => setRepoUrl(e.target.value)}
+                  placeholder="owner/repo 或 https://github.com/owner/repo"
+                  className="input w-full"
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' && !installing) {
+                      handleInstall()
+                    }
+                  }}
+                />
+                <p className="text-xs text-gray-500 mt-2">
+                  支持格式：owner/repo 或完整的 GitHub URL
+                </p>
+              </div>
+              
+              {error && (
+                <div className="bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded-lg text-sm">
+                  {error}
+                </div>
+              )}
+            </>
+          )}
+        </div>
+        
+        {!success && (
+          <div className="flex items-center justify-end gap-3 p-6 border-t border-gray-200">
+            <button
+              onClick={onClose}
+              disabled={installing}
+              className="btn btn-secondary"
+            >
+              取消
+            </button>
+            <button
+              onClick={handleInstall}
+              disabled={installing || !repoUrl.trim()}
+              className="btn btn-primary flex items-center gap-2"
+            >
+              <Download className="w-4 h-4" />
+              {installing ? '安装中...' : '安装'}
+            </button>
+          </div>
+        )}
+      </div>
+    </div>
+  )
+}
+
 export default function PluginsPage() {
   const { t } = useTranslation()
+  const toast = useToast()
   const [plugins, setPlugins] = useState<PluginInfo[]>([])
   const [loading, setLoading] = useState(false)
   const [initialLoading, setInitialLoading] = useState(true)
   const [actionLoading, setActionLoading] = useState<string | null>(null)
   const [showUploadModal, setShowUploadModal] = useState(false)
+  const [showGitHubModal, setShowGitHubModal] = useState(false)
   const [configPlugin, setConfigPlugin] = useState<string | null>(null)
 
   useEffect(() => {
@@ -410,8 +620,19 @@ export default function PluginsPage() {
     try {
       await api.pluginAction(pluginName, action)
       await loadPlugins() // Reload plugins after action
+      
+      // Show success toast based on action
+      const actionMessages = {
+        enable: `插件 "${pluginName}" 已启用`,
+        disable: `插件 "${pluginName}" 已停用`,
+        load: `插件 "${pluginName}" 已启用`,
+        unload: `插件 "${pluginName}" 已停用`,
+        reload: `插件 "${pluginName}" 已重载`
+      }
+      toast.success(actionMessages[action as keyof typeof actionMessages] || `操作成功`)
     } catch (error: any) {
-      alert(error.response?.data?.detail || t('plugins.actionFailed'))
+      const errorMsg = error.response?.data?.detail || t('plugins.actionFailed')
+      toast.error(errorMsg)
     } finally {
       setActionLoading(null)
     }
@@ -426,9 +647,10 @@ export default function PluginsPage() {
     try {
       await api.deletePlugin(pluginName)
       await loadPlugins() // Reload plugins after deletion
-      alert(`插件 "${pluginName}" 已成功删除`)
+      toast.success(`插件 "${pluginName}" 已成功删除`)
     } catch (error: any) {
-      alert(error.response?.data?.detail || '删除插件失败')
+      const errorMsg = error.response?.data?.detail || '删除插件失败'
+      toast.error(errorMsg)
     } finally {
       setActionLoading(null)
     }
@@ -450,6 +672,13 @@ export default function PluginsPage() {
           <p className="text-gray-500 text-sm mt-1">{t('plugins.description')}</p>
         </div>
         <div className="flex items-center gap-2 flex-shrink-0">
+          <button
+            onClick={() => setShowGitHubModal(true)}
+            className="btn btn-secondary flex items-center gap-2"
+          >
+            <Download className="w-4 h-4" />
+            GitHub 安装
+          </button>
           <button
             onClick={() => setShowUploadModal(true)}
             className="btn btn-primary flex items-center gap-2"
@@ -579,6 +808,12 @@ export default function PluginsPage() {
       <UploadModal
         isOpen={showUploadModal}
         onClose={() => setShowUploadModal(false)}
+        onSuccess={loadPlugins}
+      />
+
+      <GitHubInstallModal
+        isOpen={showGitHubModal}
+        onClose={() => setShowGitHubModal(false)}
         onSuccess={loadPlugins}
       />
 

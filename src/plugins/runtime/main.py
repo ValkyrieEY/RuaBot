@@ -195,6 +195,51 @@ class PluginRuntime:
                     self.log("warning", f"Future already done for request_id={request_id}")
             else:
                 self.log("warning", f"No pending request found for request_id={request_id}")
+        
+        elif msg_type == 'intercept_message':
+            # Framework wants to run interceptor
+            request_id = data.get('request_id')
+            plugin_id = data.get('plugin_id')
+            action = data.get('action')
+            params = data.get('params', {})
+            source_plugin = data.get('source_plugin')
+            
+            # Get interceptor from runtime
+            if hasattr(self, '_interceptors') and plugin_id in self._interceptors:
+                interceptor = self._interceptors[plugin_id]
+                try:
+                    # Run interceptor
+                    result = await interceptor.intercept_message(action, params, source_plugin)
+                    
+                    # Send response
+                    self.send_message({
+                        'type': 'intercept_message_response',
+                        'data': {
+                            'request_id': request_id,
+                            'allow': result.allow,
+                            'modified_data': result.modified_data,
+                            'block_reason': result.block_reason
+                        }
+                    })
+                except Exception as e:
+                    self.log("error", f"Interceptor error: {e}")
+                    # On error, allow the message
+                    self.send_message({
+                        'type': 'intercept_message_response',
+                        'data': {
+                            'request_id': request_id,
+                            'allow': True
+                        }
+                    })
+            else:
+                # No interceptor found, allow the message
+                self.send_message({
+                    'type': 'intercept_message_response',
+                    'data': {
+                        'request_id': request_id,
+                        'allow': True
+                    }
+                })
         else:
             self.log("warning", f"Unknown message type: {msg_type}")
     
@@ -319,6 +364,19 @@ class PluginRuntime:
                         await plugin_instance.on_unload()
                     except Exception as e:
                         self.log("error", f"Error in plugin on_unload: {e}")
+                
+                # Unregister interceptors for this plugin
+                if hasattr(self, '_interceptors') and plugin_id in self._interceptors:
+                    self.log("info", f"Unregistering interceptors for plugin: {plugin_id}")
+                    del self._interceptors[plugin_id]
+                    
+                    # Send unregistration request to main framework
+                    self.send_message({
+                        'type': 'unregister_interceptor',
+                        'data': {
+                            'plugin_id': plugin_id
+                        }
+                    })
                 
                 del self.plugins[plugin_id]
                 if plugin_id in self.plugin_configs:
@@ -679,6 +737,46 @@ class PluginAPI:
         """Set binary storage."""
         # TODO: Implement storage
         pass
+    
+    def register_message_interceptor(self, interceptor):
+        """Register a message interceptor.
+        
+        Sends a request to the main framework to register the interceptor.
+        The main framework will create a proxy interceptor that communicates
+        with the plugin runtime via messages.
+        
+        Args:
+            interceptor: MessageInterceptor instance
+        """
+        # Store interceptor in runtime for later use
+        if not hasattr(self.runtime, '_interceptors'):
+            self.runtime._interceptors = {}
+        self.runtime._interceptors[self.plugin_id] = interceptor
+        
+        # Send registration request to main framework
+        self.runtime.send_message({
+            'type': 'register_interceptor',
+            'data': {
+                'plugin_id': self.plugin_id,
+                'priority': getattr(interceptor, 'priority', 100)
+            }
+        })
+        self.log("info", f"已发送拦截器注册请求到主框架: {self.plugin_id}")
+    
+    def unregister_message_interceptor(self):
+        """Unregister all message interceptors for this plugin."""
+        # Remove interceptor from runtime
+        if hasattr(self.runtime, '_interceptors'):
+            self.runtime._interceptors.pop(self.plugin_id, None)
+        
+        # Send unregistration request to main framework
+        self.runtime.send_message({
+            'type': 'unregister_interceptor',
+            'data': {
+                'plugin_id': self.plugin_id
+            }
+        })
+        self.log("info", f"已发送拦截器取消注册请求到主框架: {self.plugin_id}")
 
 
 async def main():

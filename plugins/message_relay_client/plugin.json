@@ -1,0 +1,49 @@
+{
+  "name": "message_relay_client",
+  "version": "1.0.0",
+  "author": "XQNEXT",
+  "description": "消息中继客户端 - 通过官方机器人转发消息。需配置：AppID（API识别）+ QQ号（@触发）",
+  "category": "utility",
+  "tags": ["relay", "message", "官方机器人", "转发"],
+  "default_config": {
+    "official_bot_appid": "",
+    "official_bot_qq": "",
+    "api_url": "",
+    "relay_secret": "",
+    "max_messages_per_batch": 5,
+    "enabled": true
+  },
+  "config_schema": {
+    "official_bot_appid": {
+      "type": "string",
+      "default": "",
+      "description": "官方机器人AppID（必需，从官方平台中继设置页面复制）"
+    },
+    "official_bot_qq": {
+      "type": "string",
+      "default": "",
+      "description": "官方机器人QQ号（必需，用于@触发，需手动获取）"
+    },
+    "api_url": {
+      "type": "string",
+      "default": "",
+      "description": "官方机器人API地址（如：http://your-domain.com/api/relay）"
+    },
+    "relay_secret": {
+      "type": "string",
+      "default": "",
+      "description": "通信密钥（从官方机器人获取）"
+    },
+    "max_messages_per_batch": {
+      "type": "integer",
+      "default": 5,
+      "description": "每批次最多发送消息数（官方机器人被动回复限制）"
+    },
+    "enabled": {
+      "type": "boolean",
+      "default": true,
+      "description": "是否启用消息中继"
+    }
+  }
+}
+

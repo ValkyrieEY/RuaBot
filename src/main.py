@@ -57,9 +57,10 @@ def main():
     print(" /_/\\_\\___/_/   \\_\\___/ |_| |___|___\\__\\_\\\\__\\_\\")
     print("                               |_____|          ")
     print("\n" + "=" * 60)
-    print(f"  Web UI:     http://{config.host}:{config.port}/")
+    if config.web_ui_enabled:
+        print(f"  Web UI:     http://{config.host}:{config.port}/")
+        print(f"  Login:      admin / admin123")
     print(f"  API Docs:   http://{config.host}:{config.port}/docs")
-    print(f"  Login:      admin / admin123")
     print("=" * 60 + "\n")
     
     # Run FastAPI with React UI

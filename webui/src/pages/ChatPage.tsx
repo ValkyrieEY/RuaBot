@@ -1,7 +1,9 @@
 import { useEffect, useState, useRef } from 'react'
-import { Send, Users, User, Search, RefreshCw, MessageSquare, ArrowLeft, Wifi, WifiOff } from 'lucide-react'
+import { Send, Users, User, Search, RefreshCw, MessageSquare, ArrowLeft, Wifi, WifiOff, Image as ImageIcon } from 'lucide-react'
 import { api } from '@/utils/api'
 import { useWebSocket, type WebSocketMessage } from '@/hooks/useWebSocket'
+import { parseMessageContent } from '@/utils/messageParser'
+import EmojiPicker from '@/components/EmojiPicker'
 
 interface Contact {
   id: string
@@ -43,6 +45,7 @@ export default function ChatPage() {
   const [unreadCounts, setUnreadCounts] = useState<Record<string, number>>({}) // Track unread messages
   const [lastCheckedTime, setLastCheckedTime] = useState<number>(Date.now()) // Track when we last checked messages
   const viewedChatsRef = useRef<Set<string>>(new Set()) // Track which chats have been viewed
+  const fileInputRef = useRef<HTMLInputElement>(null)
   
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const messageContainerRef = useRef<HTMLDivElement>(null)
@@ -330,6 +333,78 @@ export default function ChatPage() {
     }
   }
 
+  const handleEmojiSelect = (emoji: string) => {
+    setInputMessage((prev) => prev + emoji)
+  }
+
+  const handleImageUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0]
+    if (!file || !selectedContact) return
+
+    // 检查文件类型
+    if (!file.type.startsWith('image/')) {
+      alert('请选择图片文件')
+      return
+    }
+
+    // 检查文件大小（最大10MB）
+    if (file.size > 10 * 1024 * 1024) {
+      alert('图片大小不能超过10MB')
+      return
+    }
+
+    setSending(true)
+    try {
+      // 方案1: 尝试使用 file:/// 协议（本地文件路径）
+      // 大多数 OneBot 实现支持本地文件路径
+      const reader = new FileReader()
+      reader.onload = async (event) => {
+        try {
+          const base64 = event.target?.result as string
+          
+          // 直接使用 base64，不通过 buildCQCode（避免编码问题）
+          const imageMessage = `[CQ:image,file=${base64}]`
+          
+          console.log('Sending image message:', imageMessage.substring(0, 100) + '...')
+          
+          // 发送消息
+          await api.sendChatMessage({
+            type: selectedContact.type,
+            id: selectedContact.id,
+            message: imageMessage
+          })
+          
+          console.log('Image sent successfully')
+          
+          // 刷新消息列表
+          setTimeout(() => {
+            loadMessages(selectedContact, false)
+          }, 300)
+        } catch (error: any) {
+          console.error('Send image error:', error)
+          const errorMsg = error.response?.data?.detail || error.message || '发送图片失败'
+          alert(`发送图片失败: ${errorMsg}`)
+        } finally {
+          setSending(false)
+          if (fileInputRef.current) {
+            fileInputRef.current.value = ''
+          }
+        }
+      }
+      reader.onerror = () => {
+        setSending(false)
+        alert('读取图片失败')
+      }
+      reader.readAsDataURL(file)
+    } catch (error) {
+      setSending(false)
+      alert('发送图片失败')
+      if (fileInputRef.current) {
+        fileInputRef.current.value = ''
+      }
+    }
+  }
+
   const filteredContacts = contacts.filter(contact => {
     const matchesSearch = contact.name.toLowerCase().includes(searchQuery.toLowerCase())
     const matchesType = filterType === 'all' || contact.type === filterType
@@ -356,7 +431,7 @@ export default function ChatPage() {
   }
 
   return (
-    <div className="flex h-[calc(100vh-4rem)] bg-gray-50 overflow-hidden">
+    <div className="fixed top-16 left-0 lg:left-64 right-0 bottom-0 flex bg-gray-50 overflow-hidden">
       {/* Contact List Sidebar - Hidden on mobile when chat is selected */}
       <div className={`w-full md:w-80 bg-white md:border-r border-gray-200 flex flex-col ${
         selectedContact ? 'hidden md:flex' : 'flex'
@@ -575,7 +650,9 @@ export default function ChatPage() {
                               : 'bg-white text-gray-900 border border-gray-200'
                           }`}
                         >
-                          <p className="whitespace-pre-wrap break-words">{msg.message}</p>
+                          <div className="whitespace-pre-wrap break-words">
+                            {parseMessageContent(msg.message)}
+                          </div>
                         </div>
                         <p className="text-xs text-gray-400 mt-1">
                           {formatTime(msg.timestamp)}
@@ -591,6 +668,29 @@ export default function ChatPage() {
             {/* Input Area */}
             <div className="bg-white border-t border-gray-200 p-3 md:p-4">
               <div className="flex gap-2 md:gap-3">
+                <div className="flex flex-col gap-2">
+                  {/* 图片上传按钮 */}
+                  <button
+                    type="button"
+                    onClick={() => fileInputRef.current?.click()}
+                    disabled={sending}
+                    className="p-2 text-gray-500 hover:text-gray-700 hover:bg-gray-100 rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                    title="发送图片"
+                  >
+                    <ImageIcon className="w-5 h-5" />
+                  </button>
+                  <input
+                    ref={fileInputRef}
+                    type="file"
+                    accept="image/*"
+                    onChange={handleImageUpload}
+                    className="hidden"
+                  />
+                  
+                  {/* 表情选择器 */}
+                  <EmojiPicker onSelectEmoji={handleEmojiSelect} />
+                </div>
+                
                 <textarea
                   value={inputMessage}
                   onChange={(e) => setInputMessage(e.target.value)}

@@ -405,6 +405,18 @@ def create_app() -> FastAPI:
             return FileResponse(str(favicon_path))
         raise HTTPException(status_code=404)
     
+    # Serve logo.jpg - only if WebUI is enabled
+    @app.get("/logo.jpg")
+    async def logo():
+        """Serve logo.jpg - only if WebUI is enabled."""
+        config = get_config()
+        if not config.web_ui_enabled:
+            raise HTTPException(status_code=404, detail="Not found")
+        logo_path = static_dir / "logo.jpg"
+        if logo_path.exists():
+            return FileResponse(str(logo_path))
+        raise HTTPException(status_code=404)
+    
     # Authentication endpoints
     @app.post("/api/auth/login", response_model=LoginResponse)
     async def login(request: LoginRequest):
@@ -812,9 +824,9 @@ def create_app() -> FastAPI:
                     # Update existing setting
                     success = await db_manager.update_plugin_setting(author, name, enabled=True)
                 
-                # Reload plugins in runtime
+                # Load only this specific plugin in runtime (don't reload all plugins)
                 if success and plugin_connector:
-                    await plugin_connector.reload_plugins()
+                    success = await plugin_connector.reload_plugin(plugin_name)
                     logger.info(f"Plugin {plugin_name} enabled and loaded")
             
             elif action.action in ["unload", "disable"]:
@@ -824,9 +836,9 @@ def create_app() -> FastAPI:
                     success = await db_manager.update_plugin_setting(author, name, enabled=False)
                     logger.info(f"Plugin {plugin_name} disabled in database")
                     
-                    # Reload plugins in runtime (will unload disabled plugins)
+                    # Unload only this specific plugin in runtime (don't reload all plugins)
                     if success and plugin_connector:
-                        await plugin_connector.reload_plugins()
+                        success = await plugin_connector.unload_plugin(plugin_name)
                         logger.info(f"Plugin {plugin_name} unloaded from runtime")
                 else:
                     success = False
@@ -1192,128 +1204,220 @@ def create_app() -> FastAPI:
                 content = await file.read()
                 f.write(content)
             
-            # Extract ZIP
-            extract_dir = temp_path / "extracted"
-            extract_dir.mkdir()
-            
-            try:
-                with zipfile.ZipFile(zip_path, 'r') as zip_ref:
-                    zip_ref.extractall(extract_dir)
-            except zipfile.BadZipFile:
-                raise HTTPException(status_code=400, detail="Invalid ZIP file")
-            
-            # Find plugin directory
-            plugin_dirs = [d for d in extract_dir.iterdir() if d.is_dir() and not d.name.startswith("_")]
-            
-            if not plugin_dirs:
-                raise HTTPException(status_code=400, detail="No plugin directory found in ZIP")
-            
-            plugin_dir = plugin_dirs[0]
-            plugin_folder_name = plugin_dir.name
-            
-            # Validate plugin structure
-            plugin_json = plugin_dir / "plugin.json"
-            if not plugin_json.exists():
-                raise HTTPException(status_code=400, detail="Plugin must contain plugin.json file")
-            
-            # Validate and parse plugin.json using thread pool
-            try:
-                app = get_app()
-                thread_pool = getattr(app, 'plugin_thread_pool', None)
+            # Extract and install plugin
+            return await _install_plugin_from_zip(zip_path, config, db_manager, plugin_connector, user)
+    
+    @app.post("/api/plugins/install-from-github")
+    async def install_plugin_from_github(
+        repo_url: str = Body(..., embed=True),
+        user: Dict[str, Any] = Depends(require_permission(Permission.PLUGIN_LOAD))
+    ):
+        """Download and install a plugin from GitHub repository."""
+        import httpx
+        from ..core.app import get_app
+        
+        app = get_app()
+        db_manager = app.db_manager if hasattr(app, 'db_manager') and app.db_manager else None
+        plugin_connector = app.plugin_connector if hasattr(app, 'plugin_connector') and app.plugin_connector else None
+        config = get_config()
+        username = user.get("username")
+        
+        # Parse GitHub URL to get owner and repo
+        # Support formats: 
+        # - https://github.com/owner/repo
+        # - https://github.com/owner/repo.git
+        # - owner/repo
+        repo_url = repo_url.strip()
+        if repo_url.startswith('https://github.com/'):
+            repo_url = repo_url.replace('https://github.com/', '')
+        if repo_url.endswith('.git'):
+            repo_url = repo_url[:-4]
+        
+        parts = repo_url.strip('/').split('/')
+        if len(parts) < 2:
+            raise HTTPException(status_code=400, detail="Invalid GitHub repository URL. Format: owner/repo")
+        
+        owner, repo = parts[0], parts[1]
+        
+        # Download ZIP from GitHub
+        download_url = f"https://github.com/{owner}/{repo}/archive/refs/heads/main.zip"
+        
+        try:
+            async with httpx.AsyncClient(follow_redirects=True, timeout=60.0) as client:
+                logger.info(f"Downloading plugin from GitHub: {owner}/{repo}")
+                response = await client.get(download_url)
                 
-                if thread_pool:
-                    def read_plugin_json():
-                        with open(plugin_json, 'r', encoding='utf-8') as f:
-                            return json.load(f)
-                    plugin_metadata = await thread_pool.run_in_executor(read_plugin_json)
-                else:
-                    with open(plugin_json, 'r', encoding='utf-8') as f:
-                        plugin_metadata = json.load(f)
-                    
-                # Check required fields
-                if 'name' not in plugin_metadata:
-                    raise HTTPException(status_code=400, detail="plugin.json must contain 'name' field")
-                if 'version' not in plugin_metadata:
-                    raise HTTPException(status_code=400, detail="plugin.json must contain 'version' field")
-                    
-                    plugin_author = plugin_metadata.get('author', 'Unknown')
-                    plugin_name = plugin_metadata['name']
-                    plugin_version = plugin_metadata['version']
-                    default_config = plugin_metadata.get('default_config', {})
-                    
-            except json.JSONDecodeError:
-                raise HTTPException(status_code=400, detail="Invalid plugin.json format")
-            except HTTPException:
-                raise
+                # Try master branch if main doesn't exist
+                if response.status_code == 404:
+                    download_url = f"https://github.com/{owner}/{repo}/archive/refs/heads/master.zip"
+                    response = await client.get(download_url)
+                
+                response.raise_for_status()
+                zip_content = response.content
+        except httpx.HTTPStatusError as e:
+            logger.error(f"Failed to download plugin from GitHub: {e}")
+            raise HTTPException(
+                status_code=400, 
+                detail=f"Failed to download from GitHub. Please check the repository URL and ensure it's public."
+            )
+        except Exception as e:
+            logger.error(f"Error downloading plugin: {e}")
+            raise HTTPException(status_code=500, detail=f"Download error: {str(e)}")
+        
+        # Save to temporary file and install
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            zip_path = temp_path / f"{repo}.zip"
+            
+            with open(zip_path, 'wb') as f:
+                f.write(zip_content)
+            
+            try:
+                result = await _install_plugin_from_zip(zip_path, config, db_manager, plugin_connector, user)
+                
+                # Log action
+                await get_audit_logger().log_plugin_action(
+                    action="install_from_github",
+                    plugin_name=result.get('plugin_name', repo),
+                    username=username,
+                    success=True,
+                    details={"repo": f"{owner}/{repo}"}
+                )
+                
+                return result
             except Exception as e:
-                raise HTTPException(status_code=400, detail=f"Error reading plugin.json: {str(e)}")
+                await get_audit_logger().log_plugin_action(
+                    action="install_from_github",
+                    plugin_name=repo,
+                    username=username,
+                    success=False,
+                    details={"repo": f"{owner}/{repo}", "error": str(e)}
+                )
+                raise
+    
+    async def _install_plugin_from_zip(zip_path: Path, config, db_manager, plugin_connector, user):
+        """Helper function to install plugin from ZIP file."""
+        extract_dir = zip_path.parent / "extracted"
+        extract_dir.mkdir(exist_ok=True)
+        
+        try:
+            with zipfile.ZipFile(zip_path, 'r') as zip_ref:
+                zip_ref.extractall(extract_dir)
+        except zipfile.BadZipFile:
+            raise HTTPException(status_code=400, detail="Invalid ZIP file")
+        
+        # Find plugin directory
+        plugin_dirs = [d for d in extract_dir.iterdir() if d.is_dir() and not d.name.startswith("_")]
+        
+        if not plugin_dirs:
+            raise HTTPException(status_code=400, detail="No plugin directory found in ZIP")
+        
+        plugin_dir = plugin_dirs[0]
+        plugin_folder_name = plugin_dir.name
+        
+        # Validate plugin structure
+        plugin_json = plugin_dir / "plugin.json"
+        if not plugin_json.exists():
+            raise HTTPException(status_code=400, detail="Plugin must contain plugin.json file")
+        
+        # Validate and parse plugin.json using thread pool
+        try:
+            app = get_app()
+            thread_pool = getattr(app, 'plugin_thread_pool', None)
             
-            # Target directory: plugins/{name}
-            target_dir = Path(config.plugin_dir) / plugin_name
-            
-            # Copy to plugin directory
+            if thread_pool:
+                def read_plugin_json():
+                    with open(plugin_json, 'r', encoding='utf-8') as f:
+                        return json.load(f)
+                plugin_metadata = await thread_pool.run_in_executor(read_plugin_json)
+            else:
+                with open(plugin_json, 'r', encoding='utf-8') as f:
+                    plugin_metadata = json.load(f)
+                
+            # Check required fields
+            if 'name' not in plugin_metadata:
+                raise HTTPException(status_code=400, detail="plugin.json must contain 'name' field")
+            if 'version' not in plugin_metadata:
+                raise HTTPException(status_code=400, detail="plugin.json must contain 'version' field")
+                
+            plugin_author = plugin_metadata.get('author', 'Unknown')
+            plugin_name = plugin_metadata['name']
+            plugin_version = plugin_metadata['version']
+            default_config = plugin_metadata.get('default_config', {})
+                
+        except json.JSONDecodeError:
+            raise HTTPException(status_code=400, detail="Invalid plugin.json format")
+        except HTTPException:
+            raise
+        except Exception as e:
+            raise HTTPException(status_code=400, detail=f"Error reading plugin.json: {str(e)}")
+        
+        # Target directory: plugins/{name}
+        target_dir = Path(config.plugin_dir) / plugin_name
+        
+        # Copy to plugin directory
+        if target_dir.exists():
+            shutil.rmtree(target_dir)
+        # Ensure parent directory exists
+        target_dir.parent.mkdir(parents=True, exist_ok=True)
+        # Copy the plugin directory
+        shutil.copytree(plugin_dir, target_dir)
+        
+        # Register plugin in database
+        db_manager = get_database_manager()
+        try:
+            # Check if plugin already exists
+            existing = await db_manager.get_plugin_setting(plugin_author, plugin_name)
+            if existing:
+                # Update existing plugin
+                await db_manager.update_plugin_setting(
+                    plugin_author,
+                    plugin_name,
+                    config=existing.config,  # Keep existing config
+                    install_source='upload',
+                    install_info={
+                        'version': plugin_version,
+                        'uploaded_at': datetime.now().isoformat(),
+                        'uploaded_by': user.get('username')
+                    }
+                )
+                logger.info(f"Updated existing plugin: {plugin_author}/{plugin_name}")
+            else:
+                # Create new plugin setting (disabled by default)
+                await db_manager.create_plugin_setting(
+                    author=plugin_author,
+                    name=plugin_name,
+                    enabled=False,
+                    priority=0,
+                    config=default_config,
+                    install_source='upload',
+                    install_info={
+                        'version': plugin_version,
+                        'uploaded_at': datetime.now().isoformat(),
+                        'uploaded_by': user.get('username')
+                    }
+                )
+                logger.info(f"Created new plugin setting: {plugin_author}/{plugin_name}")
+        except Exception as e:
+            logger.error(f"Failed to register plugin in database: {e}")
+            # Clean up on failure
             if target_dir.exists():
                 shutil.rmtree(target_dir)
-            # Ensure parent directory exists
-            target_dir.parent.mkdir(parents=True, exist_ok=True)
-            # Copy the plugin directory
-            shutil.copytree(plugin_dir, target_dir)
-            
-            # Register plugin in database
-            db_manager = get_database_manager()
-            try:
-                # Check if plugin already exists
-                existing = await db_manager.get_plugin_setting(plugin_author, plugin_name)
-                if existing:
-                    # Update existing plugin
-                    await db_manager.update_plugin_setting(
-                        plugin_author,
-                        plugin_name,
-                        config=existing.config,  # Keep existing config
-                        install_source='upload',
-                        install_info={
-                            'version': plugin_version,
-                            'uploaded_at': datetime.now().isoformat(),
-                            'uploaded_by': user.get('username')
-                        }
-                    )
-                    logger.info(f"Updated existing plugin: {plugin_author}/{plugin_name}")
-                else:
-                    # Create new plugin setting (disabled by default)
-                    await db_manager.create_plugin_setting(
-                        author=plugin_author,
-                        name=plugin_name,
-                        enabled=False,
-                        priority=0,
-                        config=default_config,
-                        install_source='upload',
-                        install_info={
-                            'version': plugin_version,
-                            'uploaded_at': datetime.now().isoformat(),
-                            'uploaded_by': user.get('username')
-                        }
-                    )
-                    logger.info(f"Created new plugin setting: {plugin_author}/{plugin_name}")
-            except Exception as e:
-                logger.error(f"Failed to register plugin in database: {e}")
-                # Clean up on failure
-                if target_dir.exists():
-                    shutil.rmtree(target_dir)
-                raise HTTPException(status_code=500, detail=f"Failed to register plugin: {str(e)}")
-            
-            await get_audit_logger().log_plugin_action(
-                "upload",
-                plugin_name,
-                user.get("username"),
-                True
-            )
-            
-            return {
-                "message": "Plugin uploaded successfully. Please enable it in the plugin list to use.",
-                "plugin_name": plugin_name,
-                "plugin_author": plugin_author,
-                "plugin_version": plugin_version
-            }
+            raise HTTPException(status_code=500, detail=f"Failed to register plugin: {str(e)}")
+        
+        await get_audit_logger().log_plugin_action(
+            "upload",
+            plugin_name,
+            user.get("username"),
+            True
+        )
+        
+        return {
+            "message": "Plugin uploaded successfully. Please enable it in the plugin list to use.",
+            "plugin_name": plugin_name,
+            "plugin_author": plugin_author,
+            "plugin_version": plugin_version
+        }
     
     @app.get("/api/plugins/{plugin_name}/config-schema")
     async def get_plugin_config_schema(
@@ -2035,7 +2139,7 @@ def create_app() -> FastAPI:
                 
                 # Add group_id for group messages
                 if chat_type == "group":
-                    simulated_event["group_id"] = int(chat_id)
+                    simulated_event["group_id"] = str(chat_id)  # Use string to match received messages
                 
                 # Publish to event bus for message history
                 event_bus = get_event_bus()
@@ -2070,6 +2174,42 @@ def create_app() -> FastAPI:
             logger.error(f"Failed to send message: {e}", exc_info=True)
             raise HTTPException(status_code=500, detail=f"Failed to send message: {str(e)}")
     
+    @app.get("/api/chat/image-proxy")
+    async def proxy_chat_image(
+        url: str,
+        user: Dict[str, Any] = Depends(get_current_user)
+    ):
+        """Proxy chat images to bypass CORS and referer restrictions."""
+        import httpx
+        
+        try:
+            # 解码 URL（前端可能进行了编码）
+            image_url = url
+            if image_url.startswith('http%3A') or image_url.startswith('https%3A'):
+                from urllib.parse import unquote
+                image_url = unquote(image_url)
+            
+            # 添加必要的请求头来绕过防盗链
+            headers = {
+                'Referer': 'https://qzone.qq.com/',
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+            }
+            
+            # 下载图片
+            async with httpx.AsyncClient(follow_redirects=True, timeout=10.0) as client:
+                response = await client.get(image_url, headers=headers)
+                response.raise_for_status()
+                
+                # 返回图片内容
+                from fastapi.responses import Response
+                return Response(
+                    content=response.content,
+                    media_type=response.headers.get('content-type', 'image/jpeg')
+                )
+        except Exception as e:
+            logger.error(f"Failed to proxy image: {e}", exc_info=True)
+            raise HTTPException(status_code=500, detail=f"Failed to load image: {str(e)}")
+    
     @app.get("/api/chat/history/{chat_type}/{chat_id}")
     async def get_chat_history(
         chat_type: str,
@@ -2081,13 +2221,24 @@ def create_app() -> FastAPI:
         event_bus = get_event_bus()
         events = event_bus.get_event_history(500)  # Get more to filter
         
+        logger.debug(f"Getting chat history for {chat_type} {chat_id}, total events: {len(events)}")
+        
         messages = []
         for event in events:
             if event.name == "onebot.message":
                 payload = event.payload
                 if isinstance(payload, dict):
+                    # Add is_self flag from event source if not already present
+                    if "is_self" not in payload and event.source == "self":
+                        payload_is_self = True
+                    else:
+                        payload_is_self = payload.get("is_self", False)
+                    
+                    logger.debug(f"Event payload: message_type={payload.get('message_type')}, group_id={payload.get('group_id')}, user_id={payload.get('user_id')}, is_self={payload_is_self}, target_id={payload.get('target_id')}, source={event.source}")
+                    
                     # Filter by chat type and ID
                     if chat_type == "group" and str(payload.get("group_id")) == str(chat_id):
+                        logger.debug(f"Adding group message to history: {payload.get('raw_message', '')[:50]}")
                         messages.append({
                             "id": event.event_id,
                             "timestamp": event.timestamp.isoformat(),
@@ -2095,21 +2246,31 @@ def create_app() -> FastAPI:
                             "user_id": str(payload.get("user_id", "")),
                             "message": payload.get("raw_message", ""),
                             "sender": payload.get("sender", {}),
-                            "is_self": payload.get("is_self", False)  # Check if self-sent
+                            "is_self": payload_is_self
                         })
-                    elif chat_type == "private" and str(payload.get("user_id")) == str(chat_id) and payload.get("message_type") == "private":
-                        messages.append({
-                            "id": event.event_id,
-                            "timestamp": event.timestamp.isoformat(),
-                            "message_id": str(payload.get("message_id", "")),
-                            "user_id": str(payload.get("user_id", "")),
-                            "message": payload.get("raw_message", ""),
-                            "sender": payload.get("sender", {}),
-                            "is_self": payload.get("is_self", False)  # Check if self-sent
-                        })
+                    elif chat_type == "private" and payload.get("message_type") == "private":
+                        # For private messages, include both:
+                        # 1. Messages FROM this user (user_id == chat_id)
+                        # 2. Messages TO this user (target_id == chat_id, sent by bot)
+                        is_from_user = str(payload.get("user_id")) == str(chat_id)
+                        is_to_user = str(payload.get("target_id")) == str(chat_id) and payload_is_self
+                        
+                        if is_from_user or is_to_user:
+                            logger.debug(f"Adding private message to history: {payload.get('raw_message', '')[:50]}")
+                            messages.append({
+                                "id": event.event_id,
+                                "timestamp": event.timestamp.isoformat(),
+                                "message_id": str(payload.get("message_id", "")),
+                                "user_id": str(payload.get("user_id", "")),
+                                "message": payload.get("raw_message", ""),
+                                "sender": payload.get("sender", {}),
+                                "is_self": payload_is_self
+                            })
                     
                     if len(messages) >= limit:
                         break
+        
+        logger.debug(f"Returning {len(messages)} messages for {chat_type} {chat_id}")
         
         # Sort by timestamp (oldest first for chat display)
         messages.sort(key=lambda x: x["timestamp"])
@@ -2748,6 +2909,72 @@ def create_app() -> FastAPI:
         except Exception as e:
             logger.error(f"Failed to get system logs: {e}", exc_info=True)
             raise HTTPException(status_code=500, detail=f"Failed to get system logs: {str(e)}")
+    
+    # Splash screen endpoints
+    @app.get("/api/splash/check")
+    async def check_splash_screen():
+        """Check if splash screen should be shown."""
+        try:
+            config = get_config()
+            # 如果 WebUI 未启用，直接返回不显示
+            if not config.web_ui_enabled:
+                return {"should_show": False, "reason": "webui_disabled"}
+            
+            # 检查开屏动画文件夹是否存在（在webui目录下）
+            # 使用项目根目录作为基准路径
+            project_root = Path(__file__).parent.parent.parent
+            splash_dir = project_root / "webui" / "splash_screen"
+            
+            # 如果 webui 文件夹不存在，返回不显示
+            if not splash_dir.exists():
+                return {"should_show": False, "reason": "splash_dir_not_exists"}
+            
+            # 检查标记文件是否存在
+            marker_file = splash_dir / ".splash_shown"
+            if marker_file.exists():
+                return {"should_show": False, "reason": "already_shown"}
+            
+            return {"should_show": True}
+        except Exception as e:
+            logger.error(f"Failed to check splash screen: {e}", exc_info=True)
+            # 出错时默认不显示
+            return {"should_show": False, "reason": "error", "error": str(e)}
+    
+    @app.post("/api/splash/mark-shown")
+    async def mark_splash_screen_shown():
+        """Mark splash screen as shown. No authentication required."""
+        try:
+            config = get_config()
+            # 如果 WebUI 未启用，直接返回成功（静默处理）
+            if not config.web_ui_enabled:
+                return {"success": True, "message": "WebUI disabled, splash screen skipped"}
+            
+            # 使用项目根目录作为基准路径
+            project_root = Path(__file__).parent.parent.parent
+            splash_dir = project_root / "webui" / "splash_screen"
+            
+            # 如果 webui 文件夹不存在，尝试创建（但可能失败，这是正常的）
+            try:
+                splash_dir.mkdir(parents=True, exist_ok=True)
+            except Exception as mkdir_error:
+                # 如果无法创建目录（例如 webui 文件夹被删除），静默处理
+                logger.debug(f"Cannot create splash screen directory: {mkdir_error}")
+                return {"success": True, "message": "WebUI directory not available, splash screen skipped"}
+            
+            # 创建标记文件
+            try:
+                marker_file = splash_dir / ".splash_shown"
+                marker_file.touch()
+                logger.info(f"Splash screen marked as shown. Marker file: {marker_file}")
+                return {"success": True, "message": "Splash screen marked as shown"}
+            except Exception as touch_error:
+                # 如果无法创建标记文件，静默处理
+                logger.debug(f"Cannot create splash screen marker file: {touch_error}")
+                return {"success": True, "message": "Cannot create marker file, but operation completed"}
+        except Exception as e:
+            logger.error(f"Failed to mark splash screen as shown: {e}", exc_info=True)
+            # 即使出错也返回成功，避免影响主程序运行
+            return {"success": True, "message": "Error occurred but operation completed", "error": str(e)}
     
     # Health check
     @app.get("/health")
@@ -4625,6 +4852,12 @@ def create_app() -> FastAPI:
         # Read file content dynamically on each request to avoid caching issues
         static_dir_path = Path(__file__).parent / "static"
         index_file = static_dir_path / "index.html"
+        
+        # Check if webui source directory exists
+        project_root = Path(__file__).parent.parent.parent
+        webui_source_dir = project_root / "webui"
+        webui_exists = webui_source_dir.exists() and webui_source_dir.is_dir()
+        
         if index_file.exists():
             # Read file content on each request to ensure latest version
             content = index_file.read_text(encoding="utf-8")
@@ -4636,16 +4869,45 @@ def create_app() -> FastAPI:
             return response
         else:
             # Fallback HTML if index.html doesn't exist
-            return HTMLResponse(
+            # Different messages based on whether webui source directory exists
+            if not webui_exists:
+                # WebUI folder doesn't exist
+                title = "WebUI 文件夹不存在"
+                message = """
+                        <h1>WebUI 文件夹不存在</h1>
+                        <p>配置文件中已启用 WebUI，但 <code>webui</code> 文件夹不存在。</p>
+                        <p style="margin-top: 1.5rem;"><strong>解决方案：</strong></p>
+                        <ul style="text-align: left; display: inline-block; margin: 1rem 0;">
+                            <li>如果您不需要 WebUI，请在 <code>config.toml</code> 中设置 <code>[web_ui].enabled = false</code></li>
+                            <li>如果需要 WebUI，请恢复 <code>webui</code> 文件夹并构建前端</li>
+                        </ul>
+                        <p style="margin-top: 1.5rem; font-size: 0.9rem; opacity: 0.8;">
+                            构建命令：<code>cd webui && npm run build</code>
+                        </p>
+                        <p style="font-size: 0.9rem; opacity: 0.8;">
+                            或使用 <code>build.bat</code> (Windows) / <code>build.sh</code> (Linux/Mac)
+                        </p>
                 """
+            else:
+                # WebUI folder exists but not built
+                title = "WebUI 正在构建中"
+                message = """
+                        <h1>WebUI 未构建/错误</h1>
+                        <p>请运行以下命令构建前端：</p>
+                        <p><code>cd webui && npm run build</code></p>
+                        <p style="font-size: 0.9rem; opacity: 0.8;">或使用 <code>build.bat</code> (Windows) / <code>build.sh</code> (Linux/Mac)</p>
+                """
+            
+            return HTMLResponse(
+                f"""
                 <!DOCTYPE html>
                 <html lang="zh-CN">
                 <head>
                     <meta charset="UTF-8">
                     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-                    <title>Xiaoyi_QQ Framework - WebUI Building</title>
+                    <title>Xiaoyi_QQ Framework - {title}</title>
                     <style>
-                        body {
+                        body {{
                             font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
                             display: flex;
                             justify-content: center;
@@ -4654,27 +4916,32 @@ def create_app() -> FastAPI:
                             margin: 0;
                             background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
                             color: white;
-                        }
-                        .container {
+                        }}
+                        .container {{
                             text-align: center;
                             padding: 2rem;
                             background: rgba(255, 255, 255, 0.1);
                             border-radius: 1rem;
                             backdrop-filter: blur(10px);
-                        }
-                        code {
+                            max-width: 600px;
+                        }}
+                        code {{
                             background: rgba(0, 0, 0, 0.3);
                             padding: 0.2rem 0.5rem;
                             border-radius: 0.25rem;
-                        }
+                            font-family: 'Courier New', monospace;
+                        }}
+                        ul {{
+                            list-style-position: inside;
+                        }}
+                        li {{
+                            margin: 0.5rem 0;
+                        }}
                     </style>
                 </head>
                 <body>
                     <div class="container">
-                        <h1>🚀 WebUI 正在构建中...</h1>
-                        <p>请运行以下命令构建前端：</p>
-                        <p><code>cd webui && npm run build</code></p>
-                        <p style="font-size: 0.9rem; opacity: 0.8;">或使用 <code>build.bat</code> (Windows) / <code>build.sh</code> (Linux/Mac)</p>
+                        {message}
                     </div>
                 </body>
                 </html>

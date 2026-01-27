@@ -612,4 +612,48 @@ class PluginAPI:
             'group_id': group_id,
             'message_id': message_id
         })
+    
+    # ==================== Interceptor API ====================
+    
+    def register_message_interceptor(self, interceptor):
+        """Register a message interceptor.
+        
+        Allows this plugin to intercept and modify all outgoing messages
+        from any plugin or the framework.
+        
+        Args:
+            interceptor: MessageInterceptor instance
+        
+        Example:
+            from src.plugins import MessageInterceptor, InterceptorResult
+            
+            class MyInterceptor(MessageInterceptor):
+                async def intercept_message(self, action, params, source_plugin):
+                    # Intercept all group messages
+                    if action == 'send_group_msg':
+                        # Modify message
+                        params['message'] = '[Intercepted] ' + params['message']
+                        return InterceptorResult(allow=True, modified_data=params)
+                    return InterceptorResult(allow=True)
+            
+            # Register in on_load
+            interceptor = MyInterceptor(self.plugin_name, priority=50)
+            self.api.register_message_interceptor(interceptor)
+        """
+        if hasattr(self.connector, 'interceptor_registry'):
+            self.connector.interceptor_registry.register_message_interceptor(interceptor)
+            logger.info(f"[Plugin:{self.plugin_name}] Registered message interceptor")
+        else:
+            logger.error(f"[Plugin:{self.plugin_name}] Interceptor registry not available")
+    
+    def unregister_message_interceptor(self):
+        """Unregister all message interceptors for this plugin.
+        
+        Call this in on_unload to clean up.
+        """
+        if hasattr(self.connector, 'interceptor_registry'):
+            self.connector.interceptor_registry.unregister_message_interceptor(self.plugin_name)
+            logger.info(f"[Plugin:{self.plugin_name}] Unregistered message interceptor")
+        else:
+            logger.error(f"[Plugin:{self.plugin_name}] Interceptor registry not available")
 

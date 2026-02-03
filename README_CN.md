@@ -1,7 +1,7 @@
 <div align="center">
 
-![Xiaoyi_QQ](https://socialify.git.ci/ValkyrieEY/RuaBot/image?description=1&font=Jost&forks=1&issues=1&logo=https://ruax.iz8.cn/upload/b_bd897ad349ed26c31d5c4672f23cd1de.jpg&name=1&pattern=Diagonal%20Stripes&pulls=1&stargazers=1&theme=Auto)
-![Alt](https://repobeats.axiom.co/api/embed/a7e7bdd7489b1337185a188c6d61e02771cd7c7e.svg "Repobeats analytics image")
+![Xiaoyi_QQ]( https://socialify.git.ci/ValkyrieEY/RuaBot/image?description=1&font=Jost&forks=1&issues=1&logo=https://raw.githubusercontent.com/ValkyrieEY/RuaBot/main/webui/public/logo.jpg&name=1&pattern=Diagonal%20Stripes&pulls=1&stargazers=1&theme=Auto) 
+![Alt]( https://repobeats.axiom.co/api/embed/a7e7bdd7489b1337185a188c6d61e02771cd7c7e.svg  "Repobeats analytics image")
 
 
 ## RuaBot QQ Framework

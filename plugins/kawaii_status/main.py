@@ -128,9 +128,10 @@ class KawaiiStatusPlugin:
             nickname = self.nickname
             try:
                 # 尝试从 OneBot 获取登录信息
+                # API 返回格式: {'user_id': int, 'nickname': str}
                 login_info = await self.api.get_login_info()
-                if login_info.get('success') and login_info.get('data'):
-                    nickname = login_info['data'].get('nickname', self.nickname)
+                if login_info and 'nickname' in login_info:
+                    nickname = login_info.get('nickname', self.nickname)
             except:
                 pass
             
@@ -150,20 +151,24 @@ class KawaiiStatusPlugin:
         self.running = False
         # 注意：不关闭线程池，因为可能有其他插件实例使用
     
-    async def on_event(self, event_name: str, data: Dict[str, Any]):
-        """处理事件
+    async def on_event_context(self, ctx):
+        """处理事件上下文
         
         Args:
-            event_name: 事件名称
-            data: 事件数据
+            ctx: EventContext 对象
         """
         # 记录所有收到的事件（用于调试）
-        self.api.log("info", f"[Kawaii Status] 收到事件: {event_name}")
-        if event_name == "onebot.message":
-            self.api.log("info", f"[Kawaii Status] 处理 onebot.message 事件")
-            await self.handle_message(data)
+        self.api.log("info", f"[Kawaii Status] 收到事件: {ctx.event_name}")
+        if ctx.event_name == "message.received":
+            self.api.log("info", f"[Kawaii Status] 处理 message.received 事件")
+            # 从事件上下文获取消息数据
+            event_data = ctx.event_data
+            # 快速返回，异步处理消息（避免阻塞事件处理）
+            asyncio.create_task(self.handle_message(event_data))
+            return ctx
         else:
-            self.api.log("debug", f"[Kawaii Status] 忽略事件: {event_name}")
+            self.api.log("debug", f"[Kawaii Status] 忽略事件: {ctx.event_name}")
+        return None
     
     def _should_respond(self, event: Dict[str, Any]) -> bool:
         """判断是否应该响应消息
@@ -297,10 +302,11 @@ class KawaiiStatusPlugin:
                 self.api.log("warning", f"未知的消息类型: {message_type}")
                 return
             
-            if result.get('success'):
-                self.api.log("info", "状态图片发送成功")
+            # API 返回 {'message_id': int} 表示成功
+            if result and 'message_id' in result:
+                self.api.log("info", f"状态图片发送成功: message_id={result.get('message_id')}")
             else:
-                self.api.log("error", f"状态图片发送失败: {result.get('error')}")
+                self.api.log("error", f"状态图片发送失败: {result}")
         
         except Exception as e:
             self.api.log("error", f"处理状态查询请求失败: {e}", exc_info=True)

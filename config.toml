@@ -1,6 +1,6 @@
 [app]
 name = "XQNEXT Framework"
-version = "0.0.2"
+version = "0.0.3"
 environment = "development"
 debug = false
 log_level = "INFO"

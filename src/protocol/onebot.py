@@ -241,10 +241,17 @@ class OneBotAdapter(ProtocolAdapter):
                                         logger.debug(f"No waiting future found for echo: {echo}, active echoes: {list(self._api_responses.keys())}")
                                 
                                 post_type = data.get("post_type", "unknown")
-                                logger.info(f"Received WebSocket message: {post_type}", 
-                                          post_type=post_type,
-                                          message_type=data.get("message_type"),
-                                          user_id=data.get("user_id"))
+                                # Meta events (heartbeat) are very frequent, log at debug level
+                                if post_type == "meta_event":
+                                    logger.debug(f"Received WebSocket message: {post_type}", 
+                                              post_type=post_type,
+                                              message_type=data.get("message_type"),
+                                              user_id=data.get("user_id"))
+                                else:
+                                    logger.info(f"Received WebSocket message: {post_type}", 
+                                              post_type=post_type,
+                                              message_type=data.get("message_type"),
+                                              user_id=data.get("user_id"))
                                 await self._handle_event(data)
                             except json.JSONDecodeError as e:
                                 logger.error("Invalid JSON in WebSocket message", error=str(e))
@@ -787,9 +794,80 @@ class OneBotAdapter(ProtocolAdapter):
             logger.error("Failed to get message", error=str(e))
             return None
 
-    async def call_api(self, action: str, params: Dict[str, Any]) -> Dict[str, Any]:
-        """Call OneBot API."""
-        logger.debug(f"call_api called: action={action}, params={params}, connection_type={self.connection_type}")
+    def _parse_api_error(self, result: Dict[str, Any], action: str, params: Dict[str, Any]) -> Dict[str, Any]:
+        """Parse API error and provide friendly error message.
+        
+        Args:
+            result: Error response from API
+            action: API action name
+            params: API parameters
+            
+        Returns:
+            Dict with 'message' and 'suggestion' keys
+        """
+        retcode = result.get("retcode", 0)
+        message = result.get("message", "")
+        wording = result.get("wording", "")
+        
+        # Try to extract errMsg from EventChecker error
+        err_msg = None
+        try:
+            import re
+            import json
+            # Try to parse EventRet JSON from wording
+            if "EventRet:" in wording:
+                # Extract JSON part after EventRet:
+                json_match = re.search(r'EventRet:\s*(\{[^}]+\})', wording.replace('\n', ' '))
+                if json_match:
+                    event_ret = json.loads(json_match.group(1))
+                    err_msg = event_ret.get("errMsg")
+        except:
+            pass
+        
+        # Build simple error message
+        if err_msg:
+            # Use the extracted errMsg directly
+            error_msg = err_msg
+        elif wording:
+            # Try to extract meaningful part from wording
+            if "ERR_" in wording:
+                # Extract error code
+                import re
+                match = re.search(r'(ERR_\w+)', wording)
+                if match:
+                    error_code = match.group(1)
+                    # Map common error codes to friendly messages
+                    error_map = {
+                        "ERR_NOT_GROUP_ADMIN": "机器人权限不足（需要管理员或群主权限）",
+                        "ERR_NOT_FRIEND": "对方不是好友",
+                        "ERR_NO_PERMISSION": "权限不足"
+                    }
+                    error_msg = error_map.get(error_code, wording)
+                else:
+                    error_msg = wording
+            else:
+                error_msg = wording
+        elif message:
+            error_msg = message
+        else:
+            error_msg = f"API调用失败: {action} (retcode: {retcode})"
+        
+        return {
+            "message": error_msg,
+            "suggestion": "",
+            "retcode": retcode,
+            "internal_code": None
+        }
+    
+    async def call_api(self, action: str, params: Dict[str, Any], source_plugin: Optional[str] = None) -> Dict[str, Any]:
+        """Call OneBot API.
+        
+        Args:
+            action: API action name
+            params: API parameters
+            source_plugin: Plugin ID that initiated the call (if any)
+        """
+        logger.debug(f"call_api called: action={action}, params={params}, connection_type={self.connection_type}, source_plugin={source_plugin}")
         
         # Check if this is a message-sending action
         # Include all OneBot message sending APIs
@@ -802,6 +880,52 @@ class OneBotAdapter(ProtocolAdapter):
             'send_forward_msg',         # 发送合并转发消息（通用）
         ]
         is_message_action = action in message_actions
+        
+        # Emit event with context before sending message (allows plugins to modify/block)
+        # Note: Plugin-initiated calls are already handled by interceptors in connector.py
+        # So we only need to process framework-initiated calls here
+        if is_message_action and not source_plugin:
+            from ..core.event_context import EventContext
+            from ..core.app import get_app
+            
+            app = get_app()
+            if app and hasattr(app, 'plugin_connector') and app.plugin_connector:
+                # Create event context for message before send
+                ctx = EventContext(
+                    event_name='message.before_send',
+                    event_data={
+                        'action': action,
+                        'params': params
+                    },
+                    source="onebot"
+                )
+                
+                # Emit with context (allows plugins to modify/block)
+                # Only for framework-initiated calls (plugin calls use interceptors)
+                modified_ctx = await app.event_bus.emit_event_with_context(
+                    'message.before_send',
+                    {
+                        'action': action,
+                        'params': params
+                    },
+                    source="onebot",
+                    plugin_connector=app.plugin_connector
+                )
+                
+                if modified_ctx and modified_ctx.is_prevented_default():
+                    logger.info(f"Message send blocked by plugin: {action}")
+                    raise RuntimeError("Message send blocked by plugin")
+                
+                # Use modified params if changed
+                if modified_ctx and modified_ctx.is_modified():
+                    modified_data = modified_ctx.event_data
+                    if 'params' in modified_data:
+                        params = modified_data['params']
+                        logger.info(f"Message params modified by plugin: {action}")
+        elif is_message_action and source_plugin:
+            # Plugin-initiated calls: interceptors already handled in connector.py
+            # No need to trigger message.before_send event (to avoid blocking)
+            logger.debug(f"Plugin-initiated message send: {action} from {source_plugin} (handled by interceptors)")
         
         # Helper function to emit message_sent event
         async def emit_message_sent_event(result_data: Dict[str, Any] = None):
@@ -881,8 +1005,10 @@ class OneBotAdapter(ProtocolAdapter):
                             await emit_message_sent_event(data)
                         return data
                     else:
-                        logger.error(f"API call failed: {result}")
-                        raise RuntimeError(f"API call failed: {result}")
+                        # Parse error and provide friendly error message
+                        error_info = self._parse_api_error(result, action, params)
+                        logger.error(f"API call failed: {error_info['message']}")
+                        raise RuntimeError(error_info['message'])
                 except asyncio.TimeoutError:
                     self._api_responses.pop(echo, None)
                     logger.error(f"API call timeout: {action} (echo={echo})")
@@ -919,7 +1045,10 @@ class OneBotAdapter(ProtocolAdapter):
                                 await emit_message_sent_event(data)
                             return data
                         else:
-                            raise RuntimeError(f"API call failed: {result}")
+                            # Parse error and provide friendly error message
+                            error_info = self._parse_api_error(result, action, params)
+                            logger.error(f"API call failed: {error_info['message']}")
+                            raise RuntimeError(error_info['message'])
                     except asyncio.TimeoutError:
                         self._api_responses.pop(echo, None)
                         raise RuntimeError(f"API call timeout: {action}")
@@ -942,7 +1071,10 @@ class OneBotAdapter(ProtocolAdapter):
                     await emit_message_sent_event(data)
                 return data
             else:
-                raise RuntimeError(f"API call failed: {result}")
+                # Parse error and provide friendly error message
+                error_info = self._parse_api_error(result, action, params)
+                logger.error(f"API call failed: {error_info['message']}")
+                raise RuntimeError(error_info['message'])
 
     def get_protocol_name(self) -> str:
         """Get protocol name."""

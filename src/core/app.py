@@ -68,12 +68,8 @@ class Application:
         # Setup signal handlers for graceful shutdown
         self._setup_signal_handlers()
 
-        # Setup logger
-        setup_logger(
-            name="xiaoyi_qq",
-            level=self.config.log_level,
-            log_file=self.config.log_file
-        )
+        # Logger is already setup in src/main.py, no need to setup again
+        # This avoids overwriting the log level configuration
         
         logger.info(
             "Application initialized",
@@ -143,6 +139,61 @@ class Application:
             # Not: {'type': 'message', 'envelope': {...}, 'raw': {...}}
             plugin_payload = event.get('raw', event)  # Use raw OneBot data if available
             
+            # For message events, use event context system (allows plugins to modify/block)
+            if event.get('type') == 'message':
+                from ..core.event_context import EventContext
+                
+                # Create event context for message received
+                ctx = EventContext(
+                    event_name='message.received',
+                    event_data=plugin_payload,
+                    source="onebot"
+                )
+                
+                # Emit with context (allows plugins to modify/block)
+                if hasattr(self, 'plugin_connector') and self.plugin_connector:
+                    modified_ctx = await self.plugin_connector.emit_event_with_context(
+                        ctx,
+                        bound_plugins=None  # All enabled plugins
+                    )
+                    
+                    # If None is returned, it means event was blocked or error occurred
+                    if modified_ctx is None:
+                        logger.info("Message blocked by plugin or error occurred")
+                        return
+                    
+                    # Check if default behavior was prevented
+                    if modified_ctx.is_prevented_default():
+                        logger.info("Message blocked by plugin (prevent_default)")
+                        return
+                    
+                    # Use modified data if changed
+                    if modified_ctx.is_modified():
+                        plugin_payload = modified_ctx.event_data
+            
+            # For notice events, also use event context system (but don't block by default)
+            elif event.get('type') == 'notice':
+                from ..core.event_context import EventContext
+                
+                # Create event context for notice received
+                ctx = EventContext(
+                    event_name='notice.received',
+                    event_data=plugin_payload,
+                    source="onebot"
+                )
+                
+                # Emit with context (allows plugins to modify, but notices usually shouldn't be blocked)
+                if hasattr(self, 'plugin_connector') and self.plugin_connector:
+                    modified_ctx = await self.plugin_connector.emit_event_with_context(
+                        ctx,
+                        bound_plugins=None  # All enabled plugins
+                    )
+                    
+                    # Use modified data if changed (but don't block notices)
+                    if modified_ctx and modified_ctx.is_modified():
+                        plugin_payload = modified_ctx.event_data
+            
+            # Also publish to regular event bus subscribers
             await self.event_bus.publish(
                 event_name,
                 plugin_payload,  # Pass raw OneBot format to plugins

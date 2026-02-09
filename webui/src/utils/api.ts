@@ -111,8 +111,12 @@ class ApiClient {
     return response.data
   }
 
-  async updatePluginConfig(name: string, config: any): Promise<any> {
-    const response = await this.client.put(`/plugins/${name}/config`, { config })
+  async updatePluginConfig(name: string, config: any, priority?: number): Promise<any> {
+    const payload: any = { config }
+    if (priority !== undefined) {
+      payload.priority = priority
+    }
+    const response = await this.client.put(`/plugins/${name}/config`, payload)
     return response.data
   }
 
@@ -136,6 +140,22 @@ class ApiClient {
     const response = await this.client.post('/plugins/install-from-github', {
       repo_url: repoUrl
     })
+    return response.data
+  }
+
+  async uploadPluginConfigFile(file: File): Promise<{ file_key: string }> {
+    const formData = new FormData()
+    formData.append('file', file)
+    const response = await this.client.post('/plugins/config-files', formData, {
+      headers: {
+        'Content-Type': 'multipart/form-data',
+      },
+    })
+    return response.data
+  }
+
+  async deletePluginConfigFile(fileKey: string): Promise<{ deleted: boolean }> {
+    const response = await this.client.delete(`/plugins/config-files/${fileKey}`)
     return response.data
   }
 

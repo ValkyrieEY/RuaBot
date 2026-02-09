@@ -662,15 +662,7 @@ def validate_config(config: dict, schema: dict):
 
 ## 可扩展性
 
-### 1. 插件适配器
-
-支持多种插件加载方式：
-
-- Python 插件（当前实现）
-- JavaScript 插件（未来）
-- Docker 容器插件（未来）
-
-### 2. 协议适配器
+### 1. 协议适配器
 
 支持多种聊天协议：
 
@@ -678,7 +670,7 @@ def validate_config(config: dict, schema: dict):
 - OneBot v12（未来）
 - QQ 官方 API（未来）
 
-### 3. 事件扩展
+### 2. 事件扩展
 
 支持自定义事件类型：
 

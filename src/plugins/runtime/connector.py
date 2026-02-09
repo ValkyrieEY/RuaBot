@@ -8,7 +8,7 @@ import json
 import sys
 import os
 from pathlib import Path
-from typing import Optional, Dict, Any, Callable, Coroutine
+from typing import Optional, Dict, Any, Callable, Coroutine, List
 import asyncio
 from datetime import datetime
 
@@ -130,6 +130,9 @@ class PluginRuntimeConnector:
         
         # Interceptor futures for async communication
         self._interceptor_futures: Dict[str, asyncio.Future] = {}
+        
+        # Pending requests for event context communication
+        self.pending_requests: Dict[str, asyncio.Future] = {}
     
     async def initialize(self):
         """Initialize plugin runtime."""
@@ -194,24 +197,30 @@ class PluginRuntimeConnector:
     async def _start_runtime_process(self):
         """Start plugin runtime process."""
         # Ensure old process is terminated before starting new one
-        if self.runtime_process and self.runtime_process.returncode is None:
-            logger.warning("Old runtime process still running, terminating it first...")
-            try:
-                self.runtime_process.terminate()
-                await asyncio.wait_for(self.runtime_process.wait(), timeout=2.0)
-                logger.info("Old runtime process terminated")
-            except (asyncio.TimeoutError, ProcessLookupError):
+        if self.runtime_process:
+            # Check if process is still running
+            is_running = False
+            if hasattr(self.runtime_process, 'returncode'):
+                is_running = self.runtime_process.returncode is None
+            elif hasattr(self.runtime_process, 'poll'):
+                is_running = self.runtime_process.poll() is None
+            
+            if is_running:
+                logger.warning("Old runtime process still running, terminating it first...")
                 try:
-                    logger.warning("Force killing old runtime process...")
-                    self.runtime_process.kill()
-                    await self.runtime_process.wait()
-                    logger.info("Old runtime process killed")
-                except ProcessLookupError:
-                    logger.debug("Old runtime process already terminated")
-            except Exception as e:
-                logger.error(f"Error terminating old runtime process: {e}")
-            finally:
-                self.runtime_process = None
+                    self.runtime_process.terminate()
+                    await asyncio.wait_for(self.runtime_process.wait(), timeout=2.0)
+                    logger.info("Old runtime process terminated")
+                except (asyncio.TimeoutError, ProcessLookupError):
+                    try:
+                        logger.warning("Force killing old runtime process...")
+                        self.runtime_process.kill()
+                        await self.runtime_process.wait()
+                        logger.info("Old runtime process killed")
+                    except Exception as e:
+                        logger.error(f"Failed to kill old runtime process: {e}")
+                except Exception as e:
+                    logger.error(f"Error terminating old runtime process: {e}")
         
         # Check for orphaned processes (processes running the runtime script)
         # This helps detect if previous processes weren't cleaned up
@@ -249,17 +258,85 @@ class PluginRuntimeConnector:
         logger.info("Starting plugin runtime process", script=str(self.runtime_script))
         
         # Start subprocess with stdio pipes
-        self.runtime_process = await asyncio.create_subprocess_exec(
-            sys.executable,
-            str(self.runtime_script),
-            stdin=asyncio.subprocess.PIPE,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
+        # Windows + Python 3.13 compatibility: ensure ProactorEventLoop policy is set
+        if sys.platform == 'win32' and sys.version_info >= (3, 13):
+            try:
+                current_policy = asyncio.get_event_loop_policy()
+                if not isinstance(current_policy, asyncio.WindowsProactorEventLoopPolicy):
+                    # Try to set ProactorEventLoop policy
+                    asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
+                    logger.info("Set ProactorEventLoop policy for subprocess support")
+            except Exception as e:
+                logger.warning(f"Failed to set ProactorEventLoop policy: {e}")
+        
+        try:
+            self.runtime_process = await asyncio.create_subprocess_exec(
+                sys.executable,
+                str(self.runtime_script),
+                stdin=asyncio.subprocess.PIPE,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+        except NotImplementedError as e:
+            # Fallback to subprocess.Popen for Windows + Python 3.13
+            if sys.platform == 'win32' and sys.version_info >= (3, 13):
+                logger.warning("asyncio.create_subprocess_exec not supported, using subprocess.Popen fallback")
+                try:
+                    import subprocess
+                    # Use subprocess.Popen as fallback
+                    popen_process = subprocess.Popen(
+                        [sys.executable, str(self.runtime_script)],
+                        stdin=subprocess.PIPE,
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.PIPE,
+                        bufsize=0,  # Unbuffered
+                    )
+                    # Wrap Popen in a simple async-compatible interface
+                    # Create a minimal wrapper that mimics asyncio.subprocess.Process
+                    class PopenWrapper:
+                        def __init__(self, popen_proc):
+                            self._popen = popen_proc
+                            self.stdin = popen_proc.stdin
+                            self.stdout = popen_proc.stdout
+                            self.stderr = popen_proc.stderr
+                            self.pid = popen_proc.pid
+                        
+                        def poll(self):
+                            return self._popen.poll()
+                        
+                        def wait(self):
+                            return self._popen.wait()
+                        
+                        def terminate(self):
+                            self._popen.terminate()
+                        
+                        def kill(self):
+                            self._popen.kill()
+                    
+                    self.runtime_process = PopenWrapper(popen_process)
+                    logger.info(f"Plugin runtime started with Popen fallback, pid={self.runtime_process.pid}")
+                except Exception as fallback_error:
+                    error_msg = (
+                        f"Failed to create subprocess with both asyncio and Popen fallback: {e}. "
+                        f"Fallback error: {fallback_error}"
+                    )
+                    logger.error(error_msg)
+                    raise RuntimeError(error_msg) from e
+            else:
+                error_msg = (
+                    f"Failed to create subprocess: {e}. "
+                    "On Windows with Python 3.13+, ProactorEventLoop policy is required."
+                )
+                logger.error(error_msg)
+                raise RuntimeError(error_msg) from e
         
         # Set larger limit for stdout to handle large base64 images (10MB)
-        if self.runtime_process.stdout:
-            self.runtime_process.stdout._limit = 10 * 1024 * 1024  # 10MB
+        if self.runtime_process.stdout and hasattr(self.runtime_process.stdout, '_limit'):
+            try:
+                self.runtime_process.stdout._limit = 10 * 1024 * 1024  # 10MB
+            except AttributeError:
+                # Popen fallback doesn't have _limit attribute, that's OK
+                pass
         
         self.is_running = True
         
@@ -273,9 +350,19 @@ class PluginRuntimeConnector:
         if not self.runtime_process or not self.runtime_process.stdout:
             return
         
+        # Check if this is asyncio subprocess or Popen fallback
+        is_async_process = hasattr(self.runtime_process.stdout, 'readline') and asyncio.iscoroutinefunction(self.runtime_process.stdout.readline)
+        
         try:
             while self.is_running:
-                line = await self.runtime_process.stdout.readline()
+                if is_async_process:
+                    # Asyncio subprocess
+                    line = await self.runtime_process.stdout.readline()
+                else:
+                    # Popen fallback - use sync readline in executor
+                    loop = asyncio.get_event_loop()
+                    line = await loop.run_in_executor(None, self.runtime_process.stdout.readline)
+                
                 if not line:
                     break
                 
@@ -368,6 +455,82 @@ class PluginRuntimeConnector:
                     )
                     future.set_result(result)
         
+        elif msg_type == 'event_with_context_response':
+            # Response from plugin runtime for event_with_context request
+            request_id = data.get('request_id')
+            success = data.get('success', True)
+            event_context_dict = data.get('event_context')
+            error = data.get('error')
+            
+            logger.debug(f"Received event_with_context_response: request_id={request_id}, success={success}, has_context={event_context_dict is not None}")
+            
+            if request_id in self.pending_requests:
+                future = self.pending_requests.pop(request_id)
+                if not future.done():
+                    result = {
+                        'success': success,
+                        'event_context': event_context_dict,
+                        'error': error
+                    }
+                    future.set_result(result)
+                    logger.debug(f"Set result for request {request_id}")
+                else:
+                    logger.debug(f"Future already done for request_id={request_id} (likely timeout, but response arrived)")
+            else:
+                # Response arrived but future was already cleaned up (likely due to timeout)
+                logger.debug(f"No pending request found for request_id={request_id} (likely timeout, response arrived late)")
+        
+        elif msg_type == 'storage_request':
+            # Plugin wants to access storage
+            request_id = data.get('request_id')
+            action = data.get('action')  # 'get_binary', 'set_binary', 'delete_binary', 'list_binary_keys'
+            plugin_id = data.get('plugin_id')
+            
+            logger.debug(f"Storage request: {action} from plugin {plugin_id}, request_id: {request_id}")
+            
+            # Use handler to process storage request
+            from .handler import RuntimeConnectionHandler
+            handler = RuntimeConnectionHandler(self.db_manager)
+            
+            # Prepare handler data
+            handler_data = {
+                'owner': plugin_id,
+                'key': data.get('key'),
+                'value': data.get('value')  # base64 encoded for set_binary
+            }
+            
+            try:
+                # Call appropriate handler method
+                if action == 'get_binary':
+                    result = await handler._handle_get_binary(handler_data)
+                elif action == 'set_binary':
+                    result = await handler._handle_set_binary(handler_data)
+                elif action == 'delete_binary':
+                    result = await handler._handle_delete_binary(handler_data)
+                elif action == 'list_binary_keys':
+                    result = await handler._handle_list_binary_keys(handler_data)
+                else:
+                    result = {'success': False, 'error': f'Unknown storage action: {action}'}
+                
+                # Send response back to plugin
+                await self._send_to_runtime({
+                    'type': 'storage_response',
+                    'data': {
+                        'request_id': request_id,
+                        **result
+                    }
+                })
+            except Exception as e:
+                logger.error(f"Error handling storage request: {e}", exc_info=True)
+                await self._send_to_runtime({
+                    'type': 'storage_response',
+                    'data': {
+                        'request_id': request_id,
+                        'success': False,
+                        'error': str(e)
+                    }
+                })
+        
         elif msg_type == 'api_call':
             # Plugin wants to call OneBot API
             request_id = data.get('request_id')
@@ -408,9 +571,9 @@ class PluginRuntimeConnector:
             # Get OneBot adapter from app
             if self.app and hasattr(self.app, 'onebot_adapter'):
                 try:
-                    # Call OneBot API using generic call_api method
+                    # Call OneBot API with source_plugin info to skip message.before_send processing
                     onebot = self.app.onebot_adapter
-                    result = await onebot.call_api(action, params)
+                    result = await onebot.call_api(action, params, source_plugin=source_plugin)
                     
                     logger.info(f"API call {action} succeeded: {result}")
                     
@@ -448,6 +611,80 @@ class PluginRuntimeConnector:
                         }
                     })
         
+        elif msg_type == 'reload_plugin_request':
+            # Plugin wants to reload itself (from within plugin)
+            request_id = data.get('request_id')
+            plugin_name = data.get('plugin_name')
+            
+            logger.info(f"Plugin {plugin_name} requested reload from within plugin")
+            
+            try:
+                # Use connector's reload_plugin method which gets config from database
+                success = await self.reload_plugin(plugin_name)
+                
+                # Send response back to plugin
+                await self._send_to_runtime({
+                    'type': 'reload_plugin_response',
+                    'data': {
+                        'request_id': request_id,
+                        'success': success
+                    }
+                })
+            except Exception as e:
+                logger.error(f"Error handling reload_plugin_request: {e}", exc_info=True)
+                await self._send_to_runtime({
+                    'type': 'reload_plugin_response',
+                    'data': {
+                        'request_id': request_id,
+                        'success': False,
+                        'error': str(e)
+                    }
+                })
+        
+        elif msg_type == 'config_request':
+            # Plugin wants to update config
+            request_id = data.get('request_id')
+            action = data.get('action')  # 'set_config'
+            author = data.get('author')
+            name = data.get('name')
+            config = data.get('config', {})
+            
+            logger.debug(f"Config request: {action} for plugin {author}/{name}, request_id: {request_id}")
+            
+            # Use handler to process config request
+            from .handler import RuntimeConnectionHandler
+            handler = RuntimeConnectionHandler(self.db_manager)
+            
+            try:
+                # Call handler method
+                if action == 'set_config':
+                    result = await handler._handle_set_config({
+                        'author': author,
+                        'name': name,
+                        'config': config
+                    })
+                else:
+                    result = {'success': False, 'error': f'Unknown config action: {action}'}
+                
+                # Send response back to plugin
+                await self._send_to_runtime({
+                    'type': 'config_response',
+                    'data': {
+                        'request_id': request_id,
+                        **result
+                    }
+                })
+            except Exception as e:
+                logger.error(f"Error handling config request: {e}", exc_info=True)
+                await self._send_to_runtime({
+                    'type': 'config_response',
+                    'data': {
+                        'request_id': request_id,
+                        'success': False,
+                        'error': str(e)
+                    }
+                })
+        
         else:
             logger.warning(f"Unknown message type from runtime: {msg_type}")
     
@@ -467,8 +704,19 @@ class PluginRuntimeConnector:
             if msg_type == 'api_response':
                 logger.debug(f"   Response data: {message.get('data', {})}")
             data = json.dumps(message) + '\n'
-            self.runtime_process.stdin.write(data.encode())
-            await self.runtime_process.stdin.drain()
+            
+            # Check if this is asyncio subprocess or Popen fallback
+            stdin = self.runtime_process.stdin
+            if hasattr(stdin, 'drain'):
+                # Asyncio subprocess - async IO
+                stdin.write(data.encode())
+                await stdin.drain()
+            else:
+                # Popen fallback - sync IO, use executor
+                loop = asyncio.get_event_loop()
+                await loop.run_in_executor(None, stdin.write, data.encode())
+                await loop.run_in_executor(None, stdin.flush)
+            
             logger.debug(f"Sent to runtime: {msg_type}")
         except Exception as e:
             logger.error(f"Error sending to runtime: {e}", exc_info=True)
@@ -496,18 +744,48 @@ class PluginRuntimeConnector:
             logger.info(f"Found {len(plugins)} enabled plugins")
             
             # Send init command to runtime
+            # Priority: database > plugin.json > default (100)
+            plugin_list = []
+            for p in plugins:
+                # Try to get priority from plugin.json
+                priority_from_json = None
+                try:
+                    from pathlib import Path
+                    from ...core.config import get_config
+                    config = get_config()
+                    plugin_dir = Path(config.plugin_dir)
+                    if not plugin_dir.is_absolute():
+                        from pathlib import Path as P
+                        project_root = P(__file__).parent.parent.parent.parent
+                        plugin_dir = (project_root / config.plugin_dir).resolve()
+                    
+                    plugin_path = plugin_dir / p.plugin_name
+                    plugin_json = plugin_path / "plugin.json"
+                    if plugin_json.exists():
+                        import json
+                        with open(plugin_json, 'r', encoding='utf-8') as f:
+                            plugin_metadata = json.load(f)
+                            priority_from_json = plugin_metadata.get('priority')
+                except Exception:
+                    pass
+                
+                # Priority: database > plugin.json > default
+                final_priority = p.priority
+                if p.priority == 100 and priority_from_json is not None:
+                    # Database has default, use plugin.json if available
+                    final_priority = priority_from_json
+                
+                plugin_list.append({
+                    'author': p.plugin_author,
+                    'name': p.plugin_name,
+                    'config': p.config,
+                    'priority': final_priority
+                })
+            
             await self._send_to_runtime({
                 'type': 'init_plugins',
                 'data': {
-                    'plugins': [
-                        {
-                            'author': p.plugin_author,
-                            'name': p.plugin_name,
-                            'config': p.config,
-                            'priority': p.priority
-                        }
-                        for p in plugins
-                    ]
+                    'plugins': plugin_list
                 }
             })
             
@@ -544,6 +822,120 @@ class PluginRuntimeConnector:
             }
         })
     
+    async def emit_event_with_context(
+        self,
+        event_context: 'EventContext',
+        bound_plugins: Optional[List[str]] = None
+    ) -> Optional['EventContext']:
+        """Emit event with context to plugins (similar to LangBot).
+        
+        Plugins can modify the event context and prevent default behavior.
+        
+        Args:
+            event_context: EventContext instance
+            bound_plugins: List of plugin IDs to include (None = all enabled plugins)
+            
+        Returns:
+            Modified EventContext or None if event was blocked
+        """
+        from ...core.event_context import EventContext
+        
+        if not self.is_running:
+            return event_context
+        
+        # Send event context to runtime for plugin processing
+        import uuid
+        request_id = str(uuid.uuid4())
+        future = asyncio.get_event_loop().create_future()
+        self.pending_requests[request_id] = future
+        
+        await self._send_to_runtime({
+            'type': 'event_with_context',
+            'data': {
+                'request_id': request_id,
+                'event_context': event_context.to_dict(),
+                'bound_plugins': bound_plugins
+            }
+        })
+        
+        try:
+            # Wait for response (with timeout)
+            # Use shorter timeout for message.before_send to avoid blocking API calls
+            # Use longer timeout for message.received to allow plugins to call APIs
+            if event_context.event_name == 'message.before_send':
+                timeout = 5.0  # Short timeout for before_send to avoid blocking
+            else:
+                timeout = 30.0  # Longer timeout for received events
+            result = await asyncio.wait_for(future, timeout=timeout)
+            
+            if result.get('success', True):  # Default to True if not specified
+                # Get modified context from result
+                modified_ctx_dict = result.get('event_context')
+                if modified_ctx_dict:
+                    logger.debug(f"Returning modified context for {event_context.event_name}")
+                    return EventContext.from_dict(modified_ctx_dict)
+                # No modification, return original context
+                logger.debug(f"Returning original context for {event_context.event_name} (no modifications)")
+                return event_context
+            else:
+                # Event was blocked
+                logger.debug(f"Event blocked by plugin: {event_context.event_name}")
+                return None
+                
+        except asyncio.TimeoutError:
+            # Don't remove future immediately - plugin runtime might still be processing
+            # Just log warning and return original context
+            logger.warning(f"Event context timeout: {event_context.event_name} (request_id={request_id})")
+            # Keep future in pending_requests in case response arrives later
+            # It will be cleaned up when response arrives or after a delay
+            return event_context
+        except Exception as e:
+            self.pending_requests.pop(request_id, None)
+            logger.error(f"Error emitting event with context: {e}", exc_info=True)
+            return event_context
+    
+    async def _get_enabled_plugins_with_priority(
+        self,
+        bound_plugins: Optional[List[str]] = None
+    ) -> List[Dict[str, Any]]:
+        """Get enabled plugins with priority information."""
+        try:
+            from ...core.database import get_database_manager
+            from ...core.models.plugin import PluginSetting
+            
+            db_manager = get_database_manager()
+            if not db_manager:
+                return []
+            
+            # Get all plugin settings
+            async with db_manager.session() as session:
+                from sqlalchemy import select
+                result = await session.execute(select(PluginSetting))
+                settings = result.scalars().all()
+                
+                enabled_plugins = []
+                for setting in settings:
+                    if not setting.enabled:
+                        continue
+                    
+                    plugin_id = f"{setting.plugin_author}/{setting.plugin_name}"
+                    
+                    # Filter by bound_plugins if specified
+                    if bound_plugins is not None and plugin_id not in bound_plugins:
+                        continue
+                    
+                    enabled_plugins.append({
+                        'plugin_id': plugin_id,
+                        'author': setting.plugin_author,
+                        'name': setting.plugin_name,
+                        'priority': getattr(setting, 'priority', 100),  # Default priority: 100
+                    })
+                
+                return enabled_plugins
+        except Exception as e:
+            logger.error(f"Error getting enabled plugins: {e}", exc_info=True)
+            return []
+    
     async def install_plugin(self, author: str, name: str, source: str):
         """Install a plugin.
         
@@ -551,16 +943,296 @@ class PluginRuntimeConnector:
             author: Plugin author
             name: Plugin name
             source: Installation source (path, url, etc.)
+            
+        Returns:
+            True if successful
         """
-        # TODO: Implement plugin installation
         logger.info(f"Installing plugin: {author}/{name} from {source}")
-        pass
+        
+        try:
+            from ...core.config import get_config
+            config = get_config()
+            plugins_dir = Path(config.plugin_dir)
+            plugin_path = plugins_dir / name
+            
+            # 如果插件目录已存在，先检查
+            if plugin_path.exists():
+                logger.warning(f"Plugin {name} already exists at {plugin_path}")
+                return False
+            
+            # 根据source类型处理
+            if source.startswith('http://') or source.startswith('https://'):
+                # URL下载（GitHub等）
+                logger.info(f"Downloading plugin from URL: {source}")
+                
+                try:
+                    import aiohttp
+                    import tempfile
+                    import zipfile
+                    
+                    # 创建临时目录
+                    temp_dir = Path(tempfile.gettempdir()) / f"plugin_install_{name}_{datetime.now().timestamp()}"
+                    temp_dir.mkdir(exist_ok=True)
+                    temp_zip = temp_dir / f"{name}.zip"
+                    
+                    # 处理GitHub URL
+                    if 'github.com' in source:
+                        # 如果是GitHub仓库URL，转换为下载链接
+                        if source.endswith('.zip'):
+                            download_url = source
+                        elif '/archive/' in source:
+                            download_url = source
+                        else:
+                            # 假设是仓库URL，添加/archive/refs/heads/main.zip
+                            if source.endswith('/'):
+                                source = source[:-1]
+                            if not source.endswith('.zip'):
+                                # 尝试获取main分支的zip
+                                download_url = f"{source}/archive/refs/heads/main.zip"
+                            else:
+                                download_url = source
+                    else:
+                        download_url = source
+                    
+                    # 下载文件
+                    async with aiohttp.ClientSession() as session:
+                        async with session.get(download_url) as response:
+                            if response.status != 200:
+                                logger.error(f"Failed to download plugin: HTTP {response.status}")
+                                return False
+                            
+                            # 保存到临时文件
+                            with open(temp_zip, 'wb') as f:
+                                async for chunk in response.content.iter_chunked(8192):
+                                    f.write(chunk)
+                    
+                    # 解压ZIP文件
+                    with zipfile.ZipFile(temp_zip, 'r') as zip_ref:
+                        # 获取解压后的根目录名
+                        zip_names = zip_ref.namelist()
+                        if zip_names:
+                            # 通常GitHub zip的第一层是 仓库名-分支名/
+                            root_dir = zip_names[0].split('/')[0]
+                            # 解压到临时目录
+                            extract_dir = temp_dir / "extracted"
+                            zip_ref.extractall(extract_dir)
+                            
+                            # 找到实际的插件目录（可能有一层包装）
+                            extracted_root = extract_dir / root_dir
+                            if extracted_root.exists():
+                                # 检查是否直接就是插件目录（有plugin.json）
+                                if (extracted_root / "plugin.json").exists():
+                                    source_path = extracted_root
+                                else:
+                                    # 查找包含plugin.json的子目录
+                                    plugin_dirs = [d for d in extracted_root.iterdir() if d.is_dir() and (d / "plugin.json").exists()]
+                                    if plugin_dirs:
+                                        source_path = plugin_dirs[0]
+                                    else:
+                                        logger.error("Could not find plugin.json in downloaded archive")
+                                        import shutil
+                                        shutil.rmtree(temp_dir, ignore_errors=True)
+                                        return False
+                            else:
+                                logger.error("Failed to extract plugin archive")
+                                import shutil
+                                shutil.rmtree(temp_dir, ignore_errors=True)
+                                return False
+                            
+                            # 复制到插件目录
+                            import shutil
+                            shutil.copytree(source_path, plugin_path)
+                            logger.info(f"Downloaded and installed plugin from {source} to {plugin_path}")
+                            
+                            # 清理临时文件
+                            shutil.rmtree(temp_dir, ignore_errors=True)
+                        else:
+                            logger.error("Downloaded archive is empty")
+                            import shutil
+                            shutil.rmtree(temp_dir, ignore_errors=True)
+                            return False
+                        
+                except Exception as e:
+                    logger.error(f"Failed to download plugin from URL: {e}", exc_info=True)
+                    # 清理临时文件
+                    try:
+                        import shutil
+                        if 'temp_dir' in locals() and temp_dir.exists():
+                            shutil.rmtree(temp_dir, ignore_errors=True)
+                    except:
+                        pass
+                    return False
+            elif Path(source).exists():
+                # 本地路径
+                source_path = Path(source)
+                if source_path.is_dir():
+                    # 复制目录
+                    import shutil
+                    shutil.copytree(source_path, plugin_path)
+                    logger.info(f"Copied plugin from {source_path} to {plugin_path}")
+                elif source_path.is_file() and source_path.suffix == '.zip':
+                    # 解压ZIP文件
+                    import zipfile
+                    with zipfile.ZipFile(source_path, 'r') as zip_ref:
+                        zip_ref.extractall(plugin_path)
+                    logger.info(f"Extracted plugin from {source_path} to {plugin_path}")
+                else:
+                    logger.error(f"Unsupported source type: {source}")
+                    return False
+            else:
+                logger.error(f"Source not found: {source}")
+                return False
+            
+            # 验证插件（检查plugin.json）
+            plugin_json = plugin_path / "plugin.json"
+            if not plugin_json.exists():
+                logger.error(f"Plugin {name} missing plugin.json, installation failed")
+                # 清理
+                import shutil
+                if plugin_path.exists():
+                    shutil.rmtree(plugin_path)
+                return False
+            
+            # 在数据库中注册插件
+            if self.db_manager:
+                # 读取plugin.json获取默认配置
+                import json
+                with open(plugin_json, 'r', encoding='utf-8') as f:
+                    plugin_metadata = json.load(f)
+                
+                # 检查插件设置是否已存在
+                existing_setting = await self.db_manager.get_plugin_setting(author, name)
+                
+                default_config = plugin_metadata.get('default_config', {})
+                install_info = {
+                    'source': source,
+                    'version': plugin_metadata.get('version', '1.0.0'),
+                    'installed_at': datetime.now().isoformat()
+                }
+                
+                if existing_setting:
+                    # 更新现有设置
+                    success = await self.db_manager.update_plugin_setting(
+                        author, name,
+                        enabled=True,
+                        config=default_config,
+                        install_source='local' if Path(source).exists() else 'url',
+                        install_info=install_info
+                    )
+                else:
+                    # 创建新设置
+                    try:
+                        await self.db_manager.create_plugin_setting(
+                            author, name,
+                            enabled=True,
+                            config=default_config,
+                            install_source='local' if Path(source).exists() else 'url',
+                            install_info=install_info
+                        )
+                        success = True
+                    except Exception as e:
+                        logger.error(f"Failed to create plugin setting: {e}")
+                        success = False
+                
+                if success:
+                    logger.info(f"Plugin {author}/{name} installed successfully")
+                    # 重新加载插件
+                    await self.reload_plugin(f"{author}/{name}")
+                    return True
+                else:
+                    logger.error(f"Failed to register plugin in database")
+                    return False
+            else:
+                logger.warning("Database manager not available, plugin installed but not registered")
+                return True
+                
+        except Exception as e:
+            logger.error(f"Failed to install plugin {author}/{name}: {e}", exc_info=True)
+            # 清理失败的安装
+            try:
+                if plugin_path.exists():
+                    import shutil
+                    shutil.rmtree(plugin_path)
+            except:
+                pass
+            return False
     
     async def uninstall_plugin(self, author: str, name: str):
-        """Uninstall a plugin."""
-        # TODO: Implement plugin uninstallation
+        """Uninstall a plugin completely.
+        
+        This will:
+        1. Unload plugin from runtime
+        2. Delete plugin directory
+        3. Delete all plugin storage data from database
+        4. Delete plugin settings from database
+        
+        Args:
+            author: Plugin author
+            name: Plugin name
+            
+        Returns:
+            True if successful
+        """
         logger.info(f"Uninstalling plugin: {author}/{name}")
-        pass
+        
+        plugin_id = f"{author}/{name}"
+        
+        try:
+            # 1. 先卸载插件（从runtime中移除）
+            await self.unload_plugin(plugin_id)
+            
+            # 2. 删除插件目录
+            from ...core.config import get_config
+            config = get_config()
+            plugins_dir = Path(config.plugin_dir)
+            plugin_path = plugins_dir / name
+            
+            if plugin_path.exists():
+                import shutil
+                try:
+                    shutil.rmtree(plugin_path)
+                    logger.info(f"Deleted plugin directory: {plugin_path}")
+                except Exception as e:
+                    logger.warning(f"Failed to delete plugin directory: {e}")
+            
+            # 3. 删除数据库中的所有插件数据
+            if self.db_manager:
+                # 3.1 删除插件的所有存储数据
+                try:
+                    storage_keys = await self.db_manager.list_binary_keys('plugin', plugin_id)
+                    deleted_count = 0
+                    for key in storage_keys:
+                        try:
+                            await self.db_manager.delete_binary('plugin', plugin_id, key)
+                            deleted_count += 1
+                            logger.debug(f"Deleted storage key: {key} for plugin {plugin_id}")
+                        except Exception as e:
+                            logger.warning(f"Failed to delete storage key {key}: {e}")
+                    if storage_keys:
+                        logger.info(f"Deleted {deleted_count}/{len(storage_keys)} storage keys for plugin {plugin_id}")
+                except Exception as e:
+                    logger.warning(f"Failed to delete plugin storage data: {e}")
+                
+                # 3.2 删除插件设置（完全删除，不只是禁用）
+                try:
+                    success = await self.db_manager.delete_plugin_setting(author, name)
+                    if success:
+                        logger.info(f"Deleted plugin settings for {author}/{name}")
+                    else:
+                        logger.warning(f"Plugin settings not found in database: {author}/{name}")
+                except Exception as e:
+                    logger.error(f"Failed to delete plugin settings: {e}")
+                    return False
+                
+                logger.info(f"Plugin {author}/{name} uninstalled successfully (all data deleted)")
+                return True
+            else:
+                logger.warning("Database manager not available, only deleted plugin directory")
+                return True
+                
+        except Exception as e:
+            logger.error(f"Failed to uninstall plugin {author}/{name}: {e}", exc_info=True)
+            return False
     
     async def unload_plugin(self, plugin_name: str) -> bool:
         """Unload a single plugin without reloading.
@@ -605,7 +1277,7 @@ class PluginRuntimeConnector:
         try:
             # Get fresh config from database to pass to runtime
             # This avoids SQLite cross-process caching issues
-            plugin_config = None
+            plugin_config = {}  # 初始化为空字典，而不是None
             
             if self.db_manager:
                 # Parse plugin name to get author/name
@@ -641,6 +1313,14 @@ class PluginRuntimeConnector:
                 if setting and setting.config:
                     plugin_config = setting.config
                     logger.debug(f"Loaded fresh config from database for {plugin_name}: {plugin_config}")
+                else:
+                    # 如果数据库中没有配置，使用默认配置
+                    plugin_config = {}
+                    logger.debug(f"No config in database for {plugin_name}, using empty config")
+            
+            # 确保plugin_config不是None
+            if plugin_config is None:
+                plugin_config = {}
             
             # Send reload message to runtime with fresh config
             await self._send_to_runtime({
@@ -706,18 +1386,26 @@ class PluginRuntimeConnector:
             self.runtime_task = None
         
         # Terminate process
-        if self.runtime_process and self.runtime_process.returncode is None:
+        if self.runtime_process:
             try:
-                # Try graceful termination first
-                self.runtime_process.terminate()
-                try:
-                    await asyncio.wait_for(self.runtime_process.wait(), timeout=3.0)
-                    logger.info("Runtime process terminated gracefully")
-                except asyncio.TimeoutError:
-                    logger.warning("Runtime process didn't terminate, killing it...")
-                    self.runtime_process.kill()
-                    await self.runtime_process.wait()
-                    logger.info("Runtime process killed")
+                # Check if process is still running
+                is_running = False
+                if hasattr(self.runtime_process, 'returncode'):
+                    is_running = self.runtime_process.returncode is None
+                elif hasattr(self.runtime_process, 'poll'):
+                    is_running = self.runtime_process.poll() is None
+                
+                if is_running:
+                    # Try graceful termination first
+                    self.runtime_process.terminate()
+                    try:
+                        await asyncio.wait_for(self.runtime_process.wait(), timeout=3.0)
+                        logger.info("Runtime process terminated gracefully")
+                    except asyncio.TimeoutError:
+                        logger.warning("Runtime process didn't terminate, killing it...")
+                        self.runtime_process.kill()
+                        await self.runtime_process.wait()
+                        logger.info("Runtime process killed")
             except ProcessLookupError:
                 # Process already terminated
                 logger.debug("Runtime process already terminated")

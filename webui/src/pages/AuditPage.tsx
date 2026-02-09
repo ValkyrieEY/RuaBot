@@ -97,6 +97,77 @@ export default function AuditPage() {
     return 'bg-gray-100 text-gray-700 border-gray-200'
   }
 
+  // Parse and beautify log message
+  const parseLogMessage = (log: LogEntry) => {
+    // Try to extract meaningful information from the log
+    const parts: string[] = []
+    
+    // Add main message if exists
+    if (log.message && log.message !== '{}') {
+      parts.push(log.message)
+    }
+    
+    // Extract key fields (excluding standard fields)
+    const standardFields = ['timestamp', 'level', 'logger', 'message', 'event', 'exception']
+    const extraFields = Object.entries(log)
+      .filter(([key, value]) => 
+        !standardFields.includes(key) && 
+        value !== null && 
+        value !== undefined && 
+        value !== '' &&
+        key !== 'exc_info' &&
+        key !== 'exc_text'
+      )
+    
+    // Format extra fields
+    if (extraFields.length > 0) {
+      const fieldStrings = extraFields.map(([key, value]) => {
+        if (typeof value === 'object') {
+          try {
+            // For objects, show key fields
+            if (Array.isArray(value)) {
+              return `${key}=[${value.length}项]`
+            } else {
+              const objKeys = Object.keys(value).slice(0, 3).join(', ')
+              return `${key}={${objKeys}${Object.keys(value).length > 3 ? '...' : ''}}`
+            }
+          } catch {
+            return `${key}=${String(value)}`
+          }
+        }
+        return `${key}=${String(value)}`
+      })
+      parts.push(fieldStrings.join(' | '))
+    }
+    
+    return parts.filter(p => p).join(' | ') || JSON.stringify(log)
+  }
+
+  // Get full log content for tooltip
+  const getFullLogContent = (log: LogEntry) => {
+    const lines: string[] = []
+    
+    if (log.message) {
+      lines.push(`Message: ${log.message}`)
+    }
+    
+    // Add all extra fields
+    const standardFields = ['timestamp', 'level', 'logger', 'message', 'event']
+    Object.entries(log)
+      .filter(([key]) => !standardFields.includes(key) && key !== 'exc_info' && key !== 'exc_text')
+      .forEach(([key, value]) => {
+        if (value !== null && value !== undefined && value !== '') {
+          if (typeof value === 'object') {
+            lines.push(`${key}: ${JSON.stringify(value, null, 2)}`)
+          } else {
+            lines.push(`${key}: ${value}`)
+          }
+        }
+      })
+    
+    return lines.join('\n')
+  }
+
   const filteredLogs = logs.filter((log) => {
     if (filterLevel === 'all') return true
     return log.level.toLowerCase() === filterLevel
@@ -251,37 +322,61 @@ export default function AuditPage() {
                   </td>
                 </tr>
               ) : (
-                filteredLogs.map((log, index) => (
-                  <tr key={index} className="border-b border-gray-100 hover:bg-gray-50 transition-colors">
-                    <td className="py-3 px-4 text-sm text-gray-600 font-mono whitespace-nowrap">
-                      {formatTime(log.timestamp)}
-                    </td>
-                    <td className="py-3 px-4">
-                      <div className="flex items-center gap-2">
-                        {getLevelIcon(log.level)}
-                        <span className={`px-2 py-1 rounded text-xs font-medium border ${getLevelColor(log.level)}`}>
-                          {log.level.toUpperCase()}
-                        </span>
-                      </div>
-                    </td>
-                    <td className="py-3 px-4 text-sm text-gray-600 font-mono">
-                      {log.logger || '-'}
-                    </td>
-                    <td className="py-3 px-4 text-sm text-gray-900">
-                      <div className="max-w-2xl">
-                        <div className="break-words">{log.message || JSON.stringify(log)}</div>
-                        {log.exception && (
-                          <details className="mt-2">
-                            <summary className="text-xs text-red-600 cursor-pointer">查看异常详情</summary>
-                            <pre className="mt-2 text-xs bg-red-50 p-2 rounded overflow-x-auto">
-                              {log.exception}
-                            </pre>
-                          </details>
-                        )}
-                      </div>
-                    </td>
-                  </tr>
-                ))
+                filteredLogs.map((log, index) => {
+                  const displayMessage = parseLogMessage(log)
+                  const fullContent = getFullLogContent(log)
+                  const maxLength = 150
+                  const shouldTruncate = displayMessage.length > maxLength
+                  const truncatedMessage = shouldTruncate ? displayMessage.slice(0, maxLength) + '...' : displayMessage
+                  
+                  return (
+                    <tr key={index} className="border-b border-gray-100 hover:bg-gray-50 transition-colors group">
+                      <td className="py-3 px-4 text-sm text-gray-600 font-mono whitespace-nowrap">
+                        {formatTime(log.timestamp)}
+                      </td>
+                      <td className="py-3 px-4">
+                        <div className="flex items-center gap-2">
+                          {getLevelIcon(log.level)}
+                          <span className={`px-2 py-1 rounded text-xs font-medium border ${getLevelColor(log.level)}`}>
+                            {log.level.toUpperCase()}
+                          </span>
+                        </div>
+                      </td>
+                      <td className="py-3 px-4 text-sm text-gray-600 font-mono">
+                        {log.logger || '-'}
+                      </td>
+                      <td className="py-3 px-4 text-sm text-gray-900 relative">
+                        <div className="max-w-2xl">
+                          <div className="break-words">
+                            {truncatedMessage}
+                          </div>
+                          {/* Hover Tooltip */}
+                          <div className="absolute left-0 top-full mt-1 z-50 invisible group-hover:visible opacity-0 group-hover:opacity-100 transition-opacity duration-200 pointer-events-none">
+                            <div className="bg-gray-900 text-white text-xs rounded-lg shadow-2xl p-3 max-w-2xl min-w-[300px] border border-gray-700">
+                              <div className="whitespace-pre-wrap break-words max-h-96 overflow-y-auto custom-scrollbar">
+                                {fullContent}
+                              </div>
+                              {log.exception && (
+                                <div className="mt-2 pt-2 border-t border-gray-700">
+                                  <div className="text-red-400 font-semibold mb-1">异常详情:</div>
+                                  <pre className="text-xs whitespace-pre-wrap break-words text-red-300">
+                                    {log.exception}
+                                  </pre>
+                                </div>
+                              )}
+                            </div>
+                          </div>
+                          {log.exception && (
+                            <div className="mt-1 text-xs text-red-600 flex items-center gap-1">
+                              <AlertTriangle className="w-3 h-3" />
+                              <span>包含异常信息 (悬浮查看)</span>
+                            </div>
+                          )}
+                        </div>
+                      </td>
+                    </tr>
+                  )
+                })
               )}
             </tbody>
           </table>

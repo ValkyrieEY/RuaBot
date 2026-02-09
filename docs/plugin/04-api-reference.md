@@ -886,6 +886,215 @@ for key in keys:
 
 ## Event API
 
+### Event Handling Methods
+
+Plugins must implement the `on_event_context()` method to handle events. This method allows plugins to modify event data or prevent default behavior.
+
+### on_event_context()
+
+Event context handling method (can modify event data or prevent default behavior).
+
+```python
+async def on_event_context(self, ctx: EventContext) -> Optional[EventContext]:
+    """Handle event context (similar to LangBot)
+    
+    Args:
+        ctx: EventContext object containing event name and data
+        
+    Returns:
+        - EventContext: Modified event context
+        - Dict: Dictionary with only event_data modified
+        - None: No modification
+    """
+    from ...core.event_context import EventContext
+    
+    # Check event type
+    if ctx.event_name == 'message.received':
+        # Modify message content
+        if 'raw_message' in ctx.event_data:
+            ctx.event_data['raw_message'] = ctx.event_data['raw_message'].upper()
+            ctx.mark_modified()
+        
+        # Prevent default behavior (e.g., prevent message from being processed by AI)
+        # ctx.prevent_default()
+        
+        return ctx  # Return modified context
+    
+    elif ctx.event_name == 'message.before_send':
+        # Intercept message before sending
+        params = ctx.event_data.get('params', {})
+        message = params.get('message', '')
+        
+        # Filter sensitive words
+        if 'sensitive_word' in message:
+            ctx.prevent_default()  # Block sending
+            return ctx
+    
+    return None  # No modification
+```
+
+**EventContext Object:**
+
+```python
+class EventContext:
+    event_name: str          # Event name
+    event_data: Dict         # Event data (can be modified)
+    context_id: str          # Context ID
+    timestamp: datetime      # Timestamp
+    source: Optional[str]    # Event source
+    
+    def prevent_default(self) -> None:
+        """Prevent default behavior"""
+    
+    def is_prevented_default(self) -> bool:
+        """Check if default behavior is prevented"""
+    
+    def mark_modified(self) -> None:
+        """Mark event as modified"""
+    
+    def is_modified(self) -> bool:
+        """Check if event was modified"""
+```
+
+**Supported Events:**
+
+- `message.received` - When message is received (can modify message content or prevent processing)
+- `message.before_send` - Before message is sent (can modify send parameters or prevent sending)
+
+**Plugin Priority:**
+
+Plugins process event contexts in priority order (lower priority = earlier execution):
+
+Priority sources (from highest to lowest priority):
+1. **Database setting** (configured via WebUI)
+2. **plugin.json declaration** (configured in code)
+3. **Default value 100**
+
+Configuration methods:
+
+**Method 1: Declare in plugin.json (recommended for developers)**
+```json
+{
+  "name": "my_plugin",
+  "author": "XQNEXT",
+  "priority": 10,  // Declare priority in code
+  "default_config": {
+    // ...
+  }
+}
+```
+
+**Method 2: Configure in WebUI (recommended for users)**
+- Set priority field in plugin settings interface
+- Overrides plugin.json setting
+
+**Rules:**
+- Lower priority = earlier processing
+- If a plugin calls `ctx.prevent_default()`, subsequent plugins **will NOT receive** the event (processing stops immediately)
+- If a plugin only modifies event data (`ctx.mark_modified()`), subsequent plugins **will still receive** the event, but with modified data
+
+**Important Notes:**
+
+1. **Preventing default stops subsequent plugins**
+   ```python
+   # Plugin A (priority: 10) - If prevents, subsequent plugins won't receive
+   async def on_event_context(self, ctx):
+       if ctx.event_name == 'message.received':
+           if 'sensitive_word' in ctx.event_data.get('raw_message', ''):
+               ctx.prevent_default()  # ⚠️ This stops all subsequent plugins
+               return ctx
+   ```
+   If Plugin A calls `prevent_default()`, Plugins B, C, etc. will NOT receive the event.
+
+2. **Modifying data does NOT stop subsequent plugins**
+   ```python
+   # Plugin A (priority: 10) - Only modifies, subsequent plugins still receive
+   async def on_event_context(self, ctx):
+       if ctx.event_name == 'message.received':
+           ctx.event_data['raw_message'] = ctx.event_data['raw_message'].upper()
+           ctx.mark_modified()  # ✅ Subsequent plugins still receive, but with modified data
+           return ctx
+   ```
+   If Plugin A only modifies data, Plugins B, C, etc. will still receive the event, but with modified data.
+
+3. **Handling multiple events in one plugin (Important: Plugin is called twice)**
+   
+   If a plugin needs to handle both `message.received` (modify incoming messages) and `message.before_send` (modify outgoing messages), **the plugin will be called twice** because these are **two completely independent events**:
+   
+   **Event Flow:**
+   ```
+   1. When message is received:
+      → Triggers message.received event
+      → All plugins process in priority order (Plugin A priority:10 → Plugin B priority:50 → ...)
+      → Each plugin's on_event_context is called once, handling message.received
+   
+   2. When message is sent (e.g., plugin calls api.send_group_msg):
+      → Triggers message.before_send event
+      → All plugins process in priority order (Plugin A priority:10 → Plugin B priority:50 → ...)
+      → Each plugin's on_event_context is called once, handling message.before_send
+   ```
+   
+   **Example Code:**
+   ```python
+   async def on_event_context(self, ctx):
+       # First call: Handle message.received (when message is received)
+       if ctx.event_name == 'message.received':
+           # Modify incoming message
+           ctx.event_data['raw_message'] = 'Modified'
+           ctx.mark_modified()
+           return ctx
+       
+       # Second call: Handle message.before_send (before message is sent)
+       elif ctx.event_name == 'message.before_send':
+           # Modify outgoing message
+           params = ctx.event_data.get('params', {})
+           params['message'] = params.get('message', '').upper()
+           ctx.event_data['params'] = params
+           ctx.mark_modified()
+           return ctx
+       
+       return None
+   ```
+   
+   **Priority Setting:**
+   - Set one priority in `plugin.json` (e.g., `priority: 30`)
+   - This priority applies to both event handlers
+   - For `message.received`, plugins process in priority:30 order
+   - For `message.before_send`, plugins also process in priority:30 order
+   
+   **Important: The two events are independent**
+   - Processing `message.received` does not affect `message.before_send` processing
+   - Even if you call `prevent_default()` in `message.received`, it won't affect `message.before_send` event
+   - Each event independently calls all plugins in priority order
+
+**Example:**
+
+```python
+# Plugin A (priority: 10) - Executes first
+async def on_event_context(self, ctx):
+    if ctx.event_name == 'message.received':
+        # Modify message
+        ctx.event_data['raw_message'] = 'Modified'
+        ctx.mark_modified()
+        return ctx
+
+# Plugin B (priority: 50) - Executes in middle
+async def on_event_context(self, ctx):
+    if ctx.event_name == 'message.received':
+        # Check for sensitive words
+        if 'sensitive_word' in ctx.event_data.get('raw_message', ''):
+            ctx.prevent_default()  # Block, subsequent plugins won't receive
+            return ctx
+
+# Plugin C (priority: 100) - Executes last (if not blocked)
+async def on_event_context(self, ctx):
+    if ctx.event_name == 'message.received':
+        # Handle message
+        pass
+```
+
+---
+
 ### emit_event()
 
 Emit custom event.

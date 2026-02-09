@@ -37,7 +37,7 @@ RuaBot provides a complete plugin system supporting:
 - **Dependency Management**: Supports management of dependencies between plugins.
 - **Lifecycle Management**: Provides complete plugin lifecycle hooks.
 - **Configuration Management**: Each plugin has an independent configuration system.
-- **Adapter System**: Supports multiple plugin adapters.
+- **Plugin Runtime**: Runs plugins in independent processes.
 
 ### 2. AI Integration
 
@@ -136,7 +136,7 @@ Plugin system module:
 
 - **Plugin Manager**: Loading, unloading, and reloading of plugins.
 - **Plugin Interface**: Standardized plugin interface definition.
-- **Adapter System**: Supports multiple plugin adapters.
+- **Plugin Runtime**: Runs plugins in independent processes.
 - **Capability Registration**: Plugin capability registration and discovery.
 
 #### 3. AI Module
@@ -189,14 +189,14 @@ Events are the basic unit of internal system communication:
 - **Plugin Event**: Plugin lifecycle events.
 - **Custom Event**: User-defined events.
 
-### Adapter
+### Plugin Runtime
 
-Adapters bridge plugins and the framework:
+Plugin Runtime is the core of the plugin system:
 
-- Responsible for plugin loading and initialization.
-- Provide the plugin execution environment.
-- Handle interactions between plugins and the framework.
-- Support multiple plugin types.
+- Runs plugins in independent processes.
+- Provides the plugin execution environment.
+- Handles interactions between plugins and the framework.
+- Supports plugin hot reloading.
 
 ### AI Config
 

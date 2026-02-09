@@ -1,12 +1,13 @@
 """Event bus for asynchronous event-driven communication."""
 
 import asyncio
-from typing import Any, Callable, Dict, List, Optional, Set
+from typing import Any, Callable, Dict, List, Optional, Set, Union
 from dataclasses import dataclass, field
 from datetime import datetime
 import uuid
 
 from .logger import get_logger
+from .event_context import EventContext
 
 logger = get_logger(__name__)
 
@@ -178,6 +179,58 @@ class EventBus:
         )
         
         return event.event_id
+    
+    async def emit_event_with_context(
+        self,
+        event_name: str,
+        event_data: Dict[str, Any],
+        source: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+        plugin_connector: Optional[Any] = None,
+        bound_plugins: Optional[List[str]] = None
+    ) -> EventContext:
+        """
+        Emit an event with context that can be modified by plugins.
+        
+        Similar to LangBot's emit_event, allows plugins to:
+        - Modify event data
+        - Prevent default behavior
+        
+        Args:
+            event_name: Event name
+            event_data: Event data (can be modified)
+            source: Event source
+            metadata: Additional metadata
+            plugin_connector: Plugin connector for plugin event handling
+            bound_plugins: List of plugin IDs to include (None = all)
+            
+        Returns:
+            EventContext with potentially modified data
+        """
+        # Create event context
+        ctx = EventContext(
+            event_name=event_name,
+            event_data=event_data,
+            source=source,
+            metadata=metadata or {}
+        )
+        
+        # If plugin connector is available, emit to plugins first
+        if plugin_connector:
+            try:
+                # Emit to plugins and get modified context
+                plugin_ctx = await plugin_connector.emit_event_with_context(
+                    ctx, bound_plugins=bound_plugins
+                )
+                if plugin_ctx:
+                    ctx = plugin_ctx
+            except Exception as e:
+                logger.error(f"Error emitting event to plugins: {e}", exc_info=True)
+        
+        # Also publish to regular event bus subscribers
+        await self.publish(event_name, ctx.event_data, source=source, metadata=ctx.metadata)
+        
+        return ctx
 
     def subscribe(self, event_name: str, handler: Callable) -> None:
         """

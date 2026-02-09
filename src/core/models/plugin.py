@@ -20,7 +20,7 @@ class PluginSetting(Base):
     
     # Plugin state
     enabled = Column(Boolean, nullable=False, default=True)
-    priority = Column(Integer, nullable=False, default=0)
+    priority = Column(Integer, nullable=False, default=100)  # Default: 100 (lower = earlier execution)
     
     # Plugin configuration
     config = Column(JSON, nullable=False, default=dict)

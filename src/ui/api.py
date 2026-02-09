@@ -8,6 +8,7 @@ from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import HTMLResponse, FileResponse
+from starlette.middleware import Middleware
 from pydantic import BaseModel
 from pathlib import Path
 import zipfile
@@ -58,6 +59,7 @@ class PluginAction(BaseModel):
 
 class ConfigUpdate(BaseModel):
     config: Dict[str, Any]
+    priority: Optional[int] = None  # Plugin priority (lower = earlier execution, default: 100)
 
 # Global auth manager instance
 _auth_manager = None
@@ -250,6 +252,20 @@ _ws_manager = WebSocketManager()
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Application lifespan."""
+    # Windows + Python 3.13 compatibility: ensure ProactorEventLoop policy is set
+    import sys
+    if sys.platform == 'win32' and sys.version_info >= (3, 13):
+        try:
+            import asyncio
+            # Check current policy
+            current_policy = asyncio.get_event_loop_policy()
+            if not isinstance(current_policy, asyncio.WindowsProactorEventLoopPolicy):
+                # Set ProactorEventLoop policy
+                asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
+                logger.info("Set ProactorEventLoop policy for Windows + Python 3.13 compatibility")
+        except Exception as e:
+            logger.warning(f"Failed to set ProactorEventLoop policy: {e}")
+    
     # Startup
     application = get_app()
     await application.startup()
@@ -369,20 +385,21 @@ def create_app() -> FastAPI:
     """Create FastAPI application."""
     config = get_config()
     
-    app = FastAPI(
-        title="Xiaoyi_QQ Framework",
-        description="OneBot protocol framework with plugin system",
-        version=get_version(),
-        lifespan=lifespan
-    )
-    
-    # CORS middleware
-    app.add_middleware(
+    # Configure CORS middleware using Middleware class
+    cors_middleware = Middleware(
         CORSMiddleware,
         allow_origins=["*"],
         allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],
+    )
+    
+    app = FastAPI(
+        title="Xiaoyi_QQ Framework",
+        description="OneBot protocol framework with plugin system",
+        version=get_version(),
+        lifespan=lifespan,
+        middleware=[cors_middleware]
     )
     
     # Static files - serve Vite React app (only if WebUI is enabled)
@@ -518,7 +535,9 @@ def create_app() -> FastAPI:
                 
                 # Get enabled status from database
                 enabled = False
-                priority = 0
+                # Priority: database > plugin.json > default (100)
+                priority_from_json = plugin_config.get("priority")
+                priority = 100  # Default: 100 (lower = earlier execution)
                 config_data = metadata.get("default_config", {})
                 
                 if db_manager:
@@ -530,6 +549,9 @@ def create_app() -> FastAPI:
                             config_data = db_setting.config or config_data
                             logger.debug(f"Plugin {author}/{plugin_name} enabled status from DB: {enabled}")
                         else:
+                            # No database setting, use plugin.json priority if available
+                            if priority_from_json is not None:
+                                priority = priority_from_json
                             logger.debug(f"Plugin {author}/{plugin_name} not found in database, defaulting to disabled")
                     except Exception as e:
                         logger.error(f"Failed to get plugin status from database for {author}/{plugin_name}: {e}", exc_info=True)
@@ -963,7 +985,7 @@ def create_app() -> FastAPI:
                                 author=author,
                                 name=name,
                                 enabled=False,
-                                priority=0,
+                                priority=100,  # Default: 100 (lower = earlier execution)
                                 config=default_config,
                                 install_source='manual',
                                 install_info={
@@ -1128,22 +1150,55 @@ def create_app() -> FastAPI:
                         normalized_config[key] = []
         
         # Save config to database
+        updated_config = normalized_config  # Default to normalized_config
         try:
             setting = await db_manager.get_plugin_setting(author, name)
+            
+            # Get priority: request > database > plugin.json > default (100)
+            # First, get priority from plugin.json if available
+            priority_from_json = None
+            try:
+                plugin_json = plugin_path / "plugin.json"
+                if plugin_json.exists():
+                    with open(plugin_json, 'r', encoding='utf-8') as f:
+                        plugin_metadata = json.load(f)
+                        priority_from_json = plugin_metadata.get('priority')
+            except Exception:
+                pass
+            
+            # Priority priority: request > database > plugin.json > default
+            if hasattr(config_update, 'priority') and config_update.priority is not None:
+                priority = config_update.priority
+            elif setting and setting.priority != 100:
+                priority = setting.priority
+            elif priority_from_json is not None:
+                priority = priority_from_json
+            else:
+                priority = 100
+            
             if not setting:
                 # Create new setting
                 await db_manager.create_plugin_setting(
                     author=author,
                     name=name,
                     enabled=False,
+                    priority=priority,
                     config=normalized_config,
                     install_source='local'
                 )
             else:
-                # Update existing setting
-                await db_manager.update_plugin_setting(author, name, config=normalized_config)
+                # Update existing setting (including priority if provided)
+                update_data = {'config': normalized_config}
+                if hasattr(config_update, 'priority') and config_update.priority is not None:
+                    update_data['priority'] = priority
+                await db_manager.update_plugin_setting(author, name, **update_data)
             
             logger.info(f"Updated config for plugin {author}/{name}")
+            
+            # Get the updated config from database to return to frontend
+            updated_setting = await db_manager.get_plugin_setting(author, name)
+            if updated_setting and updated_setting.config:
+                updated_config = updated_setting.config
             
             # Reload plugin in runtime if it's running
             if plugin_connector:
@@ -1151,20 +1206,10 @@ def create_app() -> FastAPI:
                     await plugin_connector.reload_plugins()
                 except Exception as e:
                     logger.warning(f"Failed to reload plugins after config update: {e}")
+            
         except Exception as e:
             logger.error(f"Failed to save plugin config: {e}")
             raise HTTPException(status_code=500, detail=f"Failed to save plugin config: {str(e)}")
-        
-        # Also save to data/config.json for backwards compatibility (optional)
-        data_dir = plugin_path / "data"
-        data_dir.mkdir(exist_ok=True)
-        config_file = data_dir / "config.json"
-        try:
-            with open(config_file, 'w', encoding='utf-8') as f:
-                json.dump(normalized_config, f, indent=2, ensure_ascii=False)
-            logger.debug(f"Saved plugin config to {config_file}")
-        except Exception as e:
-            logger.warning(f"Failed to save plugin config to file: {e}")
         
         await get_audit_logger().log_plugin_action(
             "configure",
@@ -1174,7 +1219,11 @@ def create_app() -> FastAPI:
             {"config": normalized_config}
         )
         
-        return {"message": "Configuration updated and saved to plugin data directory"}
+        # Return updated config so frontend doesn't need to reload
+        return {
+            "message": "Configuration updated successfully",
+            "config": updated_config
+        }
     
     # Note: Plugin adapter endpoint removed - new system uses independent process runtime
     # All plugins are loaded directly without adapters
@@ -1206,6 +1255,76 @@ def create_app() -> FastAPI:
             
             # Extract and install plugin
             return await _install_plugin_from_zip(zip_path, config, db_manager, plugin_connector, user)
+    
+    @app.post("/api/plugins/config-files")
+    async def upload_plugin_config_file(
+        file: UploadFile = File(...),
+        user: Dict[str, Any] = Depends(require_permission(Permission.PLUGIN_CONFIGURE))
+    ):
+        """Upload a file for plugin configuration.
+        
+        Returns file_key that can be used in plugin config.
+        """
+        from ..core.app import get_app
+        import uuid
+        import os
+        
+        app = get_app()
+        db_manager = app.db_manager if hasattr(app, 'db_manager') and app.db_manager else None
+        
+        if not db_manager:
+            raise HTTPException(status_code=500, detail="Database manager not available")
+        
+        # Check file size (10MB limit)
+        MAX_FILE_SIZE = 10 * 1024 * 1024  # 10MB
+        file_bytes = await file.read()
+        if len(file_bytes) > MAX_FILE_SIZE:
+            raise HTTPException(status_code=400, detail="File size exceeds 10MB limit")
+        
+        # Generate unique file key with original extension
+        original_filename = file.filename or "file"
+        _, ext = os.path.splitext(original_filename)
+        file_key = f'plugin_config_{uuid.uuid4().hex}{ext}'
+        
+        # Save file using database binary storage (owner_type='system', owner='plugin_config')
+        try:
+            await db_manager.set_binary('system', 'plugin_config', file_key, file_bytes)
+            logger.info(f"Uploaded plugin config file: {file_key}, size: {len(file_bytes)} bytes")
+            return {"file_key": file_key}
+        except Exception as e:
+            logger.error(f"Failed to save config file: {e}")
+            raise HTTPException(status_code=500, detail=f"Failed to save file: {str(e)}")
+    
+    @app.delete("/api/plugins/config-files/{file_key}")
+    async def delete_plugin_config_file(
+        file_key: str,
+        user: Dict[str, Any] = Depends(require_permission(Permission.PLUGIN_CONFIGURE))
+    ):
+        """Delete a plugin configuration file."""
+        from ..core.app import get_app
+        
+        # Only allow deletion of files with plugin_config_ prefix for security
+        if not file_key.startswith('plugin_config_'):
+            raise HTTPException(status_code=400, detail="Invalid file key")
+        
+        app = get_app()
+        db_manager = app.db_manager if hasattr(app, 'db_manager') and app.db_manager else None
+        
+        if not db_manager:
+            raise HTTPException(status_code=500, detail="Database manager not available")
+        
+        try:
+            success = await db_manager.delete_binary('system', 'plugin_config', file_key)
+            if success:
+                logger.info(f"Deleted plugin config file: {file_key}")
+                return {"deleted": True}
+            else:
+                raise HTTPException(status_code=404, detail="File not found")
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.error(f"Failed to delete config file: {e}")
+            raise HTTPException(status_code=500, detail=f"Failed to delete file: {str(e)}")
     
     @app.post("/api/plugins/install-from-github")
     async def install_plugin_from_github(
@@ -1426,7 +1545,7 @@ def create_app() -> FastAPI:
     ):
         """Get plugin configuration schema and current config.
         
-        This reads both from the old plugin manager (if loaded) and the new database system.
+        Reads from the database system.
         """
         # Try new plugin system first (database)
         try:
@@ -1467,9 +1586,13 @@ def create_app() -> FastAPI:
                 
                 # Current config from database, or default
                 # Merge default_config with database config to ensure all fields are present
+                # Start with default_config to ensure all schema fields are present
                 current_config = default_config.copy() if default_config else {}
+                # Then override with database config (database config takes priority)
                 if setting and setting.config:
-                    current_config.update(setting.config)
+                    # Deep merge to handle nested objects properly
+                    for key, value in setting.config.items():
+                        current_config[key] = value
                 
                 if plugin_json.exists():
                     # Return schema and configs
@@ -2689,14 +2812,40 @@ def create_app() -> FastAPI:
         
         for key, value in update_data.items():
             if key == "log_level":
+                # Normalize log level to uppercase for consistency
+                log_level_upper = str(value).upper()
+                # Validate log level
+                valid_levels = ["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"]
+                if log_level_upper not in valid_levels:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"Invalid log level: {value}. Must be one of: {', '.join(valid_levels)}"
+                    )
                 # Save to [logging].level (primary) and [app].log_level (for compatibility)
                 if "logging" not in toml_data:
                     toml_data["logging"] = {}
-                toml_data["logging"]["level"] = value
+                toml_data["logging"]["level"] = log_level_upper
                 # Also save to [app].log_level for compatibility
                 if "app" not in toml_data:
                     toml_data["app"] = {}
-                toml_data["app"]["log_level"] = value
+                toml_data["app"]["log_level"] = log_level_upper
+                # Update update_data with normalized value for hot reload
+                update_data["log_level"] = log_level_upper
+                
+                # When log_level is set, automatically sync debug mode:
+                # - log_level = DEBUG -> debug = True
+                # - log_level != DEBUG -> debug = False
+                # BUT: if user explicitly set debug in the same request, debug takes priority
+                if "debug" not in update_data:
+                    # User didn't explicitly set debug, so auto-adjust based on log_level
+                    if "app" not in toml_data:
+                        toml_data["app"] = {}
+                    debug_value = (log_level_upper == "DEBUG")
+                    toml_data["app"]["debug"] = debug_value
+                    # Add debug to update_data to trigger hot reload
+                    update_data["debug"] = debug_value
+                # If user explicitly set debug, we don't override it here
+                # The debug handler will handle the sync
             elif key == "web_ui_enabled":
                 # Save to [web_ui].enabled
                 if "web_ui" not in toml_data:
@@ -2707,6 +2856,34 @@ def create_app() -> FastAPI:
                 if "app" not in toml_data:
                     toml_data["app"] = {}
                 toml_data["app"]["debug"] = value
+                # When debug mode is manually set, sync log_level (debug takes priority):
+                # - debug = True -> log_level = DEBUG
+                # - debug = False -> log_level = INFO (if current is DEBUG)
+                # debug takes priority over log_level setting
+                if value:  # debug = True
+                    # Enable debug mode: set log_level to DEBUG
+                    if "logging" not in toml_data:
+                        toml_data["logging"] = {}
+                    toml_data["logging"]["level"] = "DEBUG"
+                    # Also save to [app].log_level for compatibility
+                    toml_data["app"]["log_level"] = "DEBUG"
+                    # Always update log_level in update_data (debug takes priority)
+                    update_data["log_level"] = "DEBUG"
+                else:  # debug = False
+                    # Disable debug mode: if log_level is DEBUG, change to INFO
+                    current_log_level = None
+                    if "logging" in toml_data and "level" in toml_data["logging"]:
+                        current_log_level = toml_data["logging"]["level"]
+                    elif "app" in toml_data and "log_level" in toml_data["app"]:
+                        current_log_level = toml_data["app"]["log_level"]
+                    
+                    if current_log_level == "DEBUG":
+                        if "logging" not in toml_data:
+                            toml_data["logging"] = {}
+                        toml_data["logging"]["level"] = "INFO"
+                        toml_data["app"]["log_level"] = "INFO"
+                        # Always update log_level in update_data (debug takes priority)
+                        update_data["log_level"] = "INFO"
             elif key == "plugin_auto_load":
                 # Save to [plugins].auto_load
                 if "plugins" not in toml_data:
@@ -4844,13 +5021,17 @@ def create_app() -> FastAPI:
             full_path.startswith("docs/") or 
             full_path == "openapi.json" or
             full_path == "redoc" or
-            full_path.startswith("assets/") or
             full_path.startswith("_next/")):
             raise HTTPException(status_code=404, detail="Not found")
         
+        # Check if requested file exists in static folder
+        static_dir_path = Path(__file__).parent / "static"
+        static_file_path = static_dir_path / full_path.lstrip("/")
+        if static_file_path.exists() and static_file_path.is_file():
+            return FileResponse(str(static_file_path))
+        
         # For SPA, always serve index.html and let React Router handle routing
         # Read file content dynamically on each request to avoid caching issues
-        static_dir_path = Path(__file__).parent / "static"
         index_file = static_dir_path / "index.html"
         
         # Check if webui source directory exists

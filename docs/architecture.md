@@ -127,12 +127,12 @@ The plugin system is the core of the framework's extensibility.
   - Capability registration interface.
 - **Implementation**: `src/plugins/interface.py`
 
-#### Adapter System (Adapter)
+#### Plugin Runtime
 
-- **Function**: Plugin adapter management.
+- **Function**: Plugin runtime management.
 - **Features**:
-  - Multiple adapter types.
-  - Plugin loading adaptation.
+  - Independent process execution.
+  - Plugin loading and lifecycle management.
   - Runtime environment provision.
 - **Implementation**: `src/plugins/runtime/`
 

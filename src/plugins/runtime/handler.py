@@ -16,15 +16,13 @@ class RuntimeConnectionHandler:
     framework services (database, event bus, etc.).
     """
     
-    def __init__(self, connector):
+    def __init__(self, db_manager):
         """Initialize handler.
         
         Args:
-            connector: PluginRuntimeConnector instance
+            db_manager: DatabaseManager instance
         """
-        self.connector = connector
-        self.db_manager = connector.db_manager
-        self.event_bus = connector.event_bus
+        self.db_manager = db_manager
     
     async def handle_request(self, request: Dict[str, Any]) -> Dict[str, Any]:
         """Handle request from plugin runtime.
@@ -96,4 +94,19 @@ class RuntimeConnectionHandler:
         
         success = await self.db_manager.set_binary('plugin', owner, key, value)
         return {'success': success}
+    
+    async def _handle_delete_binary(self, data: Dict[str, Any]) -> Dict[str, Any]:
+        """Handle delete_binary request."""
+        owner = data.get('owner')
+        key = data.get('key')
+        
+        success = await self.db_manager.delete_binary('plugin', owner, key)
+        return {'success': success}
+    
+    async def _handle_list_binary_keys(self, data: Dict[str, Any]) -> Dict[str, Any]:
+        """Handle list_binary_keys request."""
+        owner = data.get('owner')
+        
+        keys = await self.db_manager.list_binary_keys('plugin', owner)
+        return {'success': True, 'keys': keys}
 

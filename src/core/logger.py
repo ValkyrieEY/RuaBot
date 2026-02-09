@@ -204,7 +204,12 @@ def setup_logger(
 def get_logger(name: str = "onebot_framework") -> structlog.BoundLogger:
     """Get a logger by name."""
     if name not in _loggers:
-        _loggers[name] = Logger(name)
+        # If main logger exists, inherit its level
+        if "xiaoyi_qq" in _loggers:
+            level = _loggers["xiaoyi_qq"].level
+        else:
+            level = "INFO"
+        _loggers[name] = Logger(name, level=level)
     return _loggers[name].get()
 
 

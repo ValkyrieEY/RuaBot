@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { useToast } from '@/components/Toast'
 import { api, type PluginInfo } from '@/utils/api'
+import DynamicFormComponent from '@/components/DynamicForm/DynamicFormComponent'
 import { 
   Play, 
   Square, 
@@ -28,47 +29,32 @@ function PluginConfigModal({ pluginName, isOpen, onClose, onSave }: PluginConfig
   const [schema, setSchema] = useState<any>(null)
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
+  const [priority, setPriority] = useState<number>(100)
 
   useEffect(() => {
     if (isOpen && pluginName) {
       loadConfigSchema()
+      loadPluginInfo()
     }
   }, [isOpen, pluginName])
+
+  const loadPluginInfo = async () => {
+    try {
+      const data = await api.getPlugin(pluginName)
+      if (data?.system_data?.priority !== undefined) {
+        setPriority(data.system_data.priority)
+      }
+    } catch (error) {
+      console.error('Failed to load plugin info:', error)
+    }
+  }
 
   const loadConfigSchema = async () => {
     try {
       setLoading(true)
       const data = await api.getPluginConfigSchema(pluginName)
       setSchema(data)
-      // Use current_config if available, otherwise fall back to default_config
-      let loadedConfig = data.current_config || data.default_config || {}
-      
-      // Convert string format to array format for array fields (compatibility)
-      if (data.config_schema) {
-        Object.keys(data.config_schema).forEach((key) => {
-          const field = data.config_schema[key]
-          if (field.type === 'array') {
-            // Initialize as array if not exists
-            if (!(key in loadedConfig)) {
-              loadedConfig[key] = []
-            }
-            // Convert string to array if it's a string
-            else if (typeof loadedConfig[key] === 'string') {
-              const str = loadedConfig[key].trim()
-              if (str) {
-                loadedConfig[key] = str.split(/[\n,\s]+/).filter((item: string) => item.trim())
-              } else {
-                loadedConfig[key] = []
-              }
-            }
-            // Ensure it's an array
-            else if (!Array.isArray(loadedConfig[key])) {
-              loadedConfig[key] = []
-            }
-          }
-        })
-      }
-      
+      const loadedConfig = data.current_config || data.default_config || {}
       setConfig(loadedConfig)
     } catch (error) {
       console.error('Failed to load config schema:', error)
@@ -80,10 +66,14 @@ function PluginConfigModal({ pluginName, isOpen, onClose, onSave }: PluginConfig
   const handleSave = async () => {
     setSaving(true)
     try {
-      await api.updatePluginConfig(pluginName, config)
-      // Reload config schema to get updated values
-      await loadConfigSchema()
-      onSave(config)
+      const response = await api.updatePluginConfig(pluginName, config, priority)
+      // Use returned config if available, otherwise use current config
+      const updatedConfig = response?.config || config
+      
+      // Update local config state with returned config
+      setConfig(updatedConfig)
+      
+      onSave(updatedConfig)
       onClose()
     } catch (error: any) {
       alert(error.response?.data?.detail || '保存失败')
@@ -107,140 +97,39 @@ function PluginConfigModal({ pluginName, isOpen, onClose, onSave }: PluginConfig
           </button>
         </div>
         
-        <div className="p-6">
+        <div className="p-6 space-y-6">
+          {/* Priority Setting */}
+          <div className="border-b border-gray-200 pb-4">
+            <label className="block text-sm font-medium text-gray-700 mb-2">
+              插件优先级
+            </label>
+            <div className="space-y-2">
+              <input
+                type="number"
+                min="0"
+                max="1000"
+                value={priority}
+                onChange={(e) => setPriority(parseInt(e.target.value) || 100)}
+                className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent"
+                placeholder="100"
+              />
+              <p className="text-xs text-gray-500">
+                优先级越小，越早执行（默认：100）。用于控制事件上下文处理的顺序。
+              </p>
+            </div>
+          </div>
+
+          {/* Plugin Configuration */}
           {loading ? (
             <div className="flex items-center justify-center py-12">
               <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary-600"></div>
             </div>
           ) : schema && schema.config_schema ? (
-            <div className="space-y-4">
-              {Object.entries(schema.config_schema).map(([key, field]: [string, any]) => (
-                <div key={key}>
-                  <label className="block text-sm font-medium text-gray-700 mb-1">
-                    {field.label || key}
-                    {field.required && <span className="text-red-500 ml-1">*</span>}
-                  </label>
-                  {field.description && (
-                    <p className="text-xs text-gray-500 mb-2">{field.description}</p>
-                  )}
-                  {field.type === 'string' && (
-                    <input
-                      type="text"
-                      value={config[key] || ''}
-                      onChange={(e) => setConfig({ ...config, [key]: e.target.value })}
-                      className="input w-full"
-                      required={field.required}
-                    />
-                  )}
-                  {field.type === 'number' && (
-                    <input
-                      type="number"
-                      value={config[key] ?? ''}
-                      onChange={(e) => {
-                        const value = e.target.value
-                        // Handle empty string - keep current value or use default from schema
-                        if (value === '') {
-                          // Don't update if empty, let user clear it or use default
-                          const defaultValue = schema?.default_config?.[key] ?? config[key] ?? 0
-                          setConfig({ ...config, [key]: defaultValue })
-                        } else {
-                          const numValue = Number(value)
-                          // Only update if it's a valid number
-                          if (!isNaN(numValue)) {
-                            setConfig({ ...config, [key]: numValue })
-                          }
-                        }
-                      }}
-                      className="input w-full"
-                      required={field.required}
-                    />
-                  )}
-                  {field.type === 'boolean' && (
-                    <label className="flex items-center gap-2">
-                      <input
-                        type="checkbox"
-                        checked={config[key] || false}
-                        onChange={(e) => setConfig({ ...config, [key]: e.target.checked })}
-                        className="rounded border-gray-300 text-primary-600"
-                      />
-                      <span className="text-sm text-gray-600">启用</span>
-                    </label>
-                  )}
-                  {field.type === 'select' && (
-                    <select
-                      value={config[key] || ''}
-                      onChange={(e) => setConfig({ ...config, [key]: e.target.value })}
-                      className="input w-full"
-                      required={field.required}
-                    >
-                      {field.options?.map((opt: any) => (
-                        <option key={opt.value} value={opt.value}>
-                          {opt.label}
-                        </option>
-                      ))}
-                    </select>
-                  )}
-                  {field.type === 'textarea' && (
-                    <textarea
-                      value={config[key] || ''}
-                      onChange={(e) => setConfig({ ...config, [key]: e.target.value })}
-                      className="input w-full"
-                      rows={4}
-                      required={field.required}
-                    />
-                  )}
-                  {field.type === 'array' && (
-                    <div className="space-y-2">
-                      {(!config[key] || !Array.isArray(config[key]) || config[key].length === 0) ? (
-                        <div className="text-sm text-gray-500 py-2 border border-dashed border-gray-300 rounded p-3 text-center">
-                          暂无项目，点击下方"添加项"按钮添加
-                        </div>
-                      ) : (
-                        (config[key] || []).map((item: any, index: number) => (
-                          <div key={index} className="flex items-center gap-2">
-                            <input
-                              type="text"
-                              value={item || ''}
-                              onChange={(e) => {
-                                const currentArray = Array.isArray(config[key]) ? config[key] : []
-                                const newArray = [...currentArray]
-                                newArray[index] = e.target.value
-                                setConfig({ ...config, [key]: newArray })
-                              }}
-                              className="input flex-1"
-                              placeholder={field.items?.type === 'string' ? '输入QQ号' : '输入值'}
-                            />
-                            <button
-                              type="button"
-                              onClick={() => {
-                                const currentArray = Array.isArray(config[key]) ? config[key] : []
-                                const newArray = [...currentArray]
-                                newArray.splice(index, 1)
-                                setConfig({ ...config, [key]: newArray })
-                              }}
-                              className="btn btn-secondary px-3 py-1 text-sm hover:bg-red-50 hover:text-red-600"
-                            >
-                              删除
-                            </button>
-                          </div>
-                        ))
-                      )}
-                      <button
-                        type="button"
-                        onClick={() => {
-                          const currentArray = Array.isArray(config[key]) ? config[key] : []
-                          setConfig({ ...config, [key]: [...currentArray, ''] })
-                        }}
-                        className="btn btn-primary text-sm flex items-center gap-2 w-full justify-center py-2"
-                      >
-                        <span className="text-lg">+</span>
-                        <span>添加项</span>
-                      </button>
-                    </div>
-                  )}
-                </div>
-              ))}
-            </div>
+            <DynamicFormComponent
+              schema={schema.config_schema}
+              initialValues={config}
+              onSubmit={(values) => setConfig(values)}
+            />
           ) : (
             <div className="text-center py-12 text-gray-500">
               此插件没有可配置项

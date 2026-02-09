@@ -70,15 +70,19 @@ class GitHubIssuesCapturePlugin:
         """插件卸载时调用"""
         self.api.log("info", "GitHub Issues Capture 插件已卸载")
     
-    async def on_event(self, event_name: str, data: Dict[str, Any]):
-        """处理事件
+    async def on_event_context(self, ctx):
+        """处理事件上下文
         
         Args:
-            event_name: 事件名称
-            data: 事件数据
+            ctx: EventContext 对象
         """
-        if event_name == "onebot.message":
-            await self.handle_message(data)
+        if ctx.event_name == "message.received":
+            # 从事件上下文获取消息数据
+            event_data = ctx.event_data
+            # 快速返回，异步处理消息（避免阻塞事件处理）
+            asyncio.create_task(self.handle_message(event_data))
+            return ctx
+        return None
     
     async def handle_message(self, event: Dict[str, Any]):
         """处理消息事件

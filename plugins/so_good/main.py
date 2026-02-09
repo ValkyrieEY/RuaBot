@@ -124,10 +124,15 @@ class SoGoodPlugin:
         except Exception as e:
             self.api.log("error", f"保存用户数据失败: {e}")
     
-    async def on_event(self, event_name: str, data: Dict[str, Any]):
-        """处理事件"""
-        if event_name == "onebot.message":
-            await self.handle_message(data)
+    async def on_event_context(self, ctx):
+        """处理事件上下文"""
+        if ctx.event_name == "message.received":
+            # 从事件上下文获取消息数据
+            event_data = ctx.event_data
+            # 快速返回，异步处理消息（避免阻塞事件处理）
+            asyncio.create_task(self.handle_message(event_data))
+            return ctx
+        return None
     
     async def handle_message(self, event: Dict[str, Any]):
         """处理消息事件"""

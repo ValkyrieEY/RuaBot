@@ -886,6 +886,215 @@ for key in keys:
 
 ## 事件 API
 
+### 事件处理方式
+
+插件必须实现 `on_event_context()` 方法来处理事件。该方法允许插件修改事件数据或阻止默认行为。
+
+### on_event_context()
+
+事件上下文处理方法（可修改事件数据或阻止默认行为）。
+
+```python
+async def on_event_context(self, ctx: EventContext) -> Optional[EventContext]:
+    """处理事件上下文（类似 LangBot）
+    
+    Args:
+        ctx: EventContext 对象，包含事件名称和数据
+        
+    Returns:
+        - EventContext: 修改后的事件上下文
+        - Dict: 仅修改 event_data 的字典
+        - None: 不修改
+    """
+    from ...core.event_context import EventContext
+    
+    # 检查事件类型
+    if ctx.event_name == 'message.received':
+        # 修改消息内容
+        if 'raw_message' in ctx.event_data:
+            ctx.event_data['raw_message'] = ctx.event_data['raw_message'].upper()
+            ctx.mark_modified()
+        
+        # 阻止默认行为（例如阻止消息被 AI 处理）
+        # ctx.prevent_default()
+        
+        return ctx  # 返回修改后的上下文
+    
+    elif ctx.event_name == 'message.before_send':
+        # 拦截发送前的消息
+        params = ctx.event_data.get('params', {})
+        message = params.get('message', '')
+        
+        # 过滤敏感词
+        if '敏感词' in message:
+            ctx.prevent_default()  # 阻止发送
+            return ctx
+    
+    return None  # 不修改
+```
+
+**EventContext 对象：**
+
+```python
+class EventContext:
+    event_name: str          # 事件名称
+    event_data: Dict         # 事件数据（可修改）
+    context_id: str          # 上下文 ID
+    timestamp: datetime       # 时间戳
+    source: Optional[str]    # 事件来源
+    
+    def prevent_default(self) -> None:
+        """阻止默认行为"""
+    
+    def is_prevented_default(self) -> bool:
+        """检查是否阻止了默认行为"""
+    
+    def mark_modified(self) -> None:
+        """标记事件已修改"""
+    
+    def is_modified(self) -> bool:
+        """检查事件是否被修改"""
+```
+
+**支持的事件：**
+
+- `message.received` - 消息接收时（可修改消息内容或阻止处理）
+- `message.before_send` - 消息发送前（可修改发送参数或阻止发送）
+
+**插件优先级：**
+
+插件按优先级顺序处理事件上下文（优先级越小越早执行）：
+
+优先级来源（按优先级从高到低）：
+1. **数据库设置**（通过 WebUI 配置）
+2. **plugin.json 声明**（代码中配置）
+3. **默认值 100**
+
+配置方式：
+
+**方式 1：在 plugin.json 中声明（推荐给开发者）**
+```json
+{
+  "name": "my_plugin",
+  "author": "XQNEXT",
+  "priority": 10,  // 在代码中声明优先级
+  "default_config": {
+    // ...
+  }
+}
+```
+
+**方式 2：在 WebUI 中配置（推荐给用户）**
+- 在插件设置界面中设置 priority 字段
+- 会覆盖 plugin.json 中的设置
+
+**规则：**
+- 优先级越小，越早处理事件
+- 如果某个插件调用了 `ctx.prevent_default()`，后续插件**不会收到**该事件（会立即中断）
+- 如果某个插件只修改了事件数据（`ctx.mark_modified()`），后续插件**仍会收到**事件，但会收到修改后的数据
+
+**重要说明：**
+
+1. **阻止行为会中断后续插件**
+   ```python
+   # 插件 A (priority: 10) - 如果阻止，后续插件不会收到
+   async def on_event_context(self, ctx):
+       if ctx.event_name == 'message.received':
+           if '敏感词' in ctx.event_data.get('raw_message', ''):
+               ctx.prevent_default()  # ⚠️ 这会阻止后续所有插件收到该事件
+               return ctx
+   ```
+   如果插件 A 调用了 `prevent_default()`，插件 B、C 等都不会收到该事件。
+
+2. **修改数据不会中断后续插件**
+   ```python
+   # 插件 A (priority: 10) - 只修改，后续插件仍会收到
+   async def on_event_context(self, ctx):
+       if ctx.event_name == 'message.received':
+           ctx.event_data['raw_message'] = ctx.event_data['raw_message'].upper()
+           ctx.mark_modified()  # ✅ 后续插件仍会收到，但会收到修改后的数据
+           return ctx
+   ```
+   如果插件 A 只修改了数据，插件 B、C 等仍会收到事件，但会收到修改后的数据。
+
+3. **处理多个事件的插件（重要：插件会被调用两次）**
+   
+   如果一个插件既需要处理 `message.received`（修改传入消息），又需要处理 `message.before_send`（修改发出消息），**插件会被调用两次**，因为这是**两个完全独立的事件**：
+   
+   **事件流程：**
+   ```
+   1. 消息接收时：
+      → 触发 message.received 事件
+      → 所有插件按 priority 顺序处理（插件 A priority:10 → 插件 B priority:50 → ...）
+      → 每个插件的 on_event_context 被调用一次，处理 message.received
+   
+   2. 消息发送时（比如插件调用 api.send_group_msg）：
+      → 触发 message.before_send 事件
+      → 所有插件按 priority 顺序处理（插件 A priority:10 → 插件 B priority:50 → ...）
+      → 每个插件的 on_event_context 被调用一次，处理 message.before_send
+   ```
+   
+   **示例代码：**
+   ```python
+   async def on_event_context(self, ctx):
+       # 第一次调用：处理 message.received（消息接收时）
+       if ctx.event_name == 'message.received':
+           # 修改传入消息
+           ctx.event_data['raw_message'] = '已修改'
+           ctx.mark_modified()
+           return ctx
+       
+       # 第二次调用：处理 message.before_send（消息发送前）
+       elif ctx.event_name == 'message.before_send':
+           # 修改发出消息
+           params = ctx.event_data.get('params', {})
+           params['message'] = params.get('message', '').upper()
+           ctx.event_data['params'] = params
+           ctx.mark_modified()
+           return ctx
+       
+       return None
+   ```
+   
+   **Priority 设置：**
+   - 在 `plugin.json` 中设置一个 priority（例如 `priority: 30`）
+   - 这个 priority 会同时应用于两个事件的处理顺序
+   - 在 `message.received` 时，插件按 priority:30 的顺序处理
+   - 在 `message.before_send` 时，插件也按 priority:30 的顺序处理
+   
+   **重要：两个事件是独立的**
+   - `message.received` 的处理不会影响 `message.before_send` 的处理
+   - 即使你在 `message.received` 时调用了 `prevent_default()`，也不会影响 `message.before_send` 事件
+   - 每个事件都会独立地按 priority 顺序调用所有插件
+
+**示例：**
+
+```python
+# 插件 A（优先级：10）- 最早执行
+async def on_event_context(self, ctx):
+    if ctx.event_name == 'message.received':
+        # 修改消息
+        ctx.event_data['raw_message'] = '已修改'
+        ctx.mark_modified()
+        return ctx
+
+# 插件 B（优先级：50）- 中间执行
+async def on_event_context(self, ctx):
+    if ctx.event_name == 'message.received':
+        # 检查是否包含敏感词
+        if '敏感词' in ctx.event_data.get('raw_message', ''):
+            ctx.prevent_default()  # 阻止，后续插件不会收到
+            return ctx
+
+# 插件 C（优先级：100）- 最后执行（如果未被阻止）
+async def on_event_context(self, ctx):
+    if ctx.event_name == 'message.received':
+        # 处理消息
+        pass
+```
+
+---
+
 ### emit_event()
 
 发送自定义事件。

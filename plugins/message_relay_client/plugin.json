@@ -5,6 +5,7 @@
   "description": "消息中继客户端 - 通过官方机器人转发消息。需配置：AppID（API识别）+ QQ号（@触发）",
   "category": "utility",
   "tags": ["relay", "message", "官方机器人", "转发"],
+  "priority": 10,
   "default_config": {
     "official_bot_appid": "",
     "official_bot_qq": "",
@@ -35,7 +36,7 @@
       "description": "通信密钥（从官方机器人获取）"
     },
     "max_messages_per_batch": {
-      "type": "integer",
+      "type": "number",
       "default": 5,
       "description": "每批次最多发送消息数（官方机器人被动回复限制）"
     },

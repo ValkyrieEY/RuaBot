@@ -662,15 +662,7 @@ def validate_config(config: dict, schema: dict):
 
 ## Extensibility
 
-### 1. Plugin Adapter
-
-Supports multiple plugin loading methods:
-
-- Python Plugin (Current implementation)
-- JavaScript Plugin (Future)
-- Docker Container Plugin (Future)
-
-### 2. Protocol Adapter
+### 1. Protocol Adapter
 
 Supports multiple chat protocols:
 
@@ -678,7 +670,7 @@ Supports multiple chat protocols:
 - OneBot v12 (Future)
 - QQ Official API (Future)
 
-### 3. Event Extension
+### 2. Event Extension
 
 Supports custom event types:
 

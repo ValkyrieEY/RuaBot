@@ -136,7 +136,7 @@ class DatabaseManager:
         author: str,
         name: str,
         enabled: bool = True,
-        priority: int = 0,
+        priority: int = 100,  # Default: 100 (lower = earlier execution)
         config: Optional[Dict[str, Any]] = None,
         install_source: str = 'local',
         install_info: Optional[Dict[str, Any]] = None

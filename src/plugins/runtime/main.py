@@ -13,8 +13,9 @@ import signal
 from pathlib import Path
 from typing import Dict, Any, List, Optional
 
-# Add parent directory to path
-sys.path.insert(0, str(Path(__file__).parent.parent.parent.parent))
+# Add parent directory to path (project root)
+project_root = Path(__file__).parent.parent.parent.parent
+sys.path.insert(0, str(project_root))
 
 
 class PluginRuntime:
@@ -170,6 +171,8 @@ class PluginRuntime:
             await self.unload_plugin(data.get('plugin_name'))
         elif msg_type == 'event':
             await self.handle_event(data)
+        elif msg_type == 'event_with_context':
+            await self.handle_event_with_context(data)
         elif msg_type == 'heartbeat':
             self.send_message({'type': 'heartbeat', 'data': {}})
         elif msg_type == 'api_response':
@@ -191,6 +194,68 @@ class PluginRuntime:
                     else:
                         future.set_exception(Exception(error or 'API call failed'))
                         self.log("error", f"Future resolved with error: {error}")
+                else:
+                    self.log("warning", f"Future already done for request_id={request_id}")
+            else:
+                self.log("warning", f"No pending request found for request_id={request_id}")
+        
+        elif msg_type == 'storage_response':
+            # Storage response from framework
+            request_id = data.get('request_id')
+            success = data.get('success', False)
+            value = data.get('value')  # base64 encoded for get_binary
+            keys = data.get('keys')  # for list_binary_keys
+            error = data.get('error')
+            
+            self.log("debug", f"Received storage response: request_id={request_id}, success={success}")
+            
+            if request_id in self.pending_requests:
+                future = self.pending_requests.pop(request_id)
+                if not future.done():
+                    if success:
+                        # Return appropriate result based on action
+                        result = {}
+                        if value is not None:
+                            result['value'] = value
+                        if keys is not None:
+                            result['keys'] = keys
+                        future.set_result(result)
+                    else:
+                        future.set_result({'success': False, 'error': error})
+                else:
+                    self.log("warning", f"Future already done for request_id={request_id}")
+            else:
+                self.log("warning", f"No pending request found for request_id={request_id}")
+        
+        elif msg_type == 'reload_plugin_response':
+            # Response from framework for reload_plugin_request
+            request_id = data.get('request_id')
+            success = data.get('success', False)
+            error = data.get('error')
+            
+            self.log("debug", f"Received reload_plugin response: request_id={request_id}, success={success}")
+            
+            if request_id in self.pending_requests:
+                future = self.pending_requests.pop(request_id)
+                if not future.done():
+                    future.set_result({'success': success, 'error': error})
+                else:
+                    self.log("warning", f"Future already done for request_id={request_id}")
+            else:
+                self.log("warning", f"No pending request found for request_id={request_id}")
+        
+        elif msg_type == 'config_response':
+            # Response from framework for config_request
+            request_id = data.get('request_id')
+            success = data.get('success', False)
+            error = data.get('error')
+            
+            self.log("debug", f"Received config response: request_id={request_id}, success={success}")
+            
+            if request_id in self.pending_requests:
+                future = self.pending_requests.pop(request_id)
+                if not future.done():
+                    future.set_result({'success': success, 'error': error})
                 else:
                     self.log("warning", f"Future already done for request_id={request_id}")
             else:
@@ -300,6 +365,13 @@ class PluginRuntime:
                 default_config = plugin_metadata.get('default_config', {})
                 db_config = plugin_config.get('config', {}) or {}
                 config = {**default_config, **db_config}  # Database config overrides default
+                
+                # Get priority: database > plugin.json > default (100)
+                priority_from_json = plugin_metadata.get('priority')
+                priority_from_db = plugin_config.get('priority', 100)
+                # Database priority takes precedence over plugin.json
+                final_priority = priority_from_db if priority_from_db != 100 or priority_from_json is None else priority_from_json
+                config['priority'] = final_priority
                 
                 # Create plugin instance
                 if hasattr(module, 'create_plugin'):
@@ -452,7 +524,7 @@ class PluginRuntime:
             # Check plugin enabled status from database
             is_enabled = True
             try:
-                from ..core.database import get_database_manager
+                from src.core.database import get_database_manager
                 db_manager = get_database_manager()
                 setting = await db_manager.get_plugin_setting(author, name)
                 if setting:
@@ -477,35 +549,21 @@ class PluginRuntime:
             # Get config: use override if provided, otherwise read from database
             plugin_config_data = {}
             if config_override is not None:
-                plugin_config_data = config_override
+                # 使用传递过来的配置（即使为空字典）
+                plugin_config_data = config_override if config_override else {}
                 self.log("info", f"Using config override for {plugin_id}: {plugin_config_data}")
             else:
-                # Get fresh config from database
-                try:
-                    from ..core.database import get_database_manager
-                    db_manager = get_database_manager()
-                    setting = await db_manager.get_plugin_setting(author, name)
-                    if setting and setting.config:
-                        plugin_config_data = setting.config
-                    else:
-                        # Fallback to default config from plugin.json
-                        plugin_path = self.plugins_dir / name
-                        plugin_json = plugin_path / "plugin.json"
-                        if plugin_json.exists():
-                            import json
-                            with open(plugin_json, 'r', encoding='utf-8') as f:
-                                plugin_metadata = json.load(f)
-                                plugin_config_data = plugin_metadata.get('default_config', {})
-                except Exception as e:
-                    self.log("warning", f"Could not get plugin config from database: {e}, using default config")
-                    # Fallback to default config from plugin.json
-                    plugin_path = self.plugins_dir / name
-                    plugin_json = plugin_path / "plugin.json"
-                    if plugin_json.exists():
-                        import json
-                        with open(plugin_json, 'r', encoding='utf-8') as f:
-                            plugin_metadata = json.load(f)
-                            plugin_config_data = plugin_metadata.get('default_config', {})
+                # config_override是None，说明connector没有传递配置
+                # runtime进程无法直接访问数据库（相对导入问题），所以使用默认配置
+                self.log("warning", f"Config override is None for {plugin_id}, using default config from plugin.json")
+                # Fallback to default config from plugin.json
+                plugin_path = self.plugins_dir / name
+                plugin_json = plugin_path / "plugin.json"
+                if plugin_json.exists():
+                    import json
+                    with open(plugin_json, 'r', encoding='utf-8') as f:
+                        plugin_metadata = json.load(f)
+                        plugin_config_data = plugin_metadata.get('default_config', {})
             
             # Get plugin config
             plugin_config = {
@@ -524,26 +582,171 @@ class PluginRuntime:
             self.log("error", traceback.format_exc())
     
     async def handle_event(self, data: Dict[str, Any]):
-        """Handle event from framework.
+        """Handle event from framework (deprecated - use handle_event_with_context instead).
+        
+        This method is kept for compatibility but should not be used.
+        All events should go through handle_event_with_context.
         
         Args:
             data: Event data with 'event' and 'data' fields
         """
+        # Convert to event context format and use the new handler
+        from src.core.event_context import EventContext
+        import uuid
+        
         event_name = data.get('event')
         event_data = data.get('data', {})
         
-        self.log("info", f"Dispatching event {event_name} to {len(self.plugins)} plugins: {list(self.plugins.keys())}")
+        ctx = EventContext(
+            event_name=event_name,
+            event_data=event_data,
+            source="framework"
+        )
         
-        # Dispatch to all plugins
-        for plugin_id, plugin_instance in self.plugins.items():
+        # Use event context handler
+        await self.handle_event_with_context({
+            'request_id': 'legacy_' + str(uuid.uuid4()),
+            'event_context': ctx.to_dict(),
+            'bound_plugins': None
+        })
+    
+    async def handle_event_with_context(self, data: Dict[str, Any]):
+        """Handle event with context from framework (similar to LangBot).
+        
+        Plugins can modify the event context and prevent default behavior.
+        
+        Args:
+            data: Event data with 'request_id', 'event_context', and 'bound_plugins'
+        """
+        try:
+            # Use absolute import since we're running as a standalone script
+            from src.core.event_context import EventContext
+            
+            request_id = data.get('request_id')
+            event_context_dict = data.get('event_context', {})
+            bound_plugins = data.get('bound_plugins')
+            
+            self.log("debug", f"handle_event_with_context called: request_id={request_id}, has_context={bool(event_context_dict)}, bound_plugins={bound_plugins}")
+            
+            # Create EventContext from dict
             try:
-                if hasattr(plugin_instance, 'on_event'):
-                    self.log("debug", f"Calling on_event for plugin {plugin_id}")
-                    await plugin_instance.on_event(event_name, event_data)
+                event_context = EventContext.from_dict(event_context_dict)
             except Exception as e:
-                self.log("error", f"Error in plugin {plugin_id} handling event {event_name}: {e}")
-                import traceback
-                self.log("error", traceback.format_exc())
+                self.log("error", f"Failed to parse event context: {e}")
+                self.send_message({
+                    'type': 'event_with_context_response',
+                    'data': {
+                        'request_id': request_id,
+                        'success': False,
+                        'error': str(e)
+                    }
+                })
+                return
+        
+            # Get enabled plugins with priority
+            enabled_plugins = []
+            for plugin_id, plugin_instance in self.plugins.items():
+                # Filter by bound_plugins if specified
+                if bound_plugins is not None and plugin_id not in bound_plugins:
+                    continue
+                
+                # Get plugin priority from config or default to 100
+                plugin_config = self.plugin_configs.get(plugin_id, {})
+                priority = plugin_config.get('priority', 100)
+                
+                enabled_plugins.append({
+                    'plugin_id': plugin_id,
+                    'instance': plugin_instance,
+                    'priority': priority
+                })
+            
+            self.log("debug", f"Processing event {event_context.event_name} with {len(enabled_plugins)} enabled plugins")
+            
+            # Sort by priority (lower priority = earlier execution)
+            enabled_plugins.sort(key=lambda x: x['priority'])
+            
+            # Process event through plugins in priority order
+            modified_context = event_context
+            prevented = False
+            
+            if not enabled_plugins:
+                self.log("debug", f"No enabled plugins to process event {event_context.event_name}")
+            
+            for plugin_info in enabled_plugins:
+                plugin_id = plugin_info['plugin_id']
+                plugin_instance = plugin_info['instance']
+                
+                try:
+                    # Check if plugin has on_event_context handler
+                    if hasattr(plugin_instance, 'on_event_context'):
+                        self.log("debug", f"Calling on_event_context for plugin {plugin_id}")
+                        
+                        # For message.received events, use timeout to prevent blocking
+                        # Plugins should return quickly and handle API calls asynchronously
+                        if modified_context.event_name == 'message.received':
+                            try:
+                                # Use shorter timeout for message.received to prevent blocking
+                                result = await asyncio.wait_for(
+                                    plugin_instance.on_event_context(modified_context),
+                                    timeout=2.0  # 2 seconds timeout
+                                )
+                            except asyncio.TimeoutError:
+                                self.log("warning", f"Plugin {plugin_id} on_event_context timeout for {modified_context.event_name}, continuing...")
+                                # Continue with next plugin, don't block
+                                result = None
+                        else:
+                            # For other events, wait normally
+                            result = await plugin_instance.on_event_context(modified_context)
+                        
+                        if result is not None:
+                            # Plugin returned modified context
+                            if isinstance(result, EventContext):
+                                modified_context = result
+                            elif isinstance(result, dict):
+                                # Update event data
+                                modified_context.event_data.update(result)
+                                modified_context.mark_modified()
+                        
+                        # Check if plugin prevented default
+                        if modified_context.is_prevented_default():
+                            prevented = True
+                            self.log("info", f"Plugin {plugin_id} prevented default behavior for event {modified_context.event_name}")
+                            break
+                    
+                    # Only on_event_context is supported, no fallback
+                    else:
+                        self.log("debug", f"Plugin {plugin_id} does not implement on_event_context, skipping")
+                        
+                except Exception as e:
+                    self.log("error", f"Error in plugin {plugin_id} handling event context: {e}")
+                    import traceback
+                    self.log("error", traceback.format_exc())
+            
+            # Send response back to framework
+            self.log("debug", f"Sending event_with_context_response for {event_context.event_name}, prevented={prevented}, modified={modified_context.is_modified()}")
+            self.send_message({
+                'type': 'event_with_context_response',
+                'data': {
+                    'request_id': request_id,
+                    'success': not prevented,
+                    'event_context': modified_context.to_dict() if not prevented else None
+                }
+            })
+        except Exception as e:
+            self.log("error", f"Error in handle_event_with_context: {e}")
+            import traceback
+            self.log("error", traceback.format_exc())
+            # Send error response
+            request_id = data.get('request_id') if 'data' in locals() else None
+            if request_id:
+                self.send_message({
+                    'type': 'event_with_context_response',
+                    'data': {
+                        'request_id': request_id,
+                        'success': False,
+                        'error': str(e)
+                    }
+                })
     
     def send_message(self, message: Dict[str, Any]):
         """Send message to framework via stdout.
@@ -619,12 +822,13 @@ class PluginAPI:
         
         try:
             # Wait for response (with timeout)
-            result = await asyncio.wait_for(future, timeout=10.0)
+            # Increased timeout to 30s to handle slow OneBot implementations
+            result = await asyncio.wait_for(future, timeout=30.0)
             self.log("debug", f"API {action} result: {result}")
             return result
         except asyncio.TimeoutError:
             self.runtime.pending_requests.pop(request_id, None)
-            self.log("error", f"API {action} timeout")
+            self.log("error", f"API {action} timeout after 30s")
             raise Exception(f"API call timeout: {action}")
         except Exception as e:
             self.runtime.pending_requests.pop(request_id, None)
@@ -721,22 +925,233 @@ class PluginAPI:
             return config.get(key)
         return config
     
-    async def set_config(self, key: str, value: Any):
-        """Set plugin config."""
-        # TODO: Implement config persistence
+    async def set_config(self, key: str, value: Any) -> bool:
+        """Set plugin config with persistence.
+        
+        Args:
+            key: Config key
+            value: Config value
+            
+        Returns:
+            True if successful
+        """
+        import uuid
+        
+        # Update in-memory config first
         if self.plugin_id not in self.runtime.plugin_configs:
             self.runtime.plugin_configs[self.plugin_id] = {}
         self.runtime.plugin_configs[self.plugin_id][key] = value
+        
+        # Persist to database via message to main framework
+        request_id = str(uuid.uuid4())
+        future = asyncio.get_event_loop().create_future()
+        self.runtime.pending_requests[request_id] = future
+        
+        # Parse plugin ID to get author/name
+        if '/' in self.plugin_id:
+            author, name = self.plugin_id.split('/', 1)
+        else:
+            author = 'XQNEXT'  # Default author
+            name = self.plugin_id
+        
+        # Get current config
+        current_config = self.runtime.plugin_configs.get(self.plugin_id, {}).copy()
+        current_config[key] = value
+        
+        # Send config update request to framework
+        self.runtime.send_message({
+            'type': 'config_request',
+            'data': {
+                'request_id': request_id,
+                'action': 'set_config',
+                'author': author,
+                'name': name,
+                'config': current_config
+            }
+        })
+        
+        try:
+            # Wait for response (with timeout)
+            result = await asyncio.wait_for(future, timeout=10.0)
+            if isinstance(result, dict):
+                return result.get('success', False)
+            return False
+        except asyncio.TimeoutError:
+            self.runtime.pending_requests.pop(request_id, None)
+            self.log("error", f"Config set_config timeout for key: {key}")
+            return False
+        except Exception as e:
+            self.runtime.pending_requests.pop(request_id, None)
+            self.log("error", f"Config set_config error for key {key}: {e}")
+            return False
     
-    async def get_storage(self, key: str) -> bytes:
-        """Get binary storage."""
-        # TODO: Implement storage
-        return b''
+    async def get_storage(self, key: str) -> Optional[bytes]:
+        """Get binary storage.
+        
+        Args:
+            key: Storage key
+            
+        Returns:
+            Binary data or None if not found
+        """
+        import uuid
+        import base64
+        
+        request_id = str(uuid.uuid4())
+        future = asyncio.get_event_loop().create_future()
+        self.runtime.pending_requests[request_id] = future
+        
+        # Send storage request to framework
+        self.runtime.send_message({
+            'type': 'storage_request',
+            'data': {
+                'request_id': request_id,
+                'action': 'get_binary',
+                'plugin_id': self.plugin_id,
+                'key': key
+            }
+        })
+        
+        try:
+            # Wait for response (with timeout)
+            result = await asyncio.wait_for(future, timeout=10.0)
+            # result is a dict with 'value' (base64) or 'success'/'error'
+            if isinstance(result, dict):
+                if result.get('success') and 'value' in result:
+                    # Decode base64
+                    value_b64 = result.get('value', '')
+                    if value_b64:
+                        return base64.b64decode(value_b64)
+            return None
+        except asyncio.TimeoutError:
+            self.runtime.pending_requests.pop(request_id, None)
+            self.log("error", f"Storage get_binary timeout for key: {key}")
+            return None
+        except Exception as e:
+            self.runtime.pending_requests.pop(request_id, None)
+            self.log("error", f"Storage get_binary error for key {key}: {e}")
+            return None
     
-    async def set_storage(self, key: str, value: bytes):
-        """Set binary storage."""
-        # TODO: Implement storage
-        pass
+    async def set_storage(self, key: str, value: bytes) -> bool:
+        """Set binary storage.
+        
+        Args:
+            key: Storage key
+            value: Binary data (max 10MB recommended)
+            
+        Returns:
+            True if successful
+        """
+        import uuid
+        import base64
+        
+        request_id = str(uuid.uuid4())
+        future = asyncio.get_event_loop().create_future()
+        self.runtime.pending_requests[request_id] = future
+        
+        # Encode binary as base64 for JSON transport
+        value_b64 = base64.b64encode(value).decode()
+        
+        # Send storage request to framework
+        self.runtime.send_message({
+            'type': 'storage_request',
+            'data': {
+                'request_id': request_id,
+                'action': 'set_binary',
+                'plugin_id': self.plugin_id,
+                'key': key,
+                'value': value_b64
+            }
+        })
+        
+        try:
+            # Wait for response (with timeout)
+            result = await asyncio.wait_for(future, timeout=10.0)
+            return result.get('success', False)
+        except asyncio.TimeoutError:
+            self.runtime.pending_requests.pop(request_id, None)
+            self.log("error", f"Storage set_binary timeout for key: {key}")
+            return False
+        except Exception as e:
+            self.runtime.pending_requests.pop(request_id, None)
+            self.log("error", f"Storage set_binary error for key {key}: {e}")
+            return False
+    
+    async def delete_storage(self, key: str) -> bool:
+        """Delete binary storage.
+        
+        Args:
+            key: Storage key
+            
+        Returns:
+            True if successful
+        """
+        import uuid
+        
+        request_id = str(uuid.uuid4())
+        future = asyncio.get_event_loop().create_future()
+        self.runtime.pending_requests[request_id] = future
+        
+        # Send storage request to framework
+        self.runtime.send_message({
+            'type': 'storage_request',
+            'data': {
+                'request_id': request_id,
+                'action': 'delete_binary',
+                'plugin_id': self.plugin_id,
+                'key': key
+            }
+        })
+        
+        try:
+            # Wait for response (with timeout)
+            result = await asyncio.wait_for(future, timeout=10.0)
+            return result.get('success', False)
+        except asyncio.TimeoutError:
+            self.runtime.pending_requests.pop(request_id, None)
+            self.log("error", f"Storage delete_binary timeout for key: {key}")
+            return False
+        except Exception as e:
+            self.runtime.pending_requests.pop(request_id, None)
+            self.log("error", f"Storage delete_binary error for key {key}: {e}")
+            return False
+    
+    async def list_storage_keys(self) -> List[str]:
+        """List all storage keys for this plugin.
+        
+        Returns:
+            List of keys
+        """
+        import uuid
+        
+        request_id = str(uuid.uuid4())
+        future = asyncio.get_event_loop().create_future()
+        self.runtime.pending_requests[request_id] = future
+        
+        # Send storage request to framework
+        self.runtime.send_message({
+            'type': 'storage_request',
+            'data': {
+                'request_id': request_id,
+                'action': 'list_binary_keys',
+                'plugin_id': self.plugin_id
+            }
+        })
+        
+        try:
+            # Wait for response (with timeout)
+            result = await asyncio.wait_for(future, timeout=10.0)
+            if result.get('success'):
+                return result.get('keys', [])
+            return []
+        except asyncio.TimeoutError:
+            self.runtime.pending_requests.pop(request_id, None)
+            self.log("error", "Storage list_binary_keys timeout")
+            return []
+        except Exception as e:
+            self.runtime.pending_requests.pop(request_id, None)
+            self.log("error", f"Storage list_binary_keys error: {e}")
+            return []
     
     def register_message_interceptor(self, interceptor):
         """Register a message interceptor.

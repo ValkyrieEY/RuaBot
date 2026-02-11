@@ -5,7 +5,8 @@
 # 用法: bash <(curl -fsSL https://raw.githubusercontent.com/ValkyrieEY/RuaBot/main/install.sh)
 ################################################################################
 
-set -e
+# 不立即退出，先显示错误
+set -o pipefail
 
 # 颜色定义
 RED='\033[0;31m'
@@ -39,20 +40,27 @@ log_error() {
 
 # 检测操作系统
 detect_os() {
+    log_info "检测操作系统类型..."
+    
     if [[ "$OSTYPE" == "linux-gnu"* ]]; then
         if [ -f /etc/os-release ]; then
             . /etc/os-release
             OS=$ID
             OS_VERSION=$VERSION_ID
+            log_info "检测到操作系统: $OS $OS_VERSION"
         else
-            OS="unknown"
+            OS="linux"
+            log_warning "无法读取 /etc/os-release，使用默认 Linux 配置"
         fi
     elif [[ "$OSTYPE" == "darwin"* ]]; then
         OS="macos"
+        log_info "检测到操作系统: macOS"
     else
-        OS="unknown"
+        OS="linux"
+        log_warning "未知操作系统类型 ($OSTYPE)，使用 Linux 配置"
     fi
-    log_info "检测到操作系统: $OS"
+    
+    return 0
 }
 
 # 检查并安装 Git
@@ -127,25 +135,183 @@ install_system_dependencies() {
     log_success "系统依赖安装完成"
 }
 
+# 克隆仓库（带重试机制）
+clone_with_retry() {
+    local repo_url=$1
+    local target_dir=$2
+    local retry_count=0
+    local max_retries=5
+    local clone_success=false
+    
+    # 配置 Git 以处理 TLS 问题
+    git config --global http.sslVerify true 2>/dev/null || true
+    git config --global http.postBuffer 524288000 2>/dev/null || true
+    
+    while [ $retry_count -lt $max_retries ] && [ "$clone_success" = false ]; do
+        retry_count=$((retry_count + 1))
+        if [ $retry_count -gt 1 ]; then
+            log_info "第 $retry_count 次尝试克隆仓库（共 $max_retries 次）..."
+            sleep 3
+        fi
+        
+        log_info "正在克隆仓库..."
+        if git clone "$repo_url" "$target_dir" 2>&1 | while IFS= read -r line; do
+            if [[ "$line" =~ (Cloning|remote:|Receiving|Resolving|Checking out) ]]; then
+                echo -e "${BLUE}[INFO]${NC} $line"
+            elif [[ "$line" =~ (fatal|error|Error|ERROR) ]]; then
+                echo -e "${YELLOW}[WARN]${NC} $line"
+            fi
+        done && [ -d "$target_dir/.git" ]; then
+            clone_success=true
+            return 0
+        else
+            # 清理失败的克隆
+            rm -rf "$target_dir" 2>/dev/null || true
+            
+            if [ $retry_count -lt $max_retries ]; then
+                log_warning "克隆失败，将在 3 秒后自动重试..."
+            else
+                log_error "克隆失败（已重试 $max_retries 次）"
+                log_info "可能的原因："
+                log_info "  1. 网络连接问题"
+                log_info "  2. GitHub 访问受限"
+                log_info "  3. 仓库不存在或无权访问"
+                return 1
+            fi
+        fi
+    done
+    
+    return 0
+}
+
 # 克隆仓库
 clone_repository() {
     log_info "克隆 RuaBot 仓库..."
     
     if [ -d "$INSTALL_DIR" ]; then
         log_warning "检测到已存在的安装目录: $INSTALL_DIR"
-        read -p "是否删除并重新安装? (y/N): " -n 1 -r
-        echo
-        if [[ $REPLY =~ ^[Yy]$ ]]; then
-            rm -rf "$INSTALL_DIR"
-        else
-            log_error "安装取消"
+        echo ""
+        echo -e "${YELLOW}发现已存在的安装，请选择操作:${NC}"
+        echo -e "  ${GREEN}1${NC}. 删除旧安装并重新安装（推荐，完全干净）"
+        echo -e "  ${GREEN}2${NC}. 保留旧安装，更新代码（保留环境和配置）"
+        echo -e "  ${RED}0${NC}. 取消安装"
+        echo ""
+        read -p "请选择 [0-2] (默认: 1): " -n 1 -r choice
+        echo ""
+        
+        case $choice in
+            1|"")
+                log_info "删除旧安装目录..."
+                rm -rf "$INSTALL_DIR"
+                log_success "旧安装已删除"
+                
+                # 克隆仓库（带重试机制）
+                clone_with_retry "$REPO_URL" "$INSTALL_DIR" || {
+                    log_error "仓库克隆失败，请检查网络连接或 GitHub 访问"
+                    exit 1
+                }
+                ;;
+            2)
+                log_info "更新现有安装..."
+                cd "$INSTALL_DIR" || {
+                    log_error "无法进入安装目录"
+                    exit 1
+                }
+                
+                # 检查是否是 git 仓库
+                if [ -d ".git" ]; then
+                    log_info "拉取最新代码..."
+                    git fetch origin || {
+                        log_error "拉取代码失败"
+                        exit 1
+                    }
+                    git reset --hard origin/main 2>/dev/null || git reset --hard origin/master 2>/dev/null || {
+                        log_error "更新代码失败"
+                        exit 1
+                    }
+                    log_success "代码更新完成"
+                else
+                    log_warning "不是 git 仓库，重新克隆..."
+                    cd "$HOME"
+                    rm -rf "$INSTALL_DIR"
+                    clone_with_retry "$REPO_URL" "$INSTALL_DIR" || {
+                        log_error "仓库克隆失败"
+                        exit 1
+                    }
+                fi
+                ;;
+            0)
+                log_info "安装取消"
+                exit 0
+                ;;
+            *)
+                log_error "无效的选择，安装取消"
+                exit 1
+                ;;
+        esac
+    else
+        clone_with_retry "$REPO_URL" "$INSTALL_DIR" || {
+            log_error "仓库克隆失败，请检查网络连接或 GitHub 访问"
             exit 1
-        fi
+        }
     fi
     
-    git clone "$REPO_URL" "$INSTALL_DIR"
-    cd "$INSTALL_DIR"
+    # 确保进入安装目录
+    cd "$INSTALL_DIR" || {
+        log_error "无法进入安装目录: $INSTALL_DIR"
+        exit 1
+    }
+    
     log_success "仓库克隆完成"
+}
+
+# 克隆仓库（带重试机制）
+clone_with_retry() {
+    local repo_url=$1
+    local target_dir=$2
+    local retry_count=0
+    local max_retries=5
+    local clone_success=false
+    
+    # 配置 Git 以处理 TLS 问题
+    git config --global http.sslVerify true 2>/dev/null || true
+    git config --global http.postBuffer 524288000 2>/dev/null || true
+    
+    while [ $retry_count -lt $max_retries ] && [ "$clone_success" = false ]; do
+        retry_count=$((retry_count + 1))
+        if [ $retry_count -gt 1 ]; then
+            log_info "第 $retry_count 次尝试克隆仓库（共 $max_retries 次）..."
+            sleep 3
+        fi
+        
+        log_info "正在克隆仓库..."
+        if git clone "$repo_url" "$target_dir" 2>&1 | while IFS= read -r line; do
+            if [[ "$line" =~ (Cloning|remote:|Receiving|Resolving|Checking out) ]]; then
+                echo -e "${BLUE}[INFO]${NC} $line"
+            elif [[ "$line" =~ (fatal|error|Error|ERROR) ]]; then
+                echo -e "${YELLOW}[WARN]${NC} $line"
+            fi
+        done && [ -d "$target_dir/.git" ]; then
+            clone_success=true
+            return 0
+        else
+            # 清理失败的克隆
+            rm -rf "$target_dir" 2>/dev/null || true
+            
+            if [ $retry_count -lt $max_retries ]; then
+                log_warning "克隆失败，将在 3 秒后自动重试..."
+            else
+                log_error "克隆失败（已重试 $max_retries 次）"
+                log_info "可能的原因："
+                log_info "  1. 网络连接问题"
+                log_info "  2. GitHub 访问受限"
+                log_info "  3. 仓库不存在或无权访问"
+                return 1
+            fi
+        fi
+    done
+    
+    return 0
 }
 
 # 安装 Python (使用 pyenv)
@@ -156,35 +322,152 @@ install_python() {
     
     # 安装 pyenv
     if [ ! -d "$PYENV_DIR" ]; then
-        log_info "安装 pyenv..."
+        log_info "正在安装 pyenv..."
+        log_info "下载 pyenv 安装脚本..."
+        
         export PYENV_ROOT="$PYENV_DIR"
         export PATH="$PYENV_ROOT/bin:$PATH"
         
-        curl https://pyenv.run | bash
+        # 下载并安装 pyenv，显示进度
+        # 使用重试机制安装 pyenv
+        local retry_count=0
+        local max_retries=3
+        local install_success=false
+        
+        while [ $retry_count -lt $max_retries ] && [ "$install_success" = false ]; do
+            retry_count=$((retry_count + 1))
+            if [ $retry_count -gt 1 ]; then
+                log_info "第 $retry_count 次尝试安装 pyenv（共 $max_retries 次）..."
+                sleep 3
+                # 清理失败的安装
+                rm -rf "$PYENV_DIR" 2>/dev/null || true
+            fi
+            
+            log_info "下载并安装 pyenv..."
+            if (
+                curl -# https://pyenv.run 2>&1 | tee /tmp/pyenv_install.log | while IFS= read -r line; do
+                    if [[ "$line" =~ (Cloning|Installing|Downloading|Building) ]]; then
+                        echo -e "${BLUE}[INFO]${NC} $line"
+                    fi
+                done
+            ) && [ -f "$PYENV_DIR/bin/pyenv" ]; then
+                install_success=true
+            else
+                if [ $retry_count -lt $max_retries ]; then
+                    log_warning "pyenv 安装失败，将在 3 秒后自动重试..."
+                else
+                    log_error "pyenv 安装失败（已重试 $max_retries 次），请检查网络连接"
+                    log_info "你可以查看日志: cat /tmp/pyenv_install.log"
+                    exit 1
+                fi
+            fi
+        done
+        
+        # 等待一下确保安装完成
+        sleep 2
         
         # 配置 pyenv
         export PATH="$PYENV_DIR/bin:$PATH"
-        eval "$(pyenv init -)"
+        if [ -f "$PYENV_DIR/bin/pyenv" ]; then
+            eval "$(pyenv init -)" 2>/dev/null || true
+            log_success "pyenv 安装完成"
+        else
+            log_error "pyenv 安装失败，未找到 pyenv 可执行文件"
+            log_info "请检查: ls -la $PYENV_DIR/bin/"
+            exit 1
+        fi
     else
+        log_info "pyenv 已存在，跳过安装"
         export PYENV_ROOT="$PYENV_DIR"
         export PATH="$PYENV_ROOT/bin:$PATH"
-        eval "$(pyenv init -)"
+        eval "$(pyenv init -)" 2>/dev/null || true
     fi
     
     # 安装指定版本的 Python
-    log_info "安装 Python $PYTHON_VERSION..."
-    pyenv install -s $PYTHON_VERSION
+    log_info "正在安装 Python $PYTHON_VERSION（这可能需要 5-15 分钟，请耐心等待）..."
+    log_info "正在下载 Python 源码..."
+    
+    # 启动后台提示进程
+    (
+        local count=0
+        while true; do
+            sleep 10
+            count=$((count + 1))
+            # 检查 pyenv 或 make 进程是否还在运行
+            if ! pgrep -f "pyenv" > /dev/null 2>&1 && ! pgrep -f "make.*python" > /dev/null 2>&1 && ! pgrep -f "gcc.*python" > /dev/null 2>&1; then
+                break
+            fi
+            local minutes=$((count * 10 / 60))
+            local seconds=$((count * 10 % 60))
+            echo -e "\r${YELLOW}[提示]${NC} 正在编译 Python，已等待 ${minutes}分${seconds}秒，请稍候... (时间: $(date +%H:%M:%S))" >&2
+        done
+    ) &
+    local PROMPT_PID=$!
+    
+    # 使用 verbose 模式显示更多输出，并添加进度提示
+    (
+        pyenv install -v $PYTHON_VERSION 2>&1 | while IFS= read -r line; do
+            # 停止提示进程
+            kill $PROMPT_PID 2>/dev/null || true
+            
+            # 显示关键步骤
+            if [[ "$line" =~ (Downloading|Installing|Building|Compiling|Linking|running|configure|make) ]]; then
+                echo -e "${BLUE}[INFO]${NC} $line"
+            elif [[ "$line" =~ (^[[:space:]]*[0-9]+%) ]]; then
+                # 显示百分比进度
+                echo -ne "\r${BLUE}[INFO]${NC} $line                    "
+            elif [[ "$line" =~ (error|Error|ERROR|failed|Failed) ]]; then
+                echo -e "${RED}[ERROR]${NC} $line"
+            fi
+        done
+        
+        # 确保提示进程停止
+        kill $PROMPT_PID 2>/dev/null || true
+        echo ""
+    ) || {
+        # 确保提示进程停止
+        kill $PROMPT_PID 2>/dev/null || true
+        log_error "Python 安装失败，请检查错误信息"
+        exit 1
+    }
+    
+    # 确保提示进程停止
+    kill $PROMPT_PID 2>/dev/null || true
+    
     pyenv local $PYTHON_VERSION
     
-    log_success "Python 安装完成: $(python --version)"
+    log_success "Python 安装完成: $(python --version 2>&1)"
     
     # 创建虚拟环境
     log_info "创建 Python 虚拟环境..."
     python -m venv "$INSTALL_DIR/venv"
     source "$INSTALL_DIR/venv/bin/activate"
     
-    # 升级 pip
-    pip install --upgrade pip setuptools wheel
+    # 升级 pip（带自动重试机制）
+    log_info "升级 pip、setuptools 和 wheel..."
+    local retry_count=0
+    local max_retries=5
+    local install_success=false
+    
+    while [ $retry_count -lt $max_retries ] && [ "$install_success" = false ]; do
+        retry_count=$((retry_count + 1))
+        if [ $retry_count -gt 1 ]; then
+            log_info "第 $retry_count 次尝试升级 pip（共 $max_retries 次）..."
+            sleep 3
+        fi
+        
+        if pip install --upgrade pip setuptools wheel 2>&1 | tee /tmp/pip_upgrade.log | grep -E "(Successfully|Requirement already satisfied|already up-to-date)" > /dev/null 2>&1; then
+            install_success=true
+            log_success "pip 升级成功"
+        else
+            if [ $retry_count -lt $max_retries ]; then
+                log_warning "pip 升级失败，将在 3 秒后自动重试..."
+            else
+                log_warning "pip 升级失败（已重试 $max_retries 次），但将继续安装"
+                log_info "你可以稍后手动运行: pip install --upgrade pip setuptools wheel"
+            fi
+        fi
+    done
     
     log_success "Python 虚拟环境创建完成"
 }
@@ -197,24 +480,95 @@ install_nodejs() {
     
     # 安装 nvm
     if [ ! -d "$NVM_DIR" ]; then
-        log_info "安装 nvm..."
+        log_info "正在安装 nvm..."
+        log_info "下载 nvm 安装脚本..."
+        
         export NVM_DIR="$NVM_DIR"
-        curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.39.7/install.sh | bash
+        
+        # 下载并安装 nvm，显示进度
+        (
+            curl -# -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.39.7/install.sh 2>&1 | bash 2>&1 | while IFS= read -r line; do
+                if [[ "$line" =~ (Cloning|Installing|Downloading|=>) ]]; then
+                    echo -e "${BLUE}[INFO]${NC} $line"
+                fi
+            done
+        ) || {
+            log_error "nvm 安装失败，请检查网络连接"
+            exit 1
+        }
+        
+        # 等待一下确保安装完成
+        sleep 2
         
         # 加载 nvm
-        [ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"
+        if [ -s "$NVM_DIR/nvm.sh" ]; then
+            \. "$NVM_DIR/nvm.sh"
+            log_success "nvm 安装完成"
+        else
+            log_error "nvm 安装失败，未找到 nvm.sh"
+            exit 1
+        fi
     else
+        log_info "nvm 已存在，跳过安装"
         export NVM_DIR="$NVM_DIR"
         [ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"
     fi
     
     # 安装指定版本的 Node.js
-    log_info "安装 Node.js $NODE_VERSION..."
-    nvm install $NODE_VERSION
+    log_info "正在安装 Node.js $NODE_VERSION（这可能需要几分钟，请耐心等待）..."
+    log_info "正在下载 Node.js 源码..."
+    
+    # 启动后台提示进程
+    (
+        local count=0
+        while true; do
+            sleep 8
+            count=$((count + 1))
+            # 检查 nvm 或 node 相关进程是否还在运行
+            if ! pgrep -f "nvm" > /dev/null 2>&1 && ! pgrep -f "node.*install" > /dev/null 2>&1; then
+                break
+            fi
+            local minutes=$((count * 8 / 60))
+            local seconds=$((count * 8 % 60))
+            echo -e "\r${YELLOW}[提示]${NC} 正在安装 Node.js，已等待 ${minutes}分${seconds}秒，请稍候... (时间: $(date +%H:%M:%S))" >&2
+        done
+    ) &
+    local PROMPT_PID=$!
+    
+    # 显示 nvm 安装进度
+    (
+        nvm install $NODE_VERSION 2>&1 | while IFS= read -r line; do
+            # 停止提示进程
+            kill $PROMPT_PID 2>/dev/null || true
+            
+            # 显示关键步骤
+            if [[ "$line" =~ (Downloading|Installing|Extracting|Computing|Creating|Linking|Building) ]]; then
+                echo -e "${BLUE}[INFO]${NC} $line"
+            elif [[ "$line" =~ ([0-9]+%) ]]; then
+                # 显示百分比进度
+                echo -ne "\r${BLUE}[INFO]${NC} $line                    "
+            elif [[ "$line" =~ (error|Error|ERROR|failed|Failed) ]]; then
+                echo -e "${RED}[ERROR]${NC} $line"
+            fi
+        done
+        
+        # 确保提示进程停止
+        kill $PROMPT_PID 2>/dev/null || true
+        echo ""
+    ) || {
+        # 确保提示进程停止
+        kill $PROMPT_PID 2>/dev/null || true
+        log_error "Node.js 安装失败，请检查错误信息"
+        exit 1
+    }
+    
+    # 确保提示进程停止
+    kill $PROMPT_PID 2>/dev/null || true
+    
     nvm use $NODE_VERSION
     
-    log_success "Node.js 安装完成: $(node --version)"
-    log_success "npm 版本: $(npm --version)"
+    log_success "Node.js 安装完成: $(node --version 2>&1)"
+    log_success "npm 版本: $(npm --version 2>&1)"
 }
 
 # 安装项目依赖
@@ -226,11 +580,45 @@ install_dependencies() {
     # 激活 Python 虚拟环境
     source "$INSTALL_DIR/venv/bin/activate"
     
-    # 安装 Python 依赖
+    # 安装 Python 依赖（带自动重试机制）
     if [ -f "requirements.txt" ]; then
-        log_info "安装 Python 依赖..."
-        pip install -r requirements.txt
-        log_success "Python 依赖安装完成"
+        log_info "正在安装 Python 依赖（这可能需要几分钟）..."
+        local retry_count=0
+        local max_retries=5
+        local install_success=false
+        
+        while [ $retry_count -lt $max_retries ] && [ "$install_success" = false ]; do
+            retry_count=$((retry_count + 1))
+            if [ $retry_count -gt 1 ]; then
+                echo ""
+                log_info "第 $retry_count 次尝试安装 Python 依赖（共 $max_retries 次）..."
+                sleep 5
+            fi
+            
+            if pip install -r requirements.txt 2>&1 | while IFS= read -r line; do
+                if [[ "$line" =~ (Collecting|Installing|Downloading|Building|Successfully|Requirement already satisfied|already installed) ]]; then
+                    echo -e "${BLUE}[INFO]${NC} $line"
+                elif [[ "$line" =~ (error|Error|ERROR|failed|Failed|ConnectionReset|Connection broken|Connection reset|timeout|TIMEOUT) ]]; then
+                    echo -e "${YELLOW}[WARN]${NC} $line"
+                fi
+            done && [ ${PIPESTATUS[0]} -eq 0 ]; then
+                install_success=true
+                echo ""
+                log_success "Python 依赖安装完成"
+            else
+                if [ $retry_count -lt $max_retries ]; then
+                    echo ""
+                    log_warning "Python 依赖安装失败，将在 5 秒后自动重试..."
+                else
+                    echo ""
+                    log_error "Python 依赖安装失败（已重试 $max_retries 次）"
+                    log_info "你可以稍后手动运行: pip install -r requirements.txt"
+                    log_info "或者使用国内镜像: pip install -r requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple"
+                fi
+            fi
+        done
+    else
+        log_warning "未找到 requirements.txt，跳过 Python 依赖安装"
     fi
     
     # 加载 nvm 并安装 Node.js 依赖
@@ -239,9 +627,43 @@ install_dependencies() {
     nvm use $NODE_VERSION
     
     if [ -f "package.json" ]; then
-        log_info "安装 Node.js 依赖..."
-        npm install
-        log_success "Node.js 依赖安装完成"
+        log_info "正在安装 Node.js 依赖（这可能需要几分钟）..."
+        local retry_count=0
+        local max_retries=5
+        local install_success=false
+        
+        while [ $retry_count -lt $max_retries ] && [ "$install_success" = false ]; do
+            retry_count=$((retry_count + 1))
+            if [ $retry_count -gt 1 ]; then
+                echo ""
+                log_info "第 $retry_count 次尝试安装 Node.js 依赖（共 $max_retries 次）..."
+                sleep 5
+            fi
+            
+            if npm install 2>&1 | while IFS= read -r line; do
+                if [[ "$line" =~ (npm|added|changed|removed|up to date|Installing|Downloading|packages|audited) ]]; then
+                    echo -e "${BLUE}[INFO]${NC} $line"
+                elif [[ "$line" =~ (error|Error|ERROR|failed|Failed|WARN|ECONNRESET|timeout|TIMEOUT) ]]; then
+                    echo -e "${YELLOW}[WARN]${NC} $line"
+                fi
+            done && [ ${PIPESTATUS[0]} -eq 0 ]; then
+                install_success=true
+                echo ""
+                log_success "Node.js 依赖安装完成"
+            else
+                if [ $retry_count -lt $max_retries ]; then
+                    echo ""
+                    log_warning "Node.js 依赖安装失败，将在 5 秒后自动重试..."
+                else
+                    echo ""
+                    log_error "Node.js 依赖安装失败（已重试 $max_retries 次）"
+                    log_info "你可以稍后手动运行: npm install"
+                    log_info "或者使用国内镜像: npm install --registry=https://registry.npmmirror.com"
+                fi
+            fi
+        done
+    else
+        log_warning "未找到 package.json，跳过 Node.js 依赖安装"
     fi
 }
 
@@ -312,6 +734,22 @@ check_integrity() {
     log_success "文件完整性检查完成"
 }
 
+# 显示进度
+show_progress() {
+    local current=$1
+    local total=$2
+    local step_name=$3
+    local percent=$((current * 100 / total))
+    local filled=$((percent / 2))
+    local empty=$((50 - filled))
+    
+    printf "\r${BLUE}[%d/%d]${NC} ${YELLOW}%s${NC} [${GREEN}%s${NC}${BLUE}%s${NC}] %d%%" \
+        "$current" "$total" "$step_name" \
+        "$(printf '%*s' $filled | tr ' ' '#')" \
+        "$(printf '%*s' $empty | tr ' ' '-')" \
+        "$percent"
+}
+
 # 主安装流程
 main() {
     echo ""
@@ -320,16 +758,86 @@ main() {
     echo -e "${BLUE}================================${NC}"
     echo ""
     
-    detect_os
-    check_and_install_git
+    # 检查脚本是否完整
+    if [ ! -f "$0" ]; then
+        log_error "无法找到脚本文件"
+        exit 1
+    fi
+    
+    # 检查文件格式（Windows 换行符问题）
+    if file "$0" | grep -q "CRLF"; then
+        log_warning "检测到 Windows 换行符，正在转换..."
+        sed -i 's/\r$//' "$0"
+        log_info "已转换为 Unix 格式，请重新运行脚本"
+        exit 0
+    fi
+    
+    # 调试信息
+    if [ "${DEBUG:-0}" = "1" ]; then
+        log_info "调试模式已启用"
+        set -x
+    fi
+    
+    local total_steps=10
+    local current_step=0
+    
+    ((current_step++))
+    show_progress $current_step $total_steps "检测操作系统..."
+    detect_os || {
+        log_error "操作系统检测失败"
+        exit 1
+    }
+    echo ""
+    
+    ((current_step++))
+    show_progress $current_step $total_steps "检查并安装 Git..."
+    check_and_install_git || {
+        log_error "Git 检查/安装失败"
+        exit 1
+    }
+    echo ""
+    
+    ((current_step++))
+    show_progress $current_step $total_steps "安装系统依赖..."
     install_system_dependencies
+    echo ""
+    
+    ((current_step++))
+    show_progress $current_step $total_steps "克隆仓库..."
     clone_repository
+    echo ""
+    
+    ((current_step++))
+    show_progress $current_step $total_steps "安装 Python 环境..."
     install_python
+    echo ""
+    
+    ((current_step++))
+    show_progress $current_step $total_steps "安装 Node.js 环境..."
     install_nodejs
+    echo ""
+    
+    ((current_step++))
+    show_progress $current_step $total_steps "安装项目依赖..."
     install_dependencies
+    echo ""
+    
+    ((current_step++))
+    show_progress $current_step $total_steps "创建配置文件..."
     create_config
+    echo ""
+    
+    ((current_step++))
+    show_progress $current_step $total_steps "安装 CLI 工具..."
     install_cli
+    echo ""
+    
+    ((current_step++))
+    show_progress $current_step $total_steps "检查文件完整性..."
     check_integrity
+    echo ""
+    
+    printf "\r${GREEN}[完成]${NC} ${GREEN}安装完成！${NC}                                    \n"
     
     echo ""
     echo -e "${GREEN}================================${NC}"

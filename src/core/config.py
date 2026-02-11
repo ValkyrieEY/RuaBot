@@ -55,6 +55,8 @@ class Config(BaseSettings):
     # Logging
     log_level: str = Field(default="INFO", alias="LOG_LEVEL")
     log_file: str = Field(default="logs/onebot_framework.log", alias="LOG_FILE")
+    log_max_bytes: int = Field(default=10 * 1024 * 1024, alias="LOG_MAX_BYTES")  # 10MB default
+    log_backup_count: int = Field(default=5, alias="LOG_BACKUP_COUNT")  # Keep 5 backup files
 
     # Plugin Configuration
     plugin_dir: str = Field(default="./plugins", alias="PLUGIN_DIR")
@@ -138,6 +140,12 @@ def _flatten_toml(data: Dict[str, Any], result: Dict[str, str], prefix: str = ""
             # [logging].level -> LOG_LEVEL (not LOGGING_LEVEL)
             if env_key == "LOGGING_LEVEL":
                 result["LOG_LEVEL"] = value
+            # [logging].max_bytes -> LOG_MAX_BYTES (not LOGGING_MAX_BYTES)
+            elif env_key == "LOGGING_MAX_BYTES":
+                result["LOG_MAX_BYTES"] = value
+            # [logging].backup_count -> LOG_BACKUP_COUNT (not LOGGING_BACKUP_COUNT)
+            elif env_key == "LOGGING_BACKUP_COUNT":
+                result["LOG_BACKUP_COUNT"] = value
             # [app].debug -> DEBUG (not APP_DEBUG)
             elif env_key == "APP_DEBUG":
                 result["DEBUG"] = value

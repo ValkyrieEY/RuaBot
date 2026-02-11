@@ -8,7 +8,7 @@ import json
 import sys
 import os
 from pathlib import Path
-from typing import Optional, Dict, Any, Callable, Coroutine, List
+from typing import Optional, Dict, Any, Callable, Coroutine, List, Tuple
 import asyncio
 from datetime import datetime
 
@@ -18,6 +18,131 @@ from ...core.database import DatabaseManager
 from ..interceptor import InterceptorRegistry, MessageInterceptor, InterceptorResult
 
 logger = get_logger(__name__)
+
+
+async def install_plugin_dependencies(plugin_path: Path, plugin_metadata: Dict[str, Any]) -> bool:
+    """Install plugin dependencies automatically.
+    
+    Supports two methods:
+    1. From plugin.json dependencies field
+    2. From requirements.txt file
+    
+    Args:
+        plugin_path: Plugin directory path
+        plugin_metadata: Plugin metadata from plugin.json
+        
+    Returns:
+        True if installation succeeded or no dependencies, False on error
+    """
+    import subprocess
+    import sys
+    
+    dependencies_to_install = []
+    
+    # Method 1: Check plugin.json dependencies field
+    if 'dependencies' in plugin_metadata:
+        deps = plugin_metadata['dependencies']
+        if isinstance(deps, list):
+            for dep in deps:
+                if isinstance(dep, dict):
+                    # Format: {"name": "package", "version": ">=1.0.0"}
+                    dep_name = dep.get('name', '')
+                    dep_version = dep.get('version', '')
+                    if dep_name:
+                        if dep_version:
+                            dependencies_to_install.append(f"{dep_name}{dep_version}")
+                        else:
+                            dependencies_to_install.append(dep_name)
+                elif isinstance(dep, str):
+                    # Format: "package>=1.0.0" or just "package"
+                    dependencies_to_install.append(dep)
+    
+    # Method 2: Check requirements.txt
+    requirements_file = plugin_path / "requirements.txt"
+    if requirements_file.exists():
+        try:
+            with open(requirements_file, 'r', encoding='utf-8') as f:
+                for line in f:
+                    line = line.strip()
+                    # Skip comments and empty lines
+                    if line and not line.startswith('#'):
+                        dependencies_to_install.append(line)
+        except Exception as e:
+            logger.warning(f"Failed to read requirements.txt: {e}")
+    
+    # If no dependencies found, return success
+    if not dependencies_to_install:
+        logger.info(f"No dependencies found for plugin at {plugin_path}")
+        return True
+    
+    # Install dependencies
+    logger.info(f"Installing {len(dependencies_to_install)} dependencies for plugin: {plugin_path.name}")
+    
+    try:
+        # Use pip to install dependencies
+        # Try pip3 first, then pip
+        pip_cmd = 'pip3' if sys.platform != 'win32' else 'pip'
+        
+        # Check if pip is available
+        try:
+            result = subprocess.run(
+                [pip_cmd, '--version'],
+                capture_output=True,
+                timeout=5
+            )
+            if result.returncode != 0:
+                # Try 'pip' if 'pip3' failed
+                pip_cmd = 'pip'
+        except (FileNotFoundError, subprocess.TimeoutExpired):
+            pip_cmd = 'pip'
+        
+        # Install each dependency (run in thread pool to avoid blocking)
+        failed_deps = []
+        loop = asyncio.get_event_loop()
+        
+        def install_dep(dep: str) -> Tuple[str, bool, str]:
+            """Install a single dependency synchronously."""
+            try:
+                logger.info(f"Installing dependency: {dep}")
+                result = subprocess.run(
+                    [sys.executable, '-m', 'pip', 'install', dep],
+                    capture_output=True,
+                    text=True,
+                    timeout=300  # 5 minutes timeout
+                )
+                
+                if result.returncode == 0:
+                    logger.info(f"Successfully installed: {dep}")
+                    return (dep, True, "")
+                else:
+                    error_msg = result.stderr or result.stdout
+                    logger.warning(f"Failed to install {dep}: {error_msg}")
+                    return (dep, False, error_msg)
+            except subprocess.TimeoutExpired:
+                logger.error(f"Timeout installing {dep}")
+                return (dep, False, "Timeout")
+            except Exception as e:
+                logger.error(f"Error installing {dep}: {e}")
+                return (dep, False, str(e))
+        
+        # Install dependencies sequentially (to avoid conflicts)
+        for dep in dependencies_to_install:
+            dep_name, success, error = await loop.run_in_executor(None, install_dep, dep)
+            if not success:
+                failed_deps.append(dep_name)
+        
+        if failed_deps:
+            logger.warning(f"Some dependencies failed to install: {failed_deps}")
+            # Don't fail the entire installation, just warn
+            return True
+        else:
+            logger.info(f"All dependencies installed successfully for plugin: {plugin_path.name}")
+            return True
+            
+    except Exception as e:
+        logger.error(f"Error installing plugin dependencies: {e}", exc_info=True)
+        # Don't fail the entire installation, just warn
+        return True
 
 
 class ProxyMessageInterceptor(MessageInterceptor):
@@ -1093,12 +1218,17 @@ class PluginRuntimeConnector:
                     shutil.rmtree(plugin_path)
                 return False
             
+            # 读取plugin.json获取元数据
+            import json
+            with open(plugin_json, 'r', encoding='utf-8') as f:
+                plugin_metadata = json.load(f)
+            
+            # 自动安装依赖
+            logger.info(f"Checking dependencies for plugin: {author}/{name}")
+            await install_plugin_dependencies(plugin_path, plugin_metadata)
+            
             # 在数据库中注册插件
             if self.db_manager:
-                # 读取plugin.json获取默认配置
-                import json
-                with open(plugin_json, 'r', encoding='utf-8') as f:
-                    plugin_metadata = json.load(f)
                 
                 # 检查插件设置是否已存在
                 existing_setting = await self.db_manager.get_plugin_setting(author, name)

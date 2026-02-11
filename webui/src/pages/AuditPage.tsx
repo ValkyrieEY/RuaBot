@@ -205,7 +205,7 @@ export default function AuditPage() {
               onChange={(e) => setFilterLevel(e.target.value as any)}
               className="input py-2 text-sm min-w-[120px] max-w-[140px]"
             >
-              <option value="all">全部级别</option>
+              <option value="all">{t('systemLog.allLevels')}</option>
               <option value="debug">DEBUG</option>
               <option value="info">INFO</option>
               <option value="warning">WARNING</option>
@@ -218,19 +218,19 @@ export default function AuditPage() {
             onChange={(e) => setLimit(Number(e.target.value))}
             className="input py-2 text-sm min-w-[120px] max-w-[140px]"
           >
-            <option value={50}>最近 50 条</option>
-            <option value={100}>最近 100 条</option>
-            <option value={200}>最近 200 条</option>
-            <option value={500}>最近 500 条</option>
-            <option value={1000}>最近 1000 条</option>
+            <option value={50}>{t('common.recentEntries', { count: 50 })}</option>
+            <option value={100}>{t('common.recentEntries', { count: 100 })}</option>
+            <option value={200}>{t('common.recentEntries', { count: 200 })}</option>
+            <option value={500}>{t('common.recentEntries', { count: 500 })}</option>
+            <option value={1000}>{t('common.recentEntries', { count: 1000 })}</option>
           </select>
           <button
             onClick={() => setAutoRefresh(!autoRefresh)}
             className={`btn ${autoRefresh ? 'btn-primary' : 'btn-secondary'} flex items-center gap-2 whitespace-nowrap text-sm`}
           >
             <RefreshCw className={`w-4 h-4 ${autoRefresh ? 'animate-spin' : ''}`} />
-            <span className="hidden sm:inline">{autoRefresh ? '自动刷新中' : '自动刷新'}</span>
-            <span className="sm:hidden">{autoRefresh ? '刷新中' : '自动'}</span>
+            <span className="hidden sm:inline">{autoRefresh ? t('common.autoRefreshing') : t('common.autoRefresh')}</span>
+            <span className="sm:hidden">{autoRefresh ? t('common.refreshing') : t('common.auto')}</span>
           </button>
           <button
             onClick={() => loadLogs(true)}
@@ -238,7 +238,7 @@ export default function AuditPage() {
             className="btn btn-secondary flex items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed whitespace-nowrap text-sm"
           >
             <RefreshCw className={`w-4 h-4 ${refreshing ? 'animate-spin' : ''}`} />
-            <span>刷新</span>
+            <span>{t('common.refresh')}</span>
           </button>
         </div>
       </div>
@@ -248,7 +248,7 @@ export default function AuditPage() {
         <div className="card">
           <div className="flex items-center justify-between">
             <div>
-              <p className="text-xs text-gray-500">全部</p>
+              <p className="text-xs text-gray-500">{t('common.all')}</p>
               <p className="text-2xl font-bold text-gray-900 mt-1">{levelCounts.all}</p>
             </div>
             <FileText className="w-8 h-8 text-gray-500" />
@@ -307,10 +307,10 @@ export default function AuditPage() {
           <table className="w-full min-w-[800px]">
             <thead className="sticky top-0 bg-gray-50 z-10">
               <tr className="border-b border-gray-200">
-                <th className="text-left py-3 px-4 font-semibold text-gray-700 text-sm">时间</th>
-                <th className="text-left py-3 px-4 font-semibold text-gray-700 text-sm">级别</th>
-                <th className="text-left py-3 px-4 font-semibold text-gray-700 text-sm">日志器</th>
-                <th className="text-left py-3 px-4 font-semibold text-gray-700 text-sm">消息</th>
+                <th className="text-left py-3 px-4 font-semibold text-gray-700 text-sm">{t('systemLog.time')}</th>
+                <th className="text-left py-3 px-4 font-semibold text-gray-700 text-sm">{t('systemLog.level')}</th>
+                <th className="text-left py-3 px-4 font-semibold text-gray-700 text-sm">{t('systemLog.logger')}</th>
+                <th className="text-left py-3 px-4 font-semibold text-gray-700 text-sm">{t('systemLog.message')}</th>
               </tr>
             </thead>
             <tbody>
@@ -318,7 +318,7 @@ export default function AuditPage() {
                 <tr>
                   <td colSpan={4} className="text-center py-12 text-gray-500">
                     <FileText className="w-12 h-12 text-gray-300 mx-auto mb-3" />
-                    <p>暂无日志记录</p>
+                    <p>{t('systemLog.noLogs')}</p>
                   </td>
                 </tr>
               ) : (
@@ -358,7 +358,7 @@ export default function AuditPage() {
                               </div>
                               {log.exception && (
                                 <div className="mt-2 pt-2 border-t border-gray-700">
-                                  <div className="text-red-400 font-semibold mb-1">异常详情:</div>
+                                  <div className="text-red-400 font-semibold mb-1">{t('systemLog.exceptionDetail')}</div>
                                   <pre className="text-xs whitespace-pre-wrap break-words text-red-300">
                                     {log.exception}
                                   </pre>
@@ -369,7 +369,7 @@ export default function AuditPage() {
                           {log.exception && (
                             <div className="mt-1 text-xs text-red-600 flex items-center gap-1">
                               <AlertTriangle className="w-3 h-3" />
-                              <span>包含异常信息 (悬浮查看)</span>
+                              <span>{t('systemLog.hasException')}</span>
                             </div>
                           )}
                         </div>

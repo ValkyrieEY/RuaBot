@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { useTranslation } from 'react-i18next'
 import { Settings, Cpu, Brain, Shield, Network, FileText, Wrench, Database } from 'lucide-react'
 import AIConfigPage from './ai/AIConfigPage'
 import ModelManagementPage from './ai/ModelManagementPage'
@@ -12,17 +13,18 @@ import AILearningPage from './ai/AILearningPage'
 type TabType = 'config' | 'models' | 'memory' | 'permissions' | 'mcp' | 'presets' | 'tools' | 'learning'
 
 export default function AIPage() {
+  const { t } = useTranslation()
   const [activeTab, setActiveTab] = useState<TabType>('config')
 
   const tabs = [
-    { id: 'config' as TabType, label: '基础配置', icon: Settings },
-    { id: 'models' as TabType, label: '模型管理', icon: Cpu },
-    { id: 'memory' as TabType, label: '记忆管理', icon: Brain },
-    { id: 'permissions' as TabType, label: '权限管理', icon: Shield },
-    { id: 'mcp' as TabType, label: 'MCP管理', icon: Network },
-    { id: 'presets' as TabType, label: '预设管理', icon: FileText },
-    { id: 'tools' as TabType, label: '工具管理', icon: Wrench },
-    { id: 'learning' as TabType, label: 'AI学习与功能', icon: Database },
+    { id: 'config' as TabType, label: t('ai.tabs.config'), icon: Settings },
+    { id: 'models' as TabType, label: t('ai.tabs.models'), icon: Cpu },
+    { id: 'memory' as TabType, label: t('ai.tabs.memory'), icon: Brain },
+    { id: 'permissions' as TabType, label: t('ai.tabs.permissions'), icon: Shield },
+    { id: 'mcp' as TabType, label: t('ai.tabs.mcp'), icon: Network },
+    { id: 'presets' as TabType, label: t('ai.tabs.presets'), icon: FileText },
+    { id: 'tools' as TabType, label: t('ai.tabs.tools'), icon: Wrench },
+    { id: 'learning' as TabType, label: t('ai.tabs.learning'), icon: Database },
   ]
 
   const renderContent = () => {

@@ -1,4 +1,5 @@
 import { useEffect, useState, useRef } from 'react'
+import { useTranslation } from 'react-i18next'
 import { api } from '@/utils/api'
 import { 
   Github, 
@@ -21,6 +22,7 @@ interface SystemStatus {
 }
 
 export default function AboutPage() {
+  const { t } = useTranslation()
   const [status, setStatus] = useState<SystemStatus | null>(null)
   const [loading, setLoading] = useState(true)
   const [logoSrc, setLogoSrc] = useState<string>('https://github.com/ValkyrieEY.png')
@@ -72,10 +74,10 @@ export default function AboutPage() {
   }
 
   const features = [
-    { icon: Package, title: '插件系统', desc: '强大的插件架构，支持热重载和跨进程通信' },
-    { icon: Sparkles, title: 'AI 集成', desc: '完整的AI功能支持，包括多模型、记忆管理和工具调用' },
-    { icon: Code, title: '现代化', desc: '基于 Python + React + TypeScript 的现代技术栈' },
-    { icon: Box, title: '可扩展', desc: '松耦合架构设计，易于扩展和定制' }
+    { icon: Package, title: t('about.features.pluginSystem'), desc: t('about.features.pluginSystemDesc') },
+    { icon: Sparkles, title: t('about.features.aiIntegration'), desc: t('about.features.aiIntegrationDesc') },
+    { icon: Code, title: t('about.features.modern'), desc: t('about.features.modernDesc') },
+    { icon: Box, title: t('about.features.extensible'), desc: t('about.features.extensibleDesc') }
   ]
 
   if (loading) {
@@ -131,10 +133,10 @@ export default function AboutPage() {
         </div>
         <h1 className="text-4xl font-bold text-gray-900 mb-3">RuaBot</h1>
         <p className="text-xl text-gray-600 mb-2">
-          基于 OneBot v11/12 协议的现代化 QQ 机器人框架
+          {t('about.subtitle')}
         </p>
         <p className="text-sm text-gray-500">
-          A Modern Bot Development Platform Based on OneBot Protocol
+          {t('about.desc')}
         </p>
         
         {/* Version badges */}
@@ -185,8 +187,8 @@ export default function AboutPage() {
           <div className="flex items-center gap-4">
             <Github className="w-12 h-12 text-white" />
             <div>
-              <h3 className="text-xl font-bold text-white mb-1">开源项目</h3>
-              <p className="text-gray-300 text-sm">欢迎 Star 和贡献代码</p>
+              <h3 className="text-xl font-bold text-white mb-1">{t('about.openSource')}</h3>
+              <p className="text-gray-300 text-sm">{t('about.welcomeStar')}</p>
             </div>
           </div>
           <a
@@ -195,7 +197,7 @@ export default function AboutPage() {
             rel="noopener noreferrer"
             className="flex items-center gap-2 px-6 py-3 bg-white text-gray-900 rounded-lg font-medium hover:bg-gray-100 transition-colors"
           >
-            访问 GitHub
+            {t('about.visitGithub')}
             <ExternalLink className="w-4 h-4" />
           </a>
         </div>
@@ -205,12 +207,12 @@ export default function AboutPage() {
       <div className="bg-white rounded-xl p-8 shadow-sm border border-gray-200 mb-12">
         <div className="flex items-center gap-2 mb-6">
           <Users className="w-6 h-6 text-primary-600" />
-          <h2 className="text-2xl font-bold text-gray-900">贡献者</h2>
+          <h2 className="text-2xl font-bold text-gray-900">{t('about.contributors')}</h2>
         </div>
         
         <div className="text-center">
           <p className="text-gray-600 mb-6">
-            感谢所有为 RuaBot 做出贡献的开发者们
+            {t('about.contributorsDesc')}
           </p>
           <a 
             href="https://github.com/ValkyrieEY/RuaBot/graphs/contributors"
@@ -232,39 +234,39 @@ export default function AboutPage() {
         <div className="bg-white rounded-xl p-6 shadow-sm border border-gray-200">
           <h3 className="font-semibold text-gray-900 mb-3 flex items-center gap-2">
             <Code className="w-5 h-5 text-primary-600" />
-            开源协议
+            {t('about.license')}
           </h3>
           <p className="text-gray-600 text-sm mb-3">
-            本项目采用 MIT License 开源协议
+            {t('about.licenseDesc')}
           </p>
           <p className="text-gray-500 text-xs">
-            您可以自由使用、修改和分发本项目，但需要保留原作者的版权信息
+            {t('about.licenseNote1')}
           </p>
           <p className="text-gray-500 text-xs">
-            请勿用于违规当地法律的用途
+            {t('about.licenseNote2')}
           </p>
         </div>
 
         <div className="bg-white rounded-xl p-6 shadow-sm border border-gray-200">
           <h3 className="font-semibold text-gray-900 mb-3 flex items-center gap-2">
             <Heart className="w-5 h-5 text-red-500" />
-            特别感谢
+            {t('about.specialThanks')}
           </h3>
           <p className="text-gray-600 text-sm mb-2">
-            感谢以下项目和社区的支持：
+            {t('about.specialThanksDesc')}
           </p>
           <ul className="text-gray-600 text-sm space-y-1">
-            <li>OneBot 协议标准</li>
-            <li>所有贡献者和用户</li>
+            <li>{t('about.onebotProtocol')}</li>
+            <li>{t('about.allContributors')}</li>
           </ul>
         </div>
       </div>
 
       {/* Footer */}
       <div className="text-center text-gray-500 text-sm py-8 border-t border-gray-200">
-        <p>Made with love by ValkyrieEY and the RuaBot Community</p>
+        <p>{t('about.footer')}</p>
         <p className="mt-2">
-          © {new Date().getFullYear()} RuaBot. All rights reserved.
+          {t('about.copyright', { year: new Date().getFullYear() })}
         </p>
       </div>
     </div>

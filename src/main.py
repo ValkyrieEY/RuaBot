@@ -98,7 +98,9 @@ if toml_file.exists():
 setup_logger(
     name="xiaoyi_qq",
     level=config.log_level,
-    log_file=config.log_file
+    log_file=config.log_file,
+    log_max_bytes=config.log_max_bytes,
+    log_backup_count=config.log_backup_count
 )
 
 # Use the main logger (not __name__ logger to ensure DEBUG level works)

@@ -1,6 +1,7 @@
 """Structured logging with multiple output targets."""
 
 import logging
+import logging.handlers
 import sys
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -24,6 +25,41 @@ class SimpleConsoleRenderer:
         
         # Format: [HH:MM:SS] LEVEL  message
         output = f"[{timestamp}] {level:<7} {event}"
+        
+        # Add extra fields if present (but filter out common structlog fields)
+        skip_keys = {"event", "level", "timestamp", "logger"}
+        extras = {k: v for k, v in event_dict.items() if k not in skip_keys}
+        if extras:
+            extras_str = " ".join(f"{k}={v}" for k, v in extras.items())
+            output += f" | {extras_str}"
+        
+        return output
+
+
+class FileRenderer:
+    """File renderer with full timestamp and readable format."""
+    
+    def __call__(self, logger, name, event_dict):
+        """Render log event to a readable string for file output."""
+        # Use ISO timestamp from event_dict if available, otherwise use current time
+        if "timestamp" in event_dict:
+            try:
+                if isinstance(event_dict["timestamp"], str):
+                    ts = datetime.fromisoformat(event_dict["timestamp"].replace("Z", "+00:00"))
+                else:
+                    ts = datetime.fromtimestamp(event_dict["timestamp"])
+                timestamp = ts.strftime("%Y-%m-%d %H:%M:%S")
+            except (ValueError, TypeError):
+                timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        else:
+            timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        
+        level = event_dict.get("level", "info").upper()
+        event = event_dict.get("event", "")
+        logger_name = event_dict.get("logger", name)
+        
+        # Format: [YYYY-MM-DD HH:MM:SS] LEVEL [logger] message
+        output = f"[{timestamp}] {level:<7} [{logger_name}] {event}"
         
         # Add extra fields if present (but filter out common structlog fields)
         skip_keys = {"event", "level", "timestamp", "logger"}
@@ -113,10 +149,19 @@ class MemoryLogHandler(logging.Handler):
 class Logger:
     """Structured logger with rich formatting."""
 
-    def __init__(self, name: str, level: str = "INFO", log_file: Optional[str] = None):
+    def __init__(
+        self, 
+        name: str, 
+        level: str = "INFO", 
+        log_file: Optional[str] = None,
+        log_max_bytes: int = 10 * 1024 * 1024,  # 10MB default
+        log_backup_count: int = 5  # Keep 5 backup files
+    ):
         self.name = name
         self.level = level
         self.log_file = log_file
+        self.log_max_bytes = log_max_bytes
+        self.log_backup_count = log_backup_count
         self._logger: Optional[structlog.BoundLogger] = None
 
     def setup(self) -> structlog.BoundLogger:
@@ -161,12 +206,18 @@ class Logger:
         console_handler.setFormatter(console_formatter)
         stdlib_logger.addHandler(console_handler)
 
-        # File handler - only record ERROR and above
+        # File handler with rotation - use configured log level
         if self.log_file:
-            file_handler = logging.FileHandler(self.log_file, encoding="utf-8")
-            file_handler.setLevel(logging.ERROR)  # Only record ERROR and CRITICAL
+            # Use RotatingFileHandler for automatic log rotation and cleanup
+            file_handler = logging.handlers.RotatingFileHandler(
+                self.log_file,
+                maxBytes=self.log_max_bytes,
+                backupCount=self.log_backup_count,
+                encoding="utf-8"
+            )
+            file_handler.setLevel(getattr(logging, self.level.upper()))  # Use configured log level
             file_formatter = structlog.stdlib.ProcessorFormatter(
-                processor=structlog.processors.JSONRenderer(),
+                processor=FileRenderer(),  # Use readable format instead of JSON
             )
             file_handler.setFormatter(file_formatter)
             stdlib_logger.addHandler(file_handler)
@@ -193,10 +244,12 @@ class Logger:
 def setup_logger(
     name: str = "onebot_framework",
     level: str = "INFO",
-    log_file: Optional[str] = None
+    log_file: Optional[str] = None,
+    log_max_bytes: int = 10 * 1024 * 1024,  # 10MB default
+    log_backup_count: int = 5  # Keep 5 backup files
 ) -> structlog.BoundLogger:
     """Setup and register a logger."""
-    logger = Logger(name, level, log_file)
+    logger = Logger(name, level, log_file, log_max_bytes, log_backup_count)
     _loggers[name] = logger
     return logger.setup()
 
@@ -204,12 +257,29 @@ def setup_logger(
 def get_logger(name: str = "onebot_framework") -> structlog.BoundLogger:
     """Get a logger by name."""
     if name not in _loggers:
-        # If main logger exists, inherit its level
+        # If main logger exists, inherit its level, log_file, and rotation settings
+        main_logger_name = None
         if "xiaoyi_qq" in _loggers:
-            level = _loggers["xiaoyi_qq"].level
+            main_logger_name = "xiaoyi_qq"
+        elif "onebot_framework" in _loggers:
+            main_logger_name = "onebot_framework"
+        
+        if main_logger_name:
+            main_logger = _loggers[main_logger_name]
+            level = main_logger.level
+            log_file = main_logger.log_file  # Inherit log_file from main logger
+            log_max_bytes = main_logger.log_max_bytes  # Inherit rotation settings
+            log_backup_count = main_logger.log_backup_count
+            _loggers[name] = Logger(
+                name, 
+                level=level, 
+                log_file=log_file,
+                log_max_bytes=log_max_bytes,
+                log_backup_count=log_backup_count
+            )
         else:
             level = "INFO"
-        _loggers[name] = Logger(name, level=level)
+            _loggers[name] = Logger(name, level=level)
     return _loggers[name].get()
 
 

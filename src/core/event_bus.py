@@ -50,6 +50,7 @@ class EventBus:
         # Message statistics (persistent counters, reset at midnight)
         self._today_sent: int = 0
         self._today_received: int = 0
+        self._total_events_processed: int = 0
         self._last_reset_date: Optional[datetime] = None
 
     async def start(self) -> None:
@@ -103,6 +104,9 @@ class EventBus:
         self._event_history.append(event)
         if len(self._event_history) > self._max_history:
             self._event_history.pop(0)
+        
+        # Increment total events counter
+        self._total_events_processed += 1
         
         # Update message statistics
         self._update_message_stats(event)
@@ -349,6 +353,7 @@ class EventBus:
             "total_subscribers": sum(len(subs) for subs in self._subscribers.values()),
             "wildcard_subscribers": len(self._wildcard_subscribers),
             "history_size": len(self._event_history),
+            "total_events_processed": self._total_events_processed,
             "today_sent": self._today_sent,
             "today_received": self._today_received,
         }

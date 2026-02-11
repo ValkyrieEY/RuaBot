@@ -64,14 +64,14 @@ export default function Layout({ children }: LayoutProps) {
     return [
       { path: '/dashboard', icon: LayoutDashboard, label: t('nav.dashboard'), enabled: true },
       { path: '/onebot', icon: Radio, label: t('nav.onebot'), enabled: true },
-      { path: '/chat', icon: MessagesSquare, label: '消息发送', enabled: true },
+      { path: '/chat', icon: MessagesSquare, label: t('nav.chat'), enabled: true },
       { path: '/messages', icon: MessageSquare, label: t('nav.messages'), enabled: true },
       { path: '/plugins', icon: Puzzle, label: t('nav.plugins'), enabled: true },
-      { path: '/ai', icon: Bot, label: '人工智能', enabled: aiAvailable === true },
+      { path: '/ai', icon: Bot, label: t('nav.ai'), enabled: aiAvailable === true },
       { path: '/security', icon: Shield, label: t('nav.security'), enabled: true },
       { path: '/audit', icon: FileText, label: t('nav.audit'), enabled: true },
       { path: '/system', icon: Settings, label: t('nav.system'), enabled: true },
-      { path: '/about', icon: Info, label: '关于', enabled: true },
+      { path: '/about', icon: Info, label: t('nav.about'), enabled: true },
     ]
   }, [t, i18n.language, aiAvailable])
 
@@ -139,7 +139,7 @@ export default function Layout({ children }: LayoutProps) {
                       'flex items-center gap-3 px-4 py-3 rounded-lg',
                       'text-gray-400 cursor-not-allowed opacity-50'
                     )}
-                    title="AI系统未安装或不可用"
+                    title={t('nav.aiUnavailable')}
                   >
                     <Icon className="w-5 h-5" />
                     <span>{item.label}</span>

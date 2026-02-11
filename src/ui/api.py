@@ -1,5 +1,6 @@
 """FastAPI application for Web UI."""
 
+import asyncio
 from contextlib import asynccontextmanager
 from typing import Any, Dict, List, Optional
 
@@ -1482,6 +1483,11 @@ def create_app() -> FastAPI:
         # Copy the plugin directory
         shutil.copytree(plugin_dir, target_dir)
         
+        # Auto-install dependencies
+        from ...plugins.runtime.connector import install_plugin_dependencies
+        logger.info(f"Checking dependencies for plugin: {plugin_author}/{plugin_name}")
+        await install_plugin_dependencies(target_dir, plugin_metadata)
+        
         # Register plugin in database
         db_manager = get_database_manager()
         try:
@@ -1984,6 +1990,68 @@ def create_app() -> FastAPI:
         )
         
         return {"message": "Configuration updated and OneBot adapter restarted successfully."}
+    
+    @app.post("/api/onebot/reconnect")
+    async def reconnect_onebot(user: Dict[str, Any] = Depends(get_current_user)):
+        """Manually reconnect OneBot adapter."""
+        application = get_app()
+        if not hasattr(application, 'onebot_adapter') or not application.onebot_adapter:
+            return {"success": False, "message": "OneBot adapter not initialized"}
+        
+        try:
+            # Stop current adapter
+            await application.onebot_adapter.stop()
+            logger.info("OneBot adapter stopped for manual reconnection")
+            
+            # Wait a moment
+            await asyncio.sleep(1)
+            
+            # Get current config
+            config = get_config()
+            onebot_config = {
+                "version": config.onebot_version,
+                "connection_type": config.onebot_connection_type,
+                "http_url": config.onebot_http_url,
+                "ws_url": config.onebot_ws_url,
+                "ws_reverse_host": config.onebot_ws_reverse_host,
+                "ws_reverse_port": config.onebot_ws_reverse_port,
+                "ws_reverse_path": config.onebot_ws_reverse_path,
+                "access_token": config.onebot_access_token,
+                "secret": config.onebot_secret,
+            }
+            
+            # Create new adapter
+            from ..protocol.onebot import OneBotAdapter
+            application.onebot_adapter = OneBotAdapter(onebot_config)
+            
+            # Re-register event handler
+            event_bus = get_event_bus()
+            async def handle_onebot_event(event):
+                await event_bus.publish(
+                    f"onebot.{event['type']}",
+                    event,
+                    source="onebot"
+                )
+            
+            application.onebot_adapter.on_event(handle_onebot_event)
+            
+            # Start adapter
+            await application.onebot_adapter.start()
+            logger.info("OneBot adapter reconnected successfully")
+            
+            # Log the action
+            await get_audit_logger().log_plugin_action(
+                "reconnect",
+                "onebot",
+                user.get("username"),
+                True,
+                {}
+            )
+            
+            return {"success": True, "message": "OneBot adapter reconnected successfully"}
+        except Exception as e:
+            logger.error("Failed to reconnect OneBot adapter", error=str(e), exc_info=True)
+            return {"success": False, "message": f"Failed to reconnect: {str(e)}"}
     
     @app.get("/api/messages/log")
     async def get_message_log(
@@ -2616,7 +2684,7 @@ def create_app() -> FastAPI:
             "status": "running" if application.is_running() else "stopped",
             "event_bus": {
                 **event_stats,
-                "total_events": event_stats.get("history_size", 0),
+                "total_events": event_stats.get("total_events_processed", event_stats.get("history_size", 0)),
                 "today_received": today_received,
                 "today_sent": today_sent,
             },

@@ -1,7 +1,6 @@
 import React from 'react'
-import { CircularProgress } from './CircularProgress'
-import { XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, AreaChart, Area } from 'recharts'
-import { Activity, Zap, CheckCircle, XCircle, Clock } from 'lucide-react'
+import { AreaChart, Area, ResponsiveContainer, XAxis, YAxis, Tooltip, CartesianGrid } from 'recharts'
+import { Zap, CheckCircle, AlertCircle, TrendingUp, Box } from 'lucide-react'
 
 interface ThreadPoolStats {
   max_workers: number
@@ -32,14 +31,16 @@ export const ThreadPoolMonitor: React.FC<ThreadPoolMonitorProps> = ({
 }) => {
   if (!stats || !stats.initialized) {
     return (
-      <div className="card">
-        <div className="flex items-center gap-2 mb-4">
-          {icon}
-          <h3 className="font-semibold text-gray-900">{title}</h3>
+      <div className="relative overflow-hidden rounded-2xl bg-gradient-to-br from-gray-50 to-gray-100 p-6 shadow-lg border border-gray-200">
+        <div className="flex items-center gap-3 mb-4 opacity-50">
+          <div className="p-2 rounded-xl bg-gray-200 text-gray-500">
+            {icon}
+          </div>
+          <h3 className="font-bold text-gray-900 text-lg">{title}</h3>
         </div>
-        <div className="text-center py-8 text-gray-400">
-          <Activity className="w-12 h-12 mx-auto mb-2 opacity-50" />
-          <p>线程池未初始化</p>
+        <div className="flex flex-col items-center justify-center py-12 text-gray-400">
+          <AlertCircle className="w-12 h-12 mb-3 opacity-50" />
+          <p className="text-sm font-medium">Not Initialized</p>
         </div>
       </div>
     )
@@ -59,174 +60,202 @@ export const ThreadPoolMonitor: React.FC<ThreadPoolMonitorProps> = ({
     return `${minutes}m`
   }
 
-  // 使用真实历史数据，如果没有则使用当前活跃任务数填充
+  // Get Chart Data
   const getChartData = () => {
     if (historyData && historyData.length > 0) {
-      // 使用真实历史数据，过滤掉空时间标签（用于显示优化）
-      return historyData
-        .map(item => ({
-          time: item.time,
-          tasks: item.tasks
-        }))
-        .filter(item => item.time !== '') // 移除空标签，但保留数据点
-    } else {
-      // 如果没有历史数据，使用当前活跃任务数作为单点数据
-      return [
-        {
-          time: 'Now',
-          tasks: stats.active_tasks || 0
-        }
-      ]
+      return historyData.map((item, index) => ({
+        tasks: item.tasks,
+        index: index,
+        time: item.time
+      }))
     }
-  }
-
-  const chartData = getChartData()
-  
-  // 确保至少有一个数据点
-  if (chartData.length === 0) {
-    chartData.push({
-      time: 'Now',
-      tasks: stats.active_tasks || 0
+    // Generate placeholder data with smooth curve
+    const currentTasks = stats.active_tasks || 0
+    const points = 20
+    return Array.from({ length: points }, (_, i) => {
+      const progress = i / (points - 1)
+      const wave = Math.sin(progress * Math.PI * 2) * 0.3
+      const value = Math.max(0, currentTasks * (0.7 + wave))
+      return { 
+        tasks: Math.round(value * 10) / 10,
+        index: i,
+        time: ''
+      }
     })
   }
 
+  const chartData = getChartData()
+  const gradientId = `gradient-${title.replace(/\s+/g, '-').toLowerCase()}`
+  
+  // Theme configuration
+  const isAmber = color === '#f59e0b'
+  const theme = isAmber 
+    ? { 
+        bgFrom: 'from-amber-500',
+        bgTo: 'to-orange-500',
+        lightBg: 'bg-amber-50',
+        ringColor: 'ring-amber-200',
+        textColor: 'text-amber-700',
+        iconBg: 'bg-amber-100',
+        iconColor: 'text-amber-600',
+        progressBg: 'bg-amber-100',
+        progressBar: 'bg-gradient-to-r from-amber-400 to-orange-500'
+      }
+    : { 
+        bgFrom: 'from-blue-500',
+        bgTo: 'to-indigo-500',
+        lightBg: 'bg-blue-50',
+        ringColor: 'ring-blue-200',
+        textColor: 'text-blue-700',
+        iconBg: 'bg-blue-100',
+        iconColor: 'text-blue-600',
+        progressBg: 'bg-blue-100',
+        progressBar: 'bg-gradient-to-r from-blue-400 to-indigo-500'
+      }
+
   return (
-    <div className="card">
-      {/* Header */}
-      <div className="flex items-center justify-between mb-6">
-        <div className="flex items-center gap-2">
-          {icon}
-          <h3 className="font-semibold text-gray-900">{title}</h3>
+    <div className="relative overflow-hidden rounded-2xl bg-white shadow-lg border border-gray-200 hover:shadow-xl transition-all duration-300">
+      {/* Header with gradient background */}
+      <div className={`relative bg-gradient-to-r ${theme.bgFrom} ${theme.bgTo} p-5`}>
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-3">
+            <div className="p-2.5 rounded-xl bg-white/20 backdrop-blur-sm">
+              {icon && React.cloneElement(icon as React.ReactElement, { 
+                className: 'w-5 h-5 text-white' 
+              })}
+            </div>
+            <div>
+              <h3 className="font-bold text-white text-lg tracking-tight">{title}</h3>
+              <div className="flex items-center gap-2 mt-0.5">
+                <span className="relative flex h-2 w-2">
+                  <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-green-300 opacity-75"></span>
+                  <span className="relative inline-flex rounded-full h-2 w-2 bg-green-400"></span>
+                </span>
+                <span className="text-xs text-white/90 font-medium">
+                  UP {formatUptime(stats.uptime_seconds)}
+                </span>
+              </div>
+            </div>
+          </div>
+          
+          {/* Active Tasks Display */}
+          <div className="text-right">
+            <div className="text-4xl font-black text-white tracking-tighter tabular-nums">
+              {stats.active_tasks}
+            </div>
+            <div className="text-[10px] font-bold text-white/70 uppercase tracking-widest">
+              Active
+            </div>
+          </div>
         </div>
-        <div className="flex items-center gap-2">
-          <div className={`w-2 h-2 rounded-full ${stats.initialized ? 'bg-green-500' : 'bg-gray-400'}`}></div>
-          <span className="text-xs text-gray-500">
-            {stats.initialized ? '运行中' : '已停止'}
-          </span>
+
+        {/* Load Progress Bar */}
+        <div className="mt-4">
+          <div className="flex items-center justify-between mb-1.5">
+            <span className="text-xs font-semibold text-white/90">Load</span>
+            <span className="text-xs font-bold text-white tabular-nums">
+              {utilizationRate.toFixed(1)}%
+            </span>
+          </div>
+          <div className="w-full bg-white/20 rounded-full h-2 overflow-hidden backdrop-blur-sm">
+            <div 
+              className="h-full bg-white/90 rounded-full transition-all duration-500 shadow-sm"
+              style={{ width: `${Math.min(utilizationRate, 100)}%` }}
+            />
+          </div>
         </div>
       </div>
 
-      {/* Main Stats Grid */}
-      <div className="grid grid-cols-2 gap-4 mb-6">
-        {/* Utilization Rate */}
-        <div className="flex flex-col items-center">
-          <CircularProgress
-            percentage={utilizationRate}
-            size={100}
-            strokeWidth={6}
-            color={color}
-            label="利用率"
-          />
-        </div>
-
-        {/* Success Rate */}
-        <div className="flex flex-col items-center">
-          <CircularProgress
-            percentage={stats.success_rate}
-            size={100}
-            strokeWidth={6}
-            color="#10b981"
-            label="成功率"
-          />
-        </div>
-      </div>
-
-      {/* Detailed Stats */}
-      <div className="grid grid-cols-2 gap-3 mb-4">
-        <div className="bg-blue-50 rounded-lg p-3">
-          <div className="flex items-center gap-2 mb-1">
-            <Zap className="w-4 h-4 text-blue-600" />
-            <span className="text-xs text-gray-600">工作线程</span>
-          </div>
-          <div className="flex items-center gap-1">
-            <div className="text-xl font-bold text-gray-900">{stats.max_workers || 'N/A'}</div>
-            {stats.max_workers_auto && (
-              <span className="text-xs text-blue-600 font-medium">自动</span>
-            )}
-          </div>
-        </div>
-
-        <div className="bg-orange-50 rounded-lg p-3">
-          <div className="flex items-center gap-2 mb-1">
-            <Activity className="w-4 h-4 text-orange-600" />
-            <span className="text-xs text-gray-600">活跃任务</span>
-          </div>
-          <div className="text-xl font-bold text-gray-900">{stats.active_tasks}</div>
-        </div>
-
-        <div className="bg-green-50 rounded-lg p-3">
-          <div className="flex items-center gap-2 mb-1">
-            <CheckCircle className="w-4 h-4 text-green-600" />
-            <span className="text-xs text-gray-600">已完成</span>
-          </div>
-          <div className="text-xl font-bold text-gray-900">{stats.completed_tasks}</div>
-        </div>
-
-        <div className="bg-red-50 rounded-lg p-3">
-          <div className="flex items-center gap-2 mb-1">
-            <XCircle className="w-4 h-4 text-red-600" />
-            <span className="text-xs text-gray-600">失败</span>
-          </div>
-          <div className="text-xl font-bold text-gray-900">{stats.failed_tasks}</div>
-        </div>
-      </div>
-
-      {/* Activity Chart */}
-      <div className="border-t pt-4">
+      {/* Chart Section */}
+      <div className="p-5 bg-gray-50/50">
         <div className="flex items-center gap-2 mb-3">
-          <Activity className="w-4 h-4 text-gray-500" />
-          <span className="text-sm font-medium text-gray-700">活跃度趋势</span>
+          <TrendingUp className="w-4 h-4 text-gray-500" />
+          <h4 className="text-xs font-bold text-gray-600 uppercase tracking-wider">Activity Trend</h4>
         </div>
-        <ResponsiveContainer width="100%" height={80}>
-          <AreaChart data={chartData}>
-            <defs>
-              <linearGradient id={`gradient-${title}`} x1="0" y1="0" x2="0" y2="1">
-                <stop offset="5%" stopColor={color} stopOpacity={0.3}/>
-                <stop offset="95%" stopColor={color} stopOpacity={0}/>
-              </linearGradient>
-            </defs>
-            <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
-            <XAxis 
-              dataKey="time" 
-              tick={{ fontSize: 10 }}
-              stroke="#9ca3af"
-              tickFormatter={(value) => value || ''}  // 空标签不显示
-              interval="preserveStartEnd"  // 只显示首尾标签
-            />
-            <YAxis 
-              tick={{ fontSize: 10 }}
-              stroke="#9ca3af"
-            />
-            <Tooltip 
-              contentStyle={{ 
-                backgroundColor: 'rgba(255, 255, 255, 0.9)',
-                border: '1px solid #e5e7eb',
-                borderRadius: '6px',
-                fontSize: '12px'
-              }}
-            />
-            <Area 
-              type="monotone" 
-              dataKey="tasks" 
-              stroke={color} 
-              fill={`url(#gradient-${title})`}
-              strokeWidth={2}
-            />
-          </AreaChart>
-        </ResponsiveContainer>
+        <div className="bg-white rounded-xl p-4 border border-gray-200 shadow-sm">
+          <ResponsiveContainer width="100%" height={120}>
+            <AreaChart data={chartData} margin={{ top: 5, right: 5, left: -7, bottom: 5 }}>
+              <defs>
+                <linearGradient id={gradientId} x1="0" y1="0" x2="0" y2="1">
+                  <stop offset="5%" stopColor={color} stopOpacity={0.3}/>
+                  <stop offset="95%" stopColor={color} stopOpacity={0.05}/>
+                </linearGradient>
+              </defs>
+              <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
+              <XAxis 
+                dataKey="index" 
+                hide={true}
+              />
+              <YAxis 
+                stroke="#999" 
+                tick={{ fontSize: 11, fill: '#666' }}
+                width={32}
+              />
+              <Tooltip 
+                contentStyle={{ 
+                  backgroundColor: 'rgba(255, 255, 255, 0.95)',
+                  border: '1px solid #e5e7eb',
+                  borderRadius: '8px',
+                  fontSize: '12px',
+                  padding: '8px 12px'
+                }}
+                labelStyle={{ fontWeight: 'bold', color: '#374151' }}
+              />
+              <Area 
+                type="monotone" 
+                dataKey="tasks" 
+                stroke={color} 
+                fill={`url(#${gradientId})`} 
+                strokeWidth={2.5}
+                isAnimationActive={true}
+                animationDuration={800}
+              />
+            </AreaChart>
+          </ResponsiveContainer>
+        </div>
       </div>
 
-      {/* Footer Stats */}
-      <div className="border-t pt-3 mt-3 flex items-center justify-between text-xs text-gray-500">
-        <div className="flex items-center gap-1">
-          <Clock className="w-3 h-3" />
-          <span>运行时间: {formatUptime(stats.uptime_seconds)}</span>
-        </div>
-        <div>
-          总任务: {stats.total_tasks}
+      {/* Stats Grid */}
+      <div className="px-5 pb-5">
+        <div className="grid grid-cols-3 gap-3">
+          {/* Workers */}
+          <div className="bg-gradient-to-br from-gray-50 to-gray-100 rounded-xl p-3.5 border border-gray-200">
+            <div className="flex items-center gap-1.5 mb-2">
+              <Zap className="w-3.5 h-3.5 text-gray-500" />
+              <span className="text-[10px] font-bold text-gray-500 uppercase tracking-wider">Workers</span>
+            </div>
+            <div className="flex items-baseline gap-1.5">
+              <span className="text-2xl font-black text-gray-900 tabular-nums">{stats.max_workers}</span>
+              {stats.max_workers_auto && (
+                <span className="text-[9px] font-bold text-blue-600 bg-blue-100 px-1.5 py-0.5 rounded">AUTO</span>
+              )}
+            </div>
+          </div>
+          
+          {/* Success Rate */}
+          <div className="bg-gradient-to-br from-green-50 to-emerald-50 rounded-xl p-3.5 border border-green-200">
+            <div className="flex items-center gap-1.5 mb-2">
+              <CheckCircle className="w-3.5 h-3.5 text-green-600" />
+              <span className="text-[10px] font-bold text-green-700 uppercase tracking-wider">Success</span>
+            </div>
+            <div className="flex items-baseline gap-0.5">
+              <span className="text-2xl font-black text-green-900 tabular-nums">{stats.success_rate.toFixed(0)}</span>
+              <span className="text-sm font-bold text-green-600">%</span>
+            </div>
+          </div>
+
+          {/* Total Tasks */}
+          <div className="bg-gradient-to-br from-purple-50 to-violet-50 rounded-xl p-3.5 border border-purple-200">
+            <div className="flex items-center gap-1.5 mb-2">
+              <Box className="w-3.5 h-3.5 text-purple-600" />
+              <span className="text-[10px] font-bold text-purple-700 uppercase tracking-wider">Total</span>
+            </div>
+            <div className="text-2xl font-black text-purple-900 tabular-nums">
+              {stats.total_tasks > 999 ? `${(stats.total_tasks / 1000).toFixed(1)}k` : stats.total_tasks}
+            </div>
+          </div>
         </div>
       </div>
     </div>
   )
 }
-

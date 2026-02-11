@@ -111,23 +111,23 @@ export default function MessageLogPage() {
               {isConnected ? (
                 <>
                   <Wifi className="w-4 h-4 text-green-500" />
-                  <span className="text-green-600 font-medium">实时</span>
+                  <span className="text-green-600 font-medium">{t('messages.realtime')}</span>
                 </>
               ) : (
                 <>
                   <WifiOff className="w-4 h-4 text-orange-500" />
-                  <span className="text-orange-600 font-medium">轮询</span>
+                  <span className="text-orange-600 font-medium">{t('messages.polling')}</span>
                 </>
               )}
             </div>
           </div>
           <p className="text-gray-500 text-sm mt-1">
-            查看消息、通知和请求事件{isConnected ? ' (实时推送)' : ' (定时刷新)'}
+            {t('messages.description')} {isConnected ? ` (${t('messages.realtimePush')})` : ` (${t('messages.pollingRefresh')})`}
           </p>
         </div>
         <div className="flex items-center gap-2 sm:gap-4 flex-nowrap flex-shrink-0">
           <label className="flex items-center gap-2 text-sm text-gray-600 cursor-pointer whitespace-nowrap">
-            <span>自动刷新</span>
+            <span>{t('common.autoRefresh')}</span>
             <button
               type="button"
               onClick={() => setAutoRefresh(!autoRefresh)}
@@ -146,10 +146,10 @@ export default function MessageLogPage() {
             onChange={(e) => setLimit(Number(e.target.value))}
             className="input py-2 text-sm min-w-[120px]"
           >
-            <option value={50}>最近 50 条</option>
-            <option value={100}>最近 100 条</option>
-            <option value={200}>最近 200 条</option>
-            <option value={500}>最近 500 条</option>
+            <option value={50}>{t('common.recentEntries', { count: 50 })}</option>
+            <option value={100}>{t('common.recentEntries', { count: 100 })}</option>
+            <option value={200}>{t('common.recentEntries', { count: 200 })}</option>
+            <option value={500}>{t('common.recentEntries', { count: 500 })}</option>
           </select>
           <button
             onClick={() => loadMessages(true)}
@@ -157,7 +157,7 @@ export default function MessageLogPage() {
             className="btn btn-secondary flex items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed whitespace-nowrap"
           >
             <RefreshCw className={`w-4 h-4 ${refreshing ? 'animate-spin' : ''}`} />
-            <span>刷新</span>
+            <span>{t('common.refresh')}</span>
           </button>
         </div>
       </div>
@@ -172,7 +172,7 @@ export default function MessageLogPage() {
               : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
           }`}
         >
-          全部 ({messages.length})
+          {t('common.all')} ({messages.length})
         </button>
         <button
           onClick={() => setFilter('message')}
@@ -183,7 +183,7 @@ export default function MessageLogPage() {
           }`}
         >
           <MessageSquare className="w-4 h-4" />
-          消息 ({messages.filter(m => !(m as any).is_system).length})
+          {t('messages.message')} ({messages.filter(m => !(m as any).is_system).length})
         </button>
         <button
           onClick={() => setFilter('notice')}
@@ -194,7 +194,7 @@ export default function MessageLogPage() {
           }`}
         >
           <Bell className="w-4 h-4" />
-          通知 ({messages.filter(m => (m as any).event_type === 'notice').length})
+          {t('messages.notice')} ({messages.filter(m => (m as any).event_type === 'notice').length})
         </button>
         <button
           onClick={() => setFilter('request')}
@@ -205,7 +205,7 @@ export default function MessageLogPage() {
           }`}
         >
           <UserPlus className="w-4 h-4" />
-          请求 ({messages.filter(m => (m as any).event_type === 'request').length})
+          {t('messages.request')} ({messages.filter(m => (m as any).event_type === 'request').length})
         </button>
       </div>
 
@@ -214,8 +214,12 @@ export default function MessageLogPage() {
         {filteredMessages.length === 0 ? (
           <div className="card text-center py-12">
             <MessageSquare className="w-12 h-12 text-gray-400 mx-auto mb-4" />
-            <h3 className="text-lg font-medium text-gray-900 mb-2">暂无{filter === 'all' ? '事件' : filter === 'message' ? '消息' : filter === 'notice' ? '通知' : '请求'}</h3>
-            <p className="text-gray-500">当前没有接收到{filter === 'all' ? '任何事件' : filter === 'message' ? '任何消息' : filter === 'notice' ? '任何通知' : '任何请求'}</p>
+            <h3 className="text-lg font-medium text-gray-900 mb-2">
+              {filter === 'all' ? t('messages.noEvents') : filter === 'message' ? t('messages.noMessages') : filter === 'notice' ? t('messages.noNotices') : t('messages.noRequests')}
+            </h3>
+            <p className="text-gray-500">
+              {filter === 'all' ? t('messages.noEventsDesc') : filter === 'message' ? t('messages.noMessagesDesc') : filter === 'notice' ? t('messages.noNoticesDesc') : t('messages.noRequestsDesc')}
+            </p>
           </div>
         ) : (
           filteredMessages.map((msg, index) => {
@@ -245,12 +249,12 @@ export default function MessageLogPage() {
                     <div className="flex-1 min-w-0">
                       <div className="flex items-center gap-2 mb-2 flex-wrap">
                         <span className="font-medium text-orange-900">
-                          {eventType === 'notice' ? '系统通知' : eventType === 'request' ? '请求事件' : '系统消息'}
+                          {eventType === 'notice' ? t('messages.systemNotice') : eventType === 'request' ? t('messages.requestEvent') : t('messages.systemMessage')}
                         </span>
                         {msg.group_id && (
                           <div className="flex items-center gap-1 text-xs text-orange-700 bg-orange-100 px-2 py-1 rounded">
                             <Users className="w-3 h-3" />
-                            <span>群 {msg.group_id}</span>
+                            <span>{t('messages.group')} {msg.group_id}</span>
                           </div>
                         )}
                         <div className="flex items-center gap-1 text-xs text-orange-700">
@@ -294,21 +298,21 @@ export default function MessageLogPage() {
                     <div className="flex items-center gap-2 mb-2 flex-wrap">
                       <span className={`font-medium ${isSelf ? 'text-green-900' : 'text-gray-900'}`}>
                         {msg.sender?.nickname || `User ${msg.user_id}`}
-                        {isSelf && <span className="ml-2 text-xs text-green-600">(我)</span>}
+                        {isSelf && <span className="ml-2 text-xs text-green-600">{t('messages.me')}</span>}
                       </span>
                       {msg.message_type === 'group' ? (
                         <div className={`flex items-center gap-1 text-xs px-2 py-1 rounded ${
                           isSelf ? 'text-green-700 bg-green-100' : 'text-gray-500 bg-blue-50'
                         }`}>
                           <Users className="w-3 h-3" />
-                          <span>群 {msg.group_id}</span>
+                          <span>{t('messages.group')} {msg.group_id}</span>
                         </div>
                       ) : (
                         <div className={`flex items-center gap-1 text-xs px-2 py-1 rounded ${
                           isSelf ? 'text-green-700 bg-green-100' : 'text-gray-500 bg-purple-50'
                         }`}>
                           <User className="w-3 h-3" />
-                          <span>私聊</span>
+                          <span>{t('messages.private')}</span>
                         </div>
                       )}
                       <div className={`flex items-center gap-1 text-xs ${

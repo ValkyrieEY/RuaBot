@@ -247,13 +247,13 @@ export default function SystemPage() {
 
         {/* AI Thread Pool Settings */}
         <div className="border-t border-gray-200 pt-4 mt-4">
-          <h3 className="text-sm font-medium text-gray-900 mb-3">AI多线程处理</h3>
+          <h3 className="text-sm font-medium text-gray-900 mb-3">{t('system.aiThreadPool')}</h3>
           
           {/* Thread Pool Enabled */}
           <div className="flex items-center justify-between py-3">
             <div>
-              <label className="text-sm font-medium text-gray-900">启用多线程处理</label>
-              <p className="text-xs text-gray-500 mt-1">启用后，AI消息处理将使用线程池，支持多群并发处理，避免卡死。线程数由系统自动管理。</p>
+              <label className="text-sm font-medium text-gray-900">{t('system.enableAiThreadPool')}</label>
+              <p className="text-xs text-gray-500 mt-1">{t('system.aiThreadPoolDesc')}</p>
             </div>
             <button
               type="button"
@@ -272,13 +272,13 @@ export default function SystemPage() {
 
         {/* Plugin Thread Pool Settings */}
         <div className="border-t border-gray-200 pt-4 mt-4">
-          <h3 className="text-sm font-medium text-gray-900 mb-3">框架连接器多线程处理</h3>
+          <h3 className="text-sm font-medium text-gray-900 mb-3">{t('system.pluginThreadPool')}</h3>
           
           {/* Plugin Thread Pool Enabled */}
           <div className="flex items-center justify-between py-3">
             <div>
-              <label className="text-sm font-medium text-gray-900">启用框架连接器线程池</label>
-              <p className="text-xs text-gray-500 mt-1">启用后，框架层面的插件管理操作（插件加载、配置读写、进程通信等）将在独立线程池中执行，避免阻塞主事件循环。线程数由系统自动管理。</p>
+              <label className="text-sm font-medium text-gray-900">{t('system.enablePluginThreadPool')}</label>
+              <p className="text-xs text-gray-500 mt-1">{t('system.pluginThreadPoolDesc')}</p>
             </div>
             <button
               type="button"
@@ -309,43 +309,43 @@ export default function SystemPage() {
       <form onSubmit={handleSubmit} className="card space-y-6">
         <div className="flex items-center gap-3 mb-4">
           <Server className="w-6 h-6 text-primary-600" />
-          <h2 className="text-xl font-semibold text-gray-900">腾讯云TTS配置</h2>
+          <h2 className="text-xl font-semibold text-gray-900">{t('system.ttsConfig')}</h2>
         </div>
 
         <p className="text-sm text-gray-600">
-          配置腾讯云语音合成服务的API密钥。用于AI生成语音消息功能。
+          {t('system.ttsConfigDesc')}
           <a 
             href="https://cloud.tencent.com/document/api/1073/37995" 
             target="_blank" 
             rel="noopener noreferrer"
             className="text-primary-600 hover:text-primary-700 ml-1 underline"
           >
-            查看文档
+            {t('system.viewDocs')}
           </a>
         </p>
 
         {/* SecretId */}
         <div>
           <label className="label">
-            SecretId <span className="text-red-500">*</span>
+            {t('system.secretId')} <span className="text-red-500">*</span>
           </label>
           <input
             type="text"
             value={tencentSecretId}
             onChange={(e) => setTencentSecretId(e.target.value)}
-            placeholder="请输入腾讯云SecretId"
+            placeholder={t('system.secretIdPlaceholder')}
             className="input"
           />
           <p className="text-xs text-gray-500 mt-1">
-            在腾讯云控制台的"访问管理" &gt; "API密钥管理"中获取
+            {t('system.secretIdHelp')}
           </p>
         </div>
 
         {/* SecretKey */}
         <div>
           <label className="label">
-            SecretKey {config?.tencent_cloud?.secret_key_set && !showTencentKey && (
-              <span className="text-green-600 text-xs ml-2">(已设置)</span>
+            {t('system.secretKey')} {config?.tencent_cloud?.secret_key_set && !showTencentKey && (
+              <span className="text-green-600 text-xs ml-2">{t('system.secretKeySet')}</span>
             )}
           </label>
           <div className="relative">
@@ -353,7 +353,7 @@ export default function SystemPage() {
               type={showTencentKey ? "text" : "password"}
               value={tencentSecretKey}
               onChange={(e) => setTencentSecretKey(e.target.value)}
-              placeholder={config?.tencent_cloud?.secret_key_set ? "留空则不修改，输入新值则更新" : "请输入腾讯云SecretKey"}
+              placeholder={config?.tencent_cloud?.secret_key_set ? t('system.secretKeyUpdatePlaceholder') : t('system.secretKeyPlaceholder')}
               className="input pr-10"
             />
             {config?.tencent_cloud?.secret_key_set && (
@@ -362,20 +362,20 @@ export default function SystemPage() {
                 onClick={() => setShowTencentKey(!showTencentKey)}
                 className="absolute right-2 top-1/2 -translate-y-1/2 text-gray-500 hover:text-gray-700 text-sm"
               >
-                {showTencentKey ? "隐藏" : "显示"}
+                {showTencentKey ? t('system.hide') : t('system.show')}
               </button>
             )}
           </div>
           <p className="text-xs text-gray-500 mt-1">
             {config?.tencent_cloud?.secret_key_set 
-              ? "已配置密钥，留空则不修改。如需更新，请输入新密钥。"
-              : "在腾讯云控制台的「访问管理」 &gt; 「API密钥管理」中获取"}
+              ? t('system.secretKeyUpdateHelp')
+              : t('system.secretKeyHelp')}
           </p>
         </div>
 
         <div className="bg-blue-50 border border-blue-200 rounded-lg p-4">
           <p className="text-sm text-blue-800">
-            <strong>提示：</strong>配置保存后，系统会优先使用此处的配置。如果未配置，则会尝试从环境变量读取。
+            <strong>{t('common.tips')}:</strong>{t('system.configTip')}
           </p>
         </div>
 
@@ -385,7 +385,7 @@ export default function SystemPage() {
           className="btn btn-primary w-full flex items-center justify-center gap-2"
         >
           <Save className="w-5 h-5" />
-          {saving ? '保存中...' : '保存TTS配置'}
+          {saving ? t('system.saving') : t('system.saveTTSConfig')}
         </button>
       </form>
 

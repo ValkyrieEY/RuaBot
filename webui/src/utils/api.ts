@@ -196,6 +196,11 @@ class ApiClient {
     return response.data
   }
 
+  async reconnectOneBot(): Promise<{ success: boolean; message: string }> {
+    const response = await this.client.post('/onebot/reconnect')
+    return response.data
+  }
+
   async getLoginInfo(): Promise<any> {
     const response = await this.client.get('/onebot/login-info')
     return response.data

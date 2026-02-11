@@ -344,20 +344,35 @@ install_python() {
             fi
             
             log_info "下载并安装 pyenv..."
-            if (
-                curl -# https://pyenv.run 2>&1 | tee /tmp/pyenv_install.log | while IFS= read -r line; do
-                    if [[ "$line" =~ (Cloning|Installing|Downloading|Building) ]]; then
-                        echo -e "${BLUE}[INFO]${NC} $line"
-                    fi
-                done
-            ) && [ -f "$PYENV_DIR/bin/pyenv" ]; then
+            
+            # pyenv.run 返回的是一个脚本，需要执行它
+            # 设置 PYENV_ROOT 环境变量，让 pyenv 安装到指定目录
+            export PYENV_ROOT="$PYENV_DIR"
+            export PATH="$PYENV_ROOT/bin:$PATH"
+            
+            # 下载并执行 pyenv 安装脚本
+            # 注意：pyenv.run 返回的脚本会调用 pyenv-installer
+            if curl -# https://pyenv.run 2>&1 | bash 2>&1 | tee /tmp/pyenv_install.log | while IFS= read -r line; do
+                if [[ "$line" =~ (Cloning|Installing|Downloading|Building|Installed|Successfully|=>) ]]; then
+                    echo -e "${BLUE}[INFO]${NC} $line"
+                elif [[ "$line" =~ (error|Error|ERROR|failed|Failed|fatal) ]]; then
+                    echo -e "${YELLOW}[WARN]${NC} $line"
+                fi
+            done && [ -f "$PYENV_DIR/bin/pyenv" ]; then
                 install_success=true
             else
-                if [ $retry_count -lt $max_retries ]; then
+                # 等待一下，pyenv 安装可能需要时间
+                sleep 2
+                
+                # 再次检查是否真的失败了
+                if [ -f "$PYENV_DIR/bin/pyenv" ]; then
+                    install_success=true
+                elif [ $retry_count -lt $max_retries ]; then
                     log_warning "pyenv 安装失败，将在 3 秒后自动重试..."
                 else
                     log_error "pyenv 安装失败（已重试 $max_retries 次），请检查网络连接"
                     log_info "你可以查看日志: cat /tmp/pyenv_install.log"
+                    log_info "或者手动安装: curl https://pyenv.run | PYENV_ROOT=$PYENV_DIR bash"
                     exit 1
                 fi
             fi
@@ -383,9 +398,15 @@ install_python() {
         eval "$(pyenv init -)" 2>/dev/null || true
     fi
     
-    # 安装指定版本的 Python
-    log_info "正在安装 Python $PYTHON_VERSION（这可能需要 5-15 分钟，请耐心等待）..."
-    log_info "正在下载 Python 源码..."
+    # 检查 Python 是否已经安装（如果 pyenv 存在但 Python 未安装）
+    if [ -d "$PYENV_DIR/versions/$PYTHON_VERSION" ]; then
+        log_info "检测到 Python $PYTHON_VERSION 已安装，跳过编译..."
+        pyenv local $PYTHON_VERSION
+        log_success "使用已安装的 Python: $(python --version 2>&1)"
+    else
+        # 安装指定版本的 Python
+        log_info "正在安装 Python $PYTHON_VERSION（这可能需要 5-15 分钟，请耐心等待）..."
+        log_info "正在下载 Python 源码..."
     
     # 启动后台提示进程
     (
@@ -410,14 +431,32 @@ install_python() {
             # 停止提示进程
             kill $PROMPT_PID 2>/dev/null || true
             
-            # 显示关键步骤
-            if [[ "$line" =~ (Downloading|Installing|Building|Compiling|Linking|running|configure|make) ]]; then
+            # 显示编译和安装命令（让用户知道程序在运行）
+            if [[ "$line" =~ ^gcc\ .*-o\ .*\.o ]]; then
+                # 这是正常的编译命令，显示为 INFO（让用户知道在编译）
+                # 只显示文件名，避免刷屏
+                local file=$(echo "$line" | grep -oE '[^/]+\.(c|o)$' | tail -1)
+                if [ -n "$file" ]; then
+                    echo -ne "\r${BLUE}[INFO]${NC} 正在编译: $file                    "
+                fi
+            elif [[ "$line" =~ ^/usr/bin/install\ .*-c\ .*-m\ .* ]]; then
+                # 这是正常的安装命令，显示为 INFO（让用户知道在安装文件）
+                local file=$(echo "$line" | grep -oE '[^/]+\.(h|py|so|a)$' | tail -1)
+                if [ -n "$file" ]; then
+                    echo -ne "\r${BLUE}[INFO]${NC} 正在安装: $file                    "
+                else
+                    echo -ne "\r${BLUE}[INFO]${NC} 正在安装文件...                    "
+                fi
+            elif [[ "$line" =~ (Downloading|Installing|Building|Compiling|Linking|running|configure|make|checking for|creating|WARNING|please run|Successfully|Installed) ]]; then
                 echo -e "${BLUE}[INFO]${NC} $line"
             elif [[ "$line" =~ (^[[:space:]]*[0-9]+%) ]]; then
                 # 显示百分比进度
                 echo -ne "\r${BLUE}[INFO]${NC} $line                    "
-            elif [[ "$line" =~ (error|Error|ERROR|failed|Failed) ]]; then
+            elif [[ "$line" =~ (fatal|error:|Error:|ERROR:|failed:|Failed:|BUILD FAILED) ]]; then
+                # 只标记真正的错误（带冒号的错误信息或 BUILD FAILED）
                 echo -e "${RED}[ERROR]${NC} $line"
+            elif [[ "$line" =~ (completed|done) ]]; then
+                echo -e "${GREEN}[SUCCESS]${NC} $line"
             fi
         done
         
@@ -434,13 +473,18 @@ install_python() {
     # 确保提示进程停止
     kill $PROMPT_PID 2>/dev/null || true
     
-    pyenv local $PYTHON_VERSION
+        pyenv local $PYTHON_VERSION
+        
+        log_success "Python 安装完成: $(python --version 2>&1)"
+    fi
     
-    log_success "Python 安装完成: $(python --version 2>&1)"
-    
-    # 创建虚拟环境
-    log_info "创建 Python 虚拟环境..."
-    python -m venv "$INSTALL_DIR/venv"
+    # 创建虚拟环境（如果不存在）
+    if [ ! -d "$INSTALL_DIR/venv" ]; then
+        log_info "创建 Python 虚拟环境..."
+        python -m venv "$INSTALL_DIR/venv"
+    else
+        log_info "检测到 Python 虚拟环境已存在，跳过创建..."
+    fi
     source "$INSTALL_DIR/venv/bin/activate"
     
     # 升级 pip（带自动重试机制）
@@ -478,24 +522,58 @@ install_nodejs() {
     
     local NVM_DIR="$INSTALL_DIR/.nvm"
     
-    # 安装 nvm
+    # 安装 nvm（带重试机制）
     if [ ! -d "$NVM_DIR" ]; then
         log_info "正在安装 nvm..."
         log_info "下载 nvm 安装脚本..."
         
+        # 先创建目录，否则 nvm 安装脚本会报错
+        mkdir -p "$NVM_DIR"
+        # 先创建目录，否则 nvm 安装脚本会报错
+        mkdir -p "$NVM_DIR"
         export NVM_DIR="$NVM_DIR"
         
-        # 下载并安装 nvm，显示进度
-        (
-            curl -# -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.39.7/install.sh 2>&1 | bash 2>&1 | while IFS= read -r line; do
-                if [[ "$line" =~ (Cloning|Installing|Downloading|=>) ]]; then
+        local retry_count=0
+        local max_retries=3
+        local install_success=false
+        
+        while [ $retry_count -lt $max_retries ] && [ "$install_success" = false ]; do
+            retry_count=$((retry_count + 1))
+            if [ $retry_count -gt 1 ]; then
+                log_info "第 $retry_count 次尝试安装 nvm（共 $max_retries 次）..."
+                sleep 3
+                # 清理失败的安装，但保留目录
+                rm -rf "$NVM_DIR"/* 2>/dev/null || true
+                mkdir -p "$NVM_DIR"
+            fi
+            
+            log_info "下载并安装 nvm..."
+            # 下载并执行 nvm 安装脚本
+            if curl -# -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.39.7/install.sh 2>&1 | bash 2>&1 | tee /tmp/nvm_install.log | while IFS= read -r line; do
+                if [[ "$line" =~ (Cloning|Installing|Downloading|=>|=> nvm) ]]; then
                     echo -e "${BLUE}[INFO]${NC} $line"
+                elif [[ "$line" =~ (error|Error|ERROR|failed|Failed|fatal) ]]; then
+                    echo -e "${YELLOW}[WARN]${NC} $line"
                 fi
-            done
-        ) || {
-            log_error "nvm 安装失败，请检查网络连接"
-            exit 1
-        }
+            done && [ -s "$NVM_DIR/nvm.sh" ]; then
+                install_success=true
+            else
+                # 等待一下，nvm 安装可能需要时间
+                sleep 2
+                
+                # 再次检查是否真的失败了
+                if [ -s "$NVM_DIR/nvm.sh" ]; then
+                    install_success=true
+                elif [ $retry_count -lt $max_retries ]; then
+                    log_warning "nvm 安装失败，将在 3 秒后自动重试..."
+                else
+                    log_error "nvm 安装失败（已重试 $max_retries 次），请检查网络连接"
+                    log_info "你可以查看日志: cat /tmp/nvm_install.log"
+                    log_info "或者手动安装: curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.39.7/install.sh | NVM_DIR=$NVM_DIR bash"
+                    exit 1
+                fi
+            fi
+        done
         
         # 等待一下确保安装完成
         sleep 2
@@ -506,6 +584,7 @@ install_nodejs() {
             log_success "nvm 安装完成"
         else
             log_error "nvm 安装失败，未找到 nvm.sh"
+            log_info "请检查: ls -la $NVM_DIR/"
             exit 1
         fi
     else
@@ -514,9 +593,16 @@ install_nodejs() {
         [ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"
     fi
     
-    # 安装指定版本的 Node.js
-    log_info "正在安装 Node.js $NODE_VERSION（这可能需要几分钟，请耐心等待）..."
-    log_info "正在下载 Node.js 源码..."
+    # 检查 Node.js 是否已经安装（智能跳过）
+    if [ -d "$NVM_DIR/versions/node/v$NODE_VERSION" ]; then
+        log_info "检测到 Node.js v$NODE_VERSION 已安装，跳过安装..."
+        nvm use $NODE_VERSION
+        log_success "使用已安装的 Node.js: $(node --version 2>&1)"
+        log_success "npm 版本: $(npm --version 2>&1)"
+    else
+        # 安装指定版本的 Node.js
+        log_info "正在安装 Node.js $NODE_VERSION（这可能需要几分钟，请耐心等待）..."
+        log_info "正在下载 Node.js 源码..."
     
     # 启动后台提示进程
     (
@@ -562,13 +648,14 @@ install_nodejs() {
         exit 1
     }
     
-    # 确保提示进程停止
-    kill $PROMPT_PID 2>/dev/null || true
-    
-    nvm use $NODE_VERSION
-    
-    log_success "Node.js 安装完成: $(node --version 2>&1)"
-    log_success "npm 版本: $(npm --version 2>&1)"
+        # 确保提示进程停止
+        kill $PROMPT_PID 2>/dev/null || true
+        
+        nvm use $NODE_VERSION
+        
+        log_success "Node.js 安装完成: $(node --version 2>&1)"
+        log_success "npm 版本: $(npm --version 2>&1)"
+    fi
 }
 
 # 安装项目依赖
@@ -673,10 +760,10 @@ create_config() {
     
     cat > "$INSTALL_DIR/.ruabot.conf" << EOF
 # RuaBot 配置文件
-INSTALL_DIR=$INSTALL_DIR
-PYTHON_VERSION=$PYTHON_VERSION
-NODE_VERSION=$NODE_VERSION
-INSTALL_DATE=$(date +%Y-%m-%d\ %H:%M:%S)
+INSTALL_DIR="$INSTALL_DIR"
+PYTHON_VERSION="$PYTHON_VERSION"
+NODE_VERSION="$NODE_VERSION"
+INSTALL_DATE="$(date +%Y-%m-%d\ %H:%M:%S)"
 EOF
     
     log_success "配置文件创建完成"

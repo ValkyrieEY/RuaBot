@@ -56,7 +56,7 @@ show_logo() {
     cat << "EOF"
 ╔══════════════════════════════════════╗
 ║          RuaBot Manager              ║
-║        命令行管理工具 v0.1.0          ║
+║        命令行管理工具 v0.1.0         ║
 ╚══════════════════════════════════════╝
 EOF
     echo -e "${NC}"
@@ -110,7 +110,13 @@ start_service() {
     mkdir -p "$INSTALL_DIR/logs"
     
     # 启动主程序 (根据实际项目调整启动命令)
-    if [ -f "main.py" ]; then
+    if [ -f "start.sh" ]; then
+        log_info "使用 start.sh 启动..."
+        chmod +x start.sh
+        nohup bash start.sh > "$LOG_FILE" 2>&1 &
+        echo $! > "$PID_FILE"
+        log_success "RuaBot 启动成功 (PID: $(cat $PID_FILE))"
+    elif [ -f "main.py" ]; then
         nohup python main.py > "$LOG_FILE" 2>&1 &
         echo $! > "$PID_FILE"
         log_success "RuaBot 启动成功 (PID: $(cat $PID_FILE))"
@@ -123,7 +129,7 @@ start_service() {
         echo $! > "$PID_FILE"
         log_success "RuaBot 启动成功 (PID: $(cat $PID_FILE))"
     else
-        log_error "找不到启动文件 (main.py 或 index.js)"
+        log_error "找不到启动文件 (start.sh, main.py 或 index.js)"
         return 1
     fi
     
@@ -531,12 +537,14 @@ setup_service() {
     
     # 确定启动命令
     local START_CMD=""
-    if [ -f "$INSTALL_DIR/main.py" ]; then
+    if [ -f "$INSTALL_DIR/start.sh" ]; then
+        START_CMD="/bin/bash $INSTALL_DIR/start.sh"
+    elif [ -f "$INSTALL_DIR/main.py" ]; then
         START_CMD="$INSTALL_DIR/venv/bin/python $INSTALL_DIR/main.py"
     elif [ -f "$INSTALL_DIR/index.js" ]; then
         START_CMD="/bin/bash -c 'export NVM_DIR=\"$INSTALL_DIR/.nvm\"; [ -s \"\$NVM_DIR/nvm.sh\" ] && . \"\$NVM_DIR/nvm.sh\"; node $INSTALL_DIR/index.js'"
     else
-        log_error "找不到启动文件"
+        log_error "找不到启动文件 (start.sh, main.py 或 index.js)"
         return 1
     fi
     

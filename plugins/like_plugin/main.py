@@ -167,10 +167,19 @@ class LikePlugin:
         if not self.can_like_today(user_id):
             msg = f"今天已经给你点过10次{'赞' if action_type == '赞' else '超'}啦，明天再来吧~ (๑•́ ₃ •̀๑)"
             
-            if message_type == 'private':
-                await self.api.send_private_msg(user_id, msg)
-            elif message_type == 'group':
-                await self.api.send_group_msg(group_id, msg)
+            try:
+                if message_type == 'private':
+                    await asyncio.wait_for(
+                        self.api.send_private_msg(user_id, msg),
+                        timeout=10.0
+                    )
+                elif message_type == 'group':
+                    await asyncio.wait_for(
+                        self.api.send_group_msg(group_id, msg),
+                        timeout=10.0
+                    )
+            except (asyncio.TimeoutError, Exception) as e:
+                self.api.log("warning", f"发送限制消息失败: {e}")
             return
         
         try:
@@ -182,11 +191,16 @@ class LikePlugin:
             for i in range(max_attempts):
                 try:
                     result = await self.api.send_like(user_id, times=1)
-                    if result and result.get('success'):
+                    # Check if result indicates success
+                    # send_like now returns {'success': True} on success or {'success': False, 'error': '...'} on failure
+                    if result and result.get('success') is True:
                         success_count += 1
+                        self.api.log("debug", f"点赞成功 ({success_count}/10)")
                     else:
+                        # Get error message
                         error = result.get('error', '') if result else 'Unknown error'
-                        error_str = str(error)
+                        error_str = str(error) if error else 'Unknown error'
+                        
                         # 检查是否是QQ平台每日点赞上限（retcode 1200）
                         if '1200' in error_str or '点赞数已达上限' in error_str or '已达上限' in error_str:
                             # QQ平台每日点赞上限
@@ -194,7 +208,10 @@ class LikePlugin:
                             self.api.log("info", f"达到QQ平台每日点赞上限，已成功点赞 {success_count} 次")
                             break
                         else:
-                            self.api.log("warning", f"点赞失败: {error}")
+                            # Only log warning if error is meaningful
+                            if error_str and error_str != 'Unknown error':
+                                self.api.log("warning", f"点赞失败: {error_str}")
+                            # Continue trying (might be temporary error)
                 except Exception as e:
                     error_str = str(e)
                     # 检查是否是QQ平台每日点赞上限（retcode 1200）
@@ -208,9 +225,11 @@ class LikePlugin:
                 
                 # 如果已经成功10次，也停止（避免超过限制）
                 if success_count >= 10:
+                    self.api.log("info", f"已成功点赞10次，停止")
                     break
                 
-                delay = random.uniform(0.1, 0.5)
+                # 添加延迟，避免请求过快
+                delay = random.uniform(0.2, 0.5)
                 await asyncio.sleep(delay)
             
             # 记录点赞（实际成功次数，最多10次）
@@ -235,24 +254,54 @@ class LikePlugin:
             else:
                 success_msg += f"\n今日{'点赞' if action_type == '赞' else '超'}已达上限啦~"
             
-            # 发送成功消息
-            if message_type == 'private':
-                await self.api.send_private_msg(user_id, success_msg)
-            elif message_type == 'group':
-                await self.api.send_group_msg(group_id, success_msg)
-                
-                # 在群里@用户
-                at_msg = f"[CQ:at,qq={user_id}] 你的名片已获得{self.bot_name}的10次{'点赞' if action_type == '赞' else '超'}！(≧▽≦)/"
-                await self.api.send_group_msg(group_id, at_msg)
+            # 发送成功消息（添加超时保护，避免阻塞）
+            try:
+                if message_type == 'private':
+                    await asyncio.wait_for(
+                        self.api.send_private_msg(user_id, success_msg),
+                        timeout=10.0
+                    )
+                elif message_type == 'group':
+                    await asyncio.wait_for(
+                        self.api.send_group_msg(group_id, success_msg),
+                        timeout=10.0
+                    )
+                    
+                    # 在群里@用户（异步发送，不阻塞）
+                    at_msg = f"[CQ:at,qq={user_id}] 你的名片已获得{self.bot_name}的10次{'点赞' if action_type == '赞' else '超'}！(≧▽≦)/"
+                    # 使用 create_task 异步发送，不等待结果
+                    asyncio.create_task(
+                        asyncio.wait_for(
+                            self.api.send_group_msg(group_id, at_msg),
+                            timeout=10.0
+                        )
+                    )
+            except asyncio.TimeoutError:
+                self.api.log("warning", f"发送成功消息超时，但点赞操作已完成")
+            except Exception as send_error:
+                self.api.log("warning", f"发送成功消息失败: {send_error}，但点赞操作已完成")
         
         except Exception as e:
             self.api.log("error", f"{'点赞' if action_type == '赞' else '超'}操作失败: {e}")
             error_msg = f"{'点赞' if action_type == '赞' else '超'}失败啦...可能是机器人没有权限(｡•́︿•̀｡) 错误: {str(e)}"
             
-            if message_type == 'private':
-                await self.api.send_private_msg(user_id, error_msg)
-            elif message_type == 'group':
-                await self.api.send_group_msg(group_id, error_msg)
+            # 尝试发送错误消息，但不要因为发送失败而再次抛出异常
+            try:
+                if message_type == 'private':
+                    # 使用较短的超时时间，避免在错误处理中再次超时
+                    await asyncio.wait_for(
+                        self.api.send_private_msg(user_id, error_msg),
+                        timeout=10.0
+                    )
+                elif message_type == 'group':
+                    await asyncio.wait_for(
+                        self.api.send_group_msg(group_id, error_msg),
+                        timeout=10.0
+                    )
+            except asyncio.TimeoutError:
+                self.api.log("warning", f"发送错误消息超时，已记录错误日志")
+            except Exception as send_error:
+                self.api.log("warning", f"发送错误消息失败: {send_error}，已记录原始错误: {e}")
     
     async def handle_like_info(self, user_id: int, group_id: int, message_type: str, is_cha: bool = False):
         """处理点赞信息查询"""
@@ -260,10 +309,19 @@ class LikePlugin:
         if is_cha:
             info = info.replace("点赞", "超").replace("赞", "超")
         
-        if message_type == 'private':
-            await self.api.send_private_msg(user_id, info)
-        elif message_type == 'group':
-            await self.api.send_group_msg(group_id, info)
+        try:
+            if message_type == 'private':
+                await asyncio.wait_for(
+                    self.api.send_private_msg(user_id, info),
+                    timeout=10.0
+                )
+            elif message_type == 'group':
+                await asyncio.wait_for(
+                    self.api.send_group_msg(group_id, info),
+                    timeout=10.0
+                )
+        except (asyncio.TimeoutError, Exception) as e:
+            self.api.log("warning", f"发送点赞信息失败: {e}")
 
 
 # 插件入口点

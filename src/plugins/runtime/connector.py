@@ -258,6 +258,9 @@ class PluginRuntimeConnector:
         
         # Pending requests for event context communication
         self.pending_requests: Dict[str, asyncio.Future] = {}
+        
+        # Cleanup task for expired requests
+        self._cleanup_task: Optional[asyncio.Task] = None
     
     async def initialize(self):
         """Initialize plugin runtime."""
@@ -275,6 +278,9 @@ class PluginRuntimeConnector:
             
             # Start heartbeat
             self.heartbeat_task = asyncio.create_task(self._heartbeat_loop())
+            
+            # Start cleanup task for expired requests
+            self._cleanup_task = asyncio.create_task(self._cleanup_expired_requests())
             
             # Initialize plugins
             await self._initialize_plugins()
@@ -478,42 +484,110 @@ class PluginRuntimeConnector:
         # Check if this is asyncio subprocess or Popen fallback
         is_async_process = hasattr(self.runtime_process.stdout, 'readline') and asyncio.iscoroutinefunction(self.runtime_process.stdout.readline)
         
+        consecutive_errors = 0
+        max_consecutive_errors = 10
+        should_call_disconnect = False
+        
         try:
             while self.is_running:
-                if is_async_process:
-                    # Asyncio subprocess
-                    line = await self.runtime_process.stdout.readline()
-                else:
-                    # Popen fallback - use sync readline in executor
-                    loop = asyncio.get_event_loop()
-                    line = await loop.run_in_executor(None, self.runtime_process.stdout.readline)
-                
-                if not line:
-                    break
-                
                 try:
-                    # Parse JSON message
-                    message = json.loads(line.decode().strip())
-                    await self._handle_runtime_message(message)
-                except json.JSONDecodeError as e:
-                    # Don't log the full line if it's too long (might contain base64)
-                    line_str = line.decode().strip()
-                    if len(line_str) > 500:
-                        line_preview = line_str[:200] + f"... (truncated, total {len(line_str)} chars)"
+                    if is_async_process:
+                        # Asyncio subprocess - add timeout to prevent indefinite blocking
+                        try:
+                            line = await asyncio.wait_for(
+                                self.runtime_process.stdout.readline(),
+                                timeout=60.0  # 60 second timeout
+                            )
+                        except asyncio.TimeoutError:
+                            # Timeout is OK, just check if process is still alive
+                            if self.runtime_process and hasattr(self.runtime_process, 'poll'):
+                                if self.runtime_process.poll() is not None:
+                                    logger.warning("Runtime process terminated")
+                                    break
+                            # Continue reading
+                            continue
                     else:
-                        line_preview = line_str
-                    logger.warning(f"Invalid JSON from runtime: {line_preview}")
+                        # Popen fallback - use sync readline in executor with timeout
+                        loop = asyncio.get_event_loop()
+                        try:
+                            line = await asyncio.wait_for(
+                                loop.run_in_executor(None, self.runtime_process.stdout.readline),
+                                timeout=60.0  # 60 second timeout
+                            )
+                        except asyncio.TimeoutError:
+                            # Timeout is OK, check if process is still alive
+                            if self.runtime_process and hasattr(self.runtime_process, 'poll'):
+                                if self.runtime_process.poll() is not None:
+                                    logger.warning("Runtime process terminated")
+                                    break
+                            # Continue reading
+                            continue
+                    
+                    if not line:
+                        # EOF - process may have closed stdout
+                        logger.warning("Runtime stdout closed (EOF)")
+                        # Check if process is still alive
+                        if self.runtime_process and hasattr(self.runtime_process, 'poll'):
+                            if self.runtime_process.poll() is not None:
+                                logger.warning("Runtime process terminated")
+                                break
+                        # Wait a bit before checking again (process might restart)
+                        await asyncio.sleep(1.0)
+                        continue
+                    
+                    # Reset error counter on successful read
+                    consecutive_errors = 0
+                    
+                    try:
+                        # Parse JSON message
+                        message = json.loads(line.decode().strip())
+                        await self._handle_runtime_message(message)
+                    except json.JSONDecodeError as e:
+                        # Don't log the full line if it's too long (might contain base64)
+                        line_str = line.decode().strip()
+                        if len(line_str) > 500:
+                            line_preview = line_str[:200] + f"... (truncated, total {len(line_str)} chars)"
+                        else:
+                            line_preview = line_str
+                        logger.warning(f"Invalid JSON from runtime: {line_preview}")
+                        consecutive_errors += 1
+                        if consecutive_errors >= max_consecutive_errors:
+                            logger.error(f"Too many consecutive JSON decode errors ({consecutive_errors}), stopping reader")
+                            break
+                    except Exception as e:
+                        logger.error(f"Error handling runtime message: {e}", exc_info=True)
+                        consecutive_errors += 1
+                        if consecutive_errors >= max_consecutive_errors:
+                            logger.error(f"Too many consecutive errors ({consecutive_errors}), stopping reader")
+                            break
+                
                 except Exception as e:
-                    logger.error(f"Error handling runtime message: {e}", exc_info=True)
+                    consecutive_errors += 1
+                    logger.error(f"Error reading from runtime stdout: {e}", exc_info=True)
+                    if consecutive_errors >= max_consecutive_errors:
+                        logger.error(f"Too many consecutive read errors ({consecutive_errors}), stopping reader")
+                        should_call_disconnect = True
+                        break
+                    # Wait before retrying
+                    await asyncio.sleep(0.5)
         
         except asyncio.CancelledError:
             pass
         except Exception as e:
-            logger.error(f"Runtime output reader error: {e}", exc_info=True)
+            logger.error(f"Runtime output reader fatal error: {e}", exc_info=True)
         finally:
+            # Mark as not running, but don't immediately call disconnect_callback
+            # Let the heartbeat and other mechanisms handle reconnection
             self.is_running = False
-            if self.disconnect_callback:
-                await self.disconnect_callback()
+            logger.warning("Runtime output reader stopped. Plugin runtime may be disconnected.")
+            
+            # Only call disconnect callback if we have one and it's a real disconnection
+            # (not just a temporary read error)
+            if self.disconnect_callback and should_call_disconnect:
+                try:
+                    await self.disconnect_callback()
+                except Exception as callback_error:
+                    logger.error(f"Error in disconnect callback: {callback_error}", exc_info=True)
     
     async def _handle_runtime_message(self, message: Dict[str, Any]):
         """Handle message from plugin runtime.
@@ -597,8 +671,12 @@ class PluginRuntimeConnector:
                         'event_context': event_context_dict,
                         'error': error
                     }
-                    future.set_result(result)
-                    logger.debug(f"Set result for request {request_id}")
+                    try:
+                        future.set_result(result)
+                        logger.debug(f"Set result for request {request_id}")
+                    except Exception as e:
+                        # Future may have been cancelled or already set
+                        logger.debug(f"Failed to set result for request {request_id}: {e}")
                 else:
                     logger.debug(f"Future already done for request_id={request_id} (likely timeout, but response arrived)")
             else:
@@ -847,18 +925,71 @@ class PluginRuntimeConnector:
             logger.error(f"Error sending to runtime: {e}", exc_info=True)
     
     async def _heartbeat_loop(self):
-        """Send periodic heartbeat to runtime."""
+        """Send periodic heartbeat to runtime.
+        
+        Inspired by LangBot: heartbeat failure doesn't immediately disconnect,
+        just logs the error. This prevents false disconnections due to temporary issues.
+        """
+        consecutive_failures = 0
+        max_consecutive_failures = 5  # Allow 5 consecutive failures before considering disconnection
+        
         try:
             while self.is_running:
                 await asyncio.sleep(30)  # Every 30 seconds
-                await self._send_to_runtime({
-                    'type': 'heartbeat',
-                    'data': {'timestamp': datetime.utcnow().isoformat()}
-                })
+                
+                try:
+                    await self._send_to_runtime({
+                        'type': 'heartbeat',
+                        'data': {'timestamp': datetime.utcnow().isoformat()}
+                    })
+                    consecutive_failures = 0  # Reset on success
+                    logger.debug("Heartbeat sent successfully")
+                except Exception as e:
+                    consecutive_failures += 1
+                    logger.debug(f"Heartbeat failed ({consecutive_failures}/{max_consecutive_failures}): {e}")
+                    
+                    # Only log warning after multiple failures
+                    if consecutive_failures >= max_consecutive_failures:
+                        logger.warning(
+                            f"Heartbeat failed {consecutive_failures} times consecutively. "
+                            f"Plugin runtime may be disconnected."
+                        )
+                        # Don't immediately disconnect - let the read loop detect actual disconnection
+                        
         except asyncio.CancelledError:
             pass
         except Exception as e:
-            logger.error(f"Heartbeat loop error: {e}", exc_info=True)
+            logger.error(f"Heartbeat loop fatal error: {e}", exc_info=True)
+    
+    async def _cleanup_expired_requests(self):
+        """Periodically cleanup expired pending requests."""
+        try:
+            while self.is_running:
+                await asyncio.sleep(30)  # Check every 30 seconds
+                
+                expired = []
+                for request_id, future in list(self.pending_requests.items()):
+                    if future.done() or future.cancelled():
+                        expired.append(request_id)
+                
+                for request_id in expired:
+                    self.pending_requests.pop(request_id, None)
+                    logger.debug(f"Cleaned up expired request: {request_id}")
+                
+                # Also cleanup interceptor futures
+                expired_interceptors = []
+                for request_id, future in list(self._interceptor_futures.items()):
+                    if future.done() or future.cancelled():
+                        expired_interceptors.append(request_id)
+                
+                for request_id in expired_interceptors:
+                    self._interceptor_futures.pop(request_id, None)
+                    logger.debug(f"Cleaned up expired interceptor future: {request_id}")
+                
+        except asyncio.CancelledError:
+            pass
+        except Exception as e:
+            logger.error(f"Cleanup task error: {e}", exc_info=True)
     
     async def _initialize_plugins(self):
         """Initialize all enabled plugins."""
@@ -985,12 +1116,13 @@ class PluginRuntimeConnector:
         
         try:
             # Wait for response (with timeout)
+            # Inspired by LangBot: use longer timeout (180s) for event processing
+            # to allow plugins to perform complex operations (API calls, LLM invocations, etc.)
             # Use shorter timeout for message.before_send to avoid blocking API calls
-            # Use longer timeout for message.received to allow plugins to call APIs
             if event_context.event_name == 'message.before_send':
                 timeout = 5.0  # Short timeout for before_send to avoid blocking
             else:
-                timeout = 30.0  # Longer timeout for received events
+                timeout = 180.0  # Longer timeout for received events (same as LangBot)
             result = await asyncio.wait_for(future, timeout=timeout)
             
             if result.get('success', True):  # Default to True if not specified
@@ -1008,11 +1140,11 @@ class PluginRuntimeConnector:
                 return None
                 
         except asyncio.TimeoutError:
-            # Don't remove future immediately - plugin runtime might still be processing
-            # Just log warning and return original context
+            # Remove future from pending_requests to prevent memory leak
+            # If response arrives later, it will be ignored (future already timed out)
+            self.pending_requests.pop(request_id, None)
             logger.warning(f"Event context timeout: {event_context.event_name} (request_id={request_id})")
-            # Keep future in pending_requests in case response arrives later
-            # It will be cleaned up when response arrives or after a delay
+            # Return original context to allow processing to continue
             return event_context
         except Exception as e:
             self.pending_requests.pop(request_id, None)
@@ -1506,6 +1638,14 @@ class PluginRuntimeConnector:
             except asyncio.CancelledError:
                 pass
             self.heartbeat_task = None
+        
+        if self._cleanup_task and not self._cleanup_task.done():
+            self._cleanup_task.cancel()
+            try:
+                await self._cleanup_task
+            except asyncio.CancelledError:
+                pass
+            self._cleanup_task = None
         
         if self.runtime_task and not self.runtime_task.done():
             self.runtime_task.cancel()

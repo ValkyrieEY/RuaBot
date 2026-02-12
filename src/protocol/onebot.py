@@ -238,7 +238,12 @@ class OneBotAdapter(ProtocolAdapter):
                                         continue
                                     else:
                                         # Only warn if echo is not empty (empty echo is common and harmless)
-                                        logger.debug(f"No waiting future found for echo: {echo}, active echoes: {list(self._api_responses.keys())}")
+                                        # This might be a delayed response from a previous request that already timed out
+                                        active_echoes = list(self._api_responses.keys())
+                                        if active_echoes:
+                                            logger.debug(f"Received delayed response for echo: {echo} (not in active echoes: {active_echoes})")
+                                        else:
+                                            logger.debug(f"Received response for echo: {echo} but no active requests (likely timeout)")
                                 
                                 post_type = data.get("post_type", "unknown")
                                 # Meta events (heartbeat) are very frequent, log at debug level

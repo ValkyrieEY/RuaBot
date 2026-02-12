@@ -8,7 +8,7 @@ from fastapi import FastAPI, HTTPException, Depends, status, UploadFile, File, F
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import HTMLResponse, FileResponse
+from fastapi.responses import HTMLResponse, FileResponse, JSONResponse
 from starlette.middleware import Middleware
 from pydantic import BaseModel
 from pathlib import Path
@@ -402,6 +402,29 @@ def create_app() -> FastAPI:
         lifespan=lifespan,
         middleware=[cors_middleware]
     )
+    
+    # Add global exception handler to prevent API endpoints from crashing
+    # Note: HTTPException is handled by FastAPI by default, so we only catch other exceptions
+    @app.exception_handler(Exception)
+    async def global_exception_handler(request, exc):
+        """Global exception handler to prevent API crashes.
+        
+        This catches all unhandled exceptions and returns a proper error response
+        instead of crashing the entire API server.
+        """
+        # Don't handle HTTPException (let FastAPI handle it)
+        if isinstance(exc, HTTPException):
+            raise exc
+        
+        logger.error(f"Unhandled exception in API endpoint {request.url.path}: {exc}", exc_info=True)
+        return JSONResponse(
+            status_code=500,
+            content={
+                "error": "Internal server error",
+                "message": str(exc) if logger.level <= 10 else "An error occurred",
+                "path": str(request.url.path)
+            }
+        )
     
     # Static files - serve Vite React app (only if WebUI is enabled)
     static_dir = Path(__file__).parent / "static"
@@ -2154,9 +2177,9 @@ def create_app() -> FastAPI:
                 # Wait for any message from client (typically ping/pong or keep-alive)
                 try:
                     data = await websocket.receive_text()
-                    # Echo back for keep-alive
+                    # Echo back for keep-alive - send as JSON to match frontend expectations
                     if data == "ping":
-                        await websocket.send_text("pong")
+                        await websocket.send_json({"type": "pong"})
                 except WebSocketDisconnect:
                     break
                 except Exception as e:
@@ -2207,17 +2230,30 @@ def create_app() -> FastAPI:
     ):
         """Get group and friend lists for chat."""
         from ..core.app import get_app
-        app_instance = get_app()
         
         contacts = {
             "groups": [],
             "friends": []
         }
         
-        if hasattr(app_instance, 'onebot_adapter') and app_instance.onebot_adapter:
+        try:
+            app_instance = get_app()
+            
+            if not hasattr(app_instance, 'onebot_adapter') or not app_instance.onebot_adapter:
+                logger.warning("OneBot adapter not available")
+                return contacts
+            
+            # Check if adapter is running
+            if not hasattr(app_instance.onebot_adapter, '_running') or not app_instance.onebot_adapter._running:
+                logger.warning("OneBot adapter is not running")
+                return contacts
+            
             try:
-                # Get group list
-                group_result = await app_instance.onebot_adapter.call_api("get_group_list", {})
+                # Get group list (with timeout to prevent hanging)
+                group_result = await asyncio.wait_for(
+                    app_instance.onebot_adapter.call_api("get_group_list", {}),
+                    timeout=10.0
+                )
                 if isinstance(group_result, dict) and "data" in group_result:
                     groups = group_result["data"]
                 elif isinstance(group_result, list):
@@ -2233,9 +2269,17 @@ def create_app() -> FastAPI:
                         "member_count": group.get("member_count", 0),
                         "max_member_count": group.get("max_member_count", 0)
                     })
-                
-                # Get friend list
-                friend_result = await app_instance.onebot_adapter.call_api("get_friend_list", {})
+            except asyncio.TimeoutError:
+                logger.error("Timeout getting group list")
+            except Exception as e:
+                logger.error(f"Failed to get group list: {e}", exc_info=True)
+            
+            try:
+                # Get friend list (with timeout to prevent hanging)
+                friend_result = await asyncio.wait_for(
+                    app_instance.onebot_adapter.call_api("get_friend_list", {}),
+                    timeout=10.0
+                )
                 if isinstance(friend_result, dict) and "data" in friend_result:
                     friends = friend_result["data"]
                 elif isinstance(friend_result, list):
@@ -2250,9 +2294,13 @@ def create_app() -> FastAPI:
                         "avatar": f"http://q.qlogo.cn/headimg_dl?dst_uin={friend.get('user_id', '')}&spec=640",
                         "remark": friend.get("remark", "")
                     })
-                
+            except asyncio.TimeoutError:
+                logger.error("Timeout getting friend list")
             except Exception as e:
-                logger.error(f"Failed to get contacts: {e}", exc_info=True)
+                logger.error(f"Failed to get friend list: {e}", exc_info=True)
+                
+        except Exception as e:
+            logger.error(f"Failed to get contacts: {e}", exc_info=True)
         
         return contacts
     
@@ -2475,21 +2523,40 @@ def create_app() -> FastAPI:
         """Get OneBot login information."""
         try:
             app = get_app()
-            if not app.onebot_adapter or not app.onebot_adapter.is_running():
+            if not hasattr(app, 'onebot_adapter') or not app.onebot_adapter:
+                return {
+                    "status": "error",
+                    "message": "OneBot adapter not available",
+                    "data": None
+                }
+            
+            # Check if adapter is running
+            if not hasattr(app.onebot_adapter, '_running') or not app.onebot_adapter._running:
                 return {
                     "status": "error",
                     "message": "OneBot adapter not running",
                     "data": None
                 }
             
-            # Call get_login_info API
-            result = await app.onebot_adapter.call_api("get_login_info", {})
-            logger.debug(f"Login info API result: {result}")
-            
-            return {
-                "status": "ok",
-                "data": result
-            }
+            # Call get_login_info API (with timeout to prevent hanging)
+            try:
+                result = await asyncio.wait_for(
+                    app.onebot_adapter.call_api("get_login_info", {}),
+                    timeout=10.0
+                )
+                logger.debug(f"Login info API result: {result}")
+                
+                return {
+                    "status": "ok",
+                    "data": result
+                }
+            except asyncio.TimeoutError:
+                logger.error("Timeout getting login info")
+                return {
+                    "status": "error",
+                    "message": "Timeout getting login info",
+                    "data": None
+                }
         except Exception as e:
             logger.error(f"Failed to get login info: {e}", exc_info=True)
             return {
@@ -2508,8 +2575,15 @@ def create_app() -> FastAPI:
             return {"total": 0, "enabled": 0}
         
         try:
-            all_plugins = await db_manager.list_plugin_settings()
-            enabled_plugins = await db_manager.list_plugin_settings(enabled_only=True)
+            # Add timeout to prevent hanging on database issues
+            all_plugins = await asyncio.wait_for(
+                db_manager.list_plugin_settings(),
+                timeout=5.0
+            )
+            enabled_plugins = await asyncio.wait_for(
+                db_manager.list_plugin_settings(enabled_only=True),
+                timeout=5.0
+            )
             
             # Enabled plugins are automatically loaded into runtime
             # So enabled count should be the actual running count
@@ -2517,36 +2591,62 @@ def create_app() -> FastAPI:
                 "total": len(all_plugins),
                 "enabled": len(enabled_plugins)
             }
+        except asyncio.TimeoutError:
+            logger.warning("Timeout getting plugin stats from database")
+            return {"total": 0, "enabled": 0}
         except Exception as e:
+            logger.warning(f"Failed to get plugin stats: {e}")
+            return {"total": 0, "enabled": 0}
             logger.warning(f"Failed to get plugin stats: {e}")
             return {"total": 0, "enabled": 0}
     
     @app.get("/api/system/status")
     async def get_system_status(user: Dict[str, Any] = Depends(get_current_user)):
         """Get system status."""
-        import platform
-        import psutil
-        from datetime import datetime, timedelta
-        event_bus = get_event_bus()
-        application = get_app()
-        config = get_config()
-        db_manager = application.db_manager if hasattr(application, 'db_manager') and application.db_manager else None
+        try:
+            import platform
+            import psutil
+            from datetime import datetime, timedelta
+            event_bus = get_event_bus()
+            application = get_app()
+            config = get_config()
+            db_manager = application.db_manager if hasattr(application, 'db_manager') and application.db_manager else None
+        except Exception as e:
+            logger.error(f"Failed to initialize system status: {e}", exc_info=True)
+            # Return minimal status on error
+            return {
+                "status": "error",
+                "error": str(e),
+                "event_bus": {"total_events": 0, "today_received": 0, "today_sent": 0},
+                "plugins": {"total": 0, "enabled": 0},
+                "uptime": "N/A",
+                "bot_status": {"online": False, "status_text": "错误"},
+            }
         
         # Calculate uptime
         uptime_str = "N/A"
-        if hasattr(application, '_start_time'):
-            uptime_delta = datetime.now() - application._start_time
-            days = uptime_delta.days
-            hours = uptime_delta.seconds // 3600
-            minutes = (uptime_delta.seconds % 3600) // 60
-            if days > 0:
-                uptime_str = f"{days}天 {hours}小时"
-            elif hours > 0:
-                uptime_str = f"{hours}小时 {minutes}分钟"
-            else:
-                uptime_str = f"{minutes}分钟"
+        try:
+            if hasattr(application, '_start_time') and application._start_time:
+                uptime_delta = datetime.now() - application._start_time
+                days = uptime_delta.days
+                hours = uptime_delta.seconds // 3600
+                minutes = (uptime_delta.seconds % 3600) // 60
+                if days > 0:
+                    uptime_str = f"{days}天 {hours}小时"
+                elif hours > 0:
+                    uptime_str = f"{hours}小时 {minutes}分钟"
+                else:
+                    uptime_str = f"{minutes}分钟"
+        except Exception as e:
+            logger.warning(f"Failed to calculate uptime: {e}")
+            uptime_str = "N/A"
         
-        event_stats = event_bus.get_stats()
+        # Get event bus stats (with error handling)
+        try:
+            event_stats = event_bus.get_stats() if event_bus else {}
+        except Exception as e:
+            logger.warning(f"Failed to get event bus stats: {e}")
+            event_stats = {}
         
         # Get today's message statistics from event bus counters
         # (These are maintained by event bus and reset at midnight)
@@ -2554,35 +2654,38 @@ def create_app() -> FastAPI:
         today_sent = event_stats.get("today_sent", 0)
         
         # Fallback: If counters not available, count from event history
-        if today_received == 0 and today_sent == 0:
-            today_start = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
-            
-            # Count messages from event history
-            for event in event_bus._event_history:
-                if event.timestamp >= today_start:
-                    # Check for received messages
-                    is_message = False
-                    
-                    # Check if it's a received message event
-                    if event.name == "onebot.message":
-                        is_message = True
-                    elif isinstance(event.payload, dict):
-                        payload = event.payload
-                        if payload.get('type') == 'message':
+        try:
+            if today_received == 0 and today_sent == 0 and event_bus and hasattr(event_bus, '_event_history'):
+                today_start = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+                
+                # Count messages from event history
+                for event in event_bus._event_history:
+                    if event.timestamp >= today_start:
+                        # Check for received messages
+                        is_message = False
+                        
+                        # Check if it's a received message event
+                        if event.name == "onebot.message":
                             is_message = True
-                        elif payload.get('raw') and isinstance(payload.get('raw'), dict):
-                            raw_data = payload.get('raw', {})
-                            if raw_data.get('post_type') == 'message':
+                        elif isinstance(event.payload, dict):
+                            payload = event.payload
+                            if payload.get('type') == 'message':
                                 is_message = True
-                        elif payload.get('post_type') == 'message':
-                            is_message = True
-                    
-                    if is_message:
-                        today_received += 1
-                    
-                    # Check for sent messages
-                    if event.name == "onebot.message_sent":
-                        today_sent += 1
+                            elif payload.get('raw') and isinstance(payload.get('raw'), dict):
+                                raw_data = payload.get('raw', {})
+                                if raw_data.get('post_type') == 'message':
+                                    is_message = True
+                            elif payload.get('post_type') == 'message':
+                                is_message = True
+                        
+                        if is_message:
+                            today_received += 1
+                        
+                        # Check for sent messages
+                        if event.name == "onebot.message_sent":
+                            today_sent += 1
+        except Exception as e:
+            logger.debug(f"Error counting messages from event history: {e}")
         
         # Get CPU and memory info (with fallback if psutil fails)
         try:
@@ -2680,29 +2783,40 @@ def create_app() -> FastAPI:
                 "write_count": 0,
             }
         
-        return {
-            "status": "running" if application.is_running() else "stopped",
-            "event_bus": {
-                **event_stats,
-                "total_events": event_stats.get("total_events_processed", event_stats.get("history_size", 0)),
-                "today_received": today_received,
-                "today_sent": today_sent,
-            },
-            "plugins": await _get_plugin_stats(db_manager),
-            "uptime": uptime_str,
-            "bot_status": _get_bot_status(application),
-            "system": {
+        # Get plugin stats (with error handling)
+        try:
+            plugin_stats = await _get_plugin_stats(db_manager)
+        except Exception as e:
+            logger.warning(f"Failed to get plugin stats: {e}")
+            plugin_stats = {"total": 0, "enabled": 0}
+        
+        # Get bot status (with error handling)
+        try:
+            bot_status = _get_bot_status(application)
+        except Exception as e:
+            logger.warning(f"Failed to get bot status: {e}")
+            bot_status = {"online": False, "connection_type": None, "status_text": "错误"}
+        
+        # Get system info (with error handling)
+        try:
+            system_info = {
                 "platform": platform.system(),
                 "platform_version": platform.version(),
                 "architecture": platform.machine(),
                 "python_version": platform.python_version(),
-            },
-            "cpu": cpu_info,
-            "memory": memory_info,
-            "disk": disk_info,
-            "network": network_info,
-            "disk_io": disk_io_info,
-            "versions": {
+            }
+        except Exception as e:
+            logger.warning(f"Failed to get system info: {e}")
+            system_info = {
+                "platform": "Unknown",
+                "platform_version": "Unknown",
+                "architecture": "Unknown",
+                "python_version": "Unknown",
+            }
+        
+        # Get versions (with error handling)
+        try:
+            versions_info = {
                 "framework": config.app_version,
                 "onebot": config.onebot_version,
                 "webui": "NEXT",  # Vite + React
@@ -2711,6 +2825,33 @@ def create_app() -> FastAPI:
                 "react": "18.2.0",  # From package.json
                 "vite": "5.0.8",  # From package.json
             }
+        except Exception as e:
+            logger.warning(f"Failed to get versions: {e}")
+            versions_info = {
+                "framework": "Unknown",
+                "onebot": "Unknown",
+                "webui": "NEXT",
+                "python": "Unknown",
+            }
+        
+        return {
+            "status": "running" if application.is_running() else "stopped",
+            "event_bus": {
+                **event_stats,
+                "total_events": event_stats.get("total_events_processed", event_stats.get("history_size", 0)),
+                "today_received": today_received,
+                "today_sent": today_sent,
+            },
+            "plugins": plugin_stats,
+            "uptime": uptime_str,
+            "bot_status": bot_status,
+            "system": system_info,
+            "cpu": cpu_info,
+            "memory": memory_info,
+            "disk": disk_info,
+            "network": network_info,
+            "disk_io": disk_io_info,
+            "versions": versions_info
         }
     
     @app.get("/api/system/config")

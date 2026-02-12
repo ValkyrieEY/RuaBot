@@ -127,31 +127,76 @@ class PluginRuntime:
     
     async def _stdin_reader(self):
         """Continuously read from stdin in background."""
+        consecutive_errors = 0
+        max_consecutive_errors = 10
+        
         try:
             while self.running:
-                # Read line in executor to avoid blocking event loop
-                line = await asyncio.get_event_loop().run_in_executor(
-                    None, sys.stdin.readline
-                )
-                
-                if not line:
-                    self.running = False
-                    break
-                
                 try:
-                    message = json.loads(line.strip())
-                    msg_type = message.get('type', 'unknown')
-                    self.log("debug", f"Received message: {msg_type}")
-                    # Handle message immediately (don't await, run as task)
-                    asyncio.create_task(self.handle_message(message))
-                except json.JSONDecodeError:
-                    self.log("error", f"Invalid JSON: {line.strip()}")
+                    # Read line in executor with timeout to avoid indefinite blocking
+                    loop = asyncio.get_event_loop()
+                    try:
+                        line = await asyncio.wait_for(
+                            loop.run_in_executor(None, sys.stdin.readline),
+                            timeout=60.0  # 60 second timeout
+                        )
+                    except asyncio.TimeoutError:
+                        # Timeout is OK, just check if stdin is still open
+                        if sys.stdin.closed:
+                            self.log("warning", "Stdin closed, stopping reader")
+                            self.running = False
+                            break
+                        # Continue reading
+                        continue
+                    
+                    if not line:
+                        # EOF - stdin may have been closed
+                        self.log("warning", "Stdin EOF, checking if closed...")
+                        if sys.stdin.closed:
+                            self.log("warning", "Stdin closed, stopping reader")
+                            self.running = False
+                            break
+                        # Wait a bit before checking again
+                        await asyncio.sleep(1.0)
+                        continue
+                    
+                    # Reset error counter on successful read
+                    consecutive_errors = 0
+                    
+                    try:
+                        message = json.loads(line.strip())
+                        msg_type = message.get('type', 'unknown')
+                        self.log("debug", f"Received message: {msg_type}")
+                        # Handle message immediately (don't await, run as task)
+                        asyncio.create_task(self.handle_message(message))
+                    except json.JSONDecodeError:
+                        self.log("error", f"Invalid JSON: {line.strip()}")
+                        consecutive_errors += 1
+                        if consecutive_errors >= max_consecutive_errors:
+                            self.log("error", f"Too many consecutive JSON decode errors ({consecutive_errors})")
+                            break
+                    except Exception as e:
+                        self.log("error", f"Error in stdin reader: {e}")
+                        import traceback
+                        self.log("error", traceback.format_exc())
+                        consecutive_errors += 1
+                        if consecutive_errors >= max_consecutive_errors:
+                            self.log("error", f"Too many consecutive errors ({consecutive_errors})")
+                            break
+                
                 except Exception as e:
-                    self.log("error", f"Error in stdin reader: {e}")
-                    import traceback
-                    self.log("error", traceback.format_exc())
+                    consecutive_errors += 1
+                    self.log("error", f"Error reading from stdin: {e}")
+                    if consecutive_errors >= max_consecutive_errors:
+                        self.log("error", f"Too many consecutive read errors ({consecutive_errors}), stopping reader")
+                        break
+                    # Wait before retrying
+                    await asyncio.sleep(0.5)
+                    
         except Exception as e:
             self.log("error", f"Fatal error in stdin reader: {e}")
+            import traceback
+            self.log("error", traceback.format_exc())
             self.running = False
     
     async def handle_message(self, message: Dict[str, Any]):
@@ -736,17 +781,22 @@ class PluginRuntime:
             self.log("error", f"Error in handle_event_with_context: {e}")
             import traceback
             self.log("error", traceback.format_exc())
-            # Send error response
+            # Send error response - ensure we always send a response even on error
             request_id = data.get('request_id') if 'data' in locals() else None
             if request_id:
-                self.send_message({
-                    'type': 'event_with_context_response',
-                    'data': {
-                        'request_id': request_id,
-                        'success': False,
-                        'error': str(e)
-                    }
-                })
+                try:
+                    self.send_message({
+                        'type': 'event_with_context_response',
+                        'data': {
+                            'request_id': request_id,
+                            'success': False,
+                            'error': str(e)
+                        }
+                    })
+                except Exception as send_error:
+                    self.log("error", f"Failed to send error response: {send_error}")
+            else:
+                self.log("warning", "No request_id available to send error response")
     
     def send_message(self, message: Dict[str, Any]):
         """Send message to framework via stdout.
@@ -822,13 +872,20 @@ class PluginAPI:
         
         try:
             # Wait for response (with timeout)
-            # Increased timeout to 30s to handle slow OneBot implementations
-            result = await asyncio.wait_for(future, timeout=30.0)
+            # Use longer timeout for message-sending actions (they may be slower)
+            # Other actions use shorter timeout
+            if action in ['send_group_msg', 'send_private_msg', 'send_msg', 
+                         'send_group_forward_msg', 'send_private_forward_msg', 'send_forward_msg']:
+                timeout = 60.0  # 60 seconds for message sending (may be slow)
+            else:
+                timeout = 30.0  # 30 seconds for other actions
+            
+            result = await asyncio.wait_for(future, timeout=timeout)
             self.log("debug", f"API {action} result: {result}")
             return result
         except asyncio.TimeoutError:
             self.runtime.pending_requests.pop(request_id, None)
-            self.log("error", f"API {action} timeout after 30s")
+            self.log("error", f"API {action} timeout after {timeout}s")
             raise Exception(f"API call timeout: {action}")
         except Exception as e:
             self.runtime.pending_requests.pop(request_id, None)
@@ -855,11 +912,22 @@ class PluginAPI:
         """Send like to user.
         
         Returns:
-            {} on success (empty dict)
+            {'success': True} on success, {'success': False, 'error': '...'} on failure
         """
-        result = await self.call_api('send_like', user_id=user_id, times=times)
-        # send_like returns None/empty, wrap as success
-        return {'success': True} if result is None else result
+        try:
+            result = await self.call_api('send_like', user_id=user_id, times=times)
+            # send_like API returns empty dict {} on success (OneBot spec)
+            # Normalize to always include 'success' field for plugin compatibility
+            if result is None or result == {}:
+                return {'success': True}
+            # If result already has 'success' field, return as-is
+            if 'success' in result:
+                return result
+            # Otherwise, assume success if no error
+            return {'success': True, 'data': result}
+        except Exception as e:
+            # API call failed, return error format
+            return {'success': False, 'error': str(e)}
     
     async def get_group_list(self) -> List[Dict[str, Any]]:
         """Get group list.

@@ -77,6 +77,9 @@ class Config(BaseSettings):
     
     # Plugin Thread Pool
     plugin_thread_pool_enabled: bool = Field(default=True, alias="PLUGIN_THREAD_POOL_ENABLED")
+    
+    # Auto Reload (for development)
+    auto_reload: bool = Field(default=False, alias="AUTO_RELOAD")
 
     model_config = SettingsConfigDict(
         env_file=".env",

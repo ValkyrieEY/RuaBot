@@ -161,7 +161,7 @@ def main():
         "app": "src.main:app",
         "host": config.host,
         "port": config.port,
-        "reload": config.debug,
+        "reload": config.auto_reload,  # Use auto_reload config instead of debug
         "log_config": {
             "version": 1,
             "disable_existing_loggers": False,

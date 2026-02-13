@@ -38,13 +38,14 @@ class Event:
 class EventBus:
     """Asynchronous event bus for publish-subscribe pattern."""
 
-    def __init__(self):
+    def __init__(self, max_queue_size: int = 10000):
         self._subscribers: Dict[str, List[Callable]] = {}
         self._wildcard_subscribers: List[Callable] = []
         self._event_history: List[Event] = []
         self._max_history: int = 1000
         self._running: bool = False
-        self._event_queue: asyncio.Queue = asyncio.Queue()
+        self._max_queue_size: int = max_queue_size
+        self._event_queue: asyncio.Queue = asyncio.Queue(maxsize=max_queue_size)
         self._processor_task: Optional[asyncio.Task] = None
         
         # Message statistics (persistent counters, reset at midnight)
@@ -174,7 +175,24 @@ class EventBus:
             metadata=metadata or {}
         )
 
-        await self._event_queue.put(event)
+        # Try to put event in queue, drop oldest if full
+        try:
+            self._event_queue.put_nowait(event)
+        except Exception:  # QueueFull is raised when queue is full
+            # Queue is full, drop the oldest event and add the new one
+            try:
+                # Remove oldest event
+                self._event_queue.get_nowait()
+                # Add new event
+                self._event_queue.put_nowait(event)
+                logger.warning(f"Event queue full, dropped oldest event. Queue size: {self._event_queue.qsize()}")
+            except asyncio.QueueEmpty:
+                # Queue became empty, just add the new event
+                self._event_queue.put_nowait(event)
+            except Exception as e:
+                logger.error(f"Error handling full event queue: {e}", exc_info=True)
+                # Fallback: try async put (will block but won't fail)
+                await self._event_queue.put(event)
         
         logger.debug(
             "Event published",

@@ -71,26 +71,29 @@ class MessageRelayInterceptor(MessageInterceptor):
             message = params.get('message', '')
             auto_escape = params.get('auto_escape', False)
             
-            # 如果是自己发送的触发消息（@官方机器人），放行
-            if isinstance(message, str):
-                if f"[CQ:at,qq={self.relay_client.official_bot_qq}]" in message:
-                    self.relay_client.api.log("info", "检测到触发消息，放行")
-                    return InterceptorResult(allow=True)
-            
             # 如果是本插件自己发送的消息，放行（避免循环）
+            # 优先检查 source_plugin，这是最快的检查
             if source_plugin and 'message_relay_client' in source_plugin:
                 return InterceptorResult(allow=True)
             
-            # 拦截消息，通过中继发送
-            self.relay_client.api.log("info", f"拦截到消息发送: 群{group_id}, 来源: {source_plugin or '框架'}")
+            # 如果是自己发送的触发消息（@官方机器人 [群号]），放行
+            # 快速检查：先检查是否包含 @官方机器人，再检查格式
+            if isinstance(message, str):
+                # 快速检查：是否包含 @官方机器人的 CQ 码
+                at_pattern = f"[CQ:at,qq={self.relay_client.official_bot_qq}]"
+                if at_pattern in message:
+                    # 进一步检查是否包含群号（触发消息格式：@官方机器人 603033293）
+                    import re
+                    # 匹配格式：[CQ:at,qq=3889084862] 603033293
+                    trigger_pattern = rf"\[CQ:at,qq={self.relay_client.official_bot_qq}\]\s*\d+"
+                    if re.search(trigger_pattern, message):
+                        # 快速返回，不记录日志（避免阻塞）
+                        return InterceptorResult(allow=True)
             
-            # 异步发送到中继（不阻塞）
+            # 拦截其他插件或框架发送的消息，通过中继发送
+            # 先返回结果，再异步记录日志和发送到中继（避免阻塞）
             asyncio.create_task(
-                self.relay_client._send_to_relay(
-                    group_id=group_id,
-                    message=message if isinstance(message, str) else str(message),
-                    sender_id=0  # 拦截器无法获取发送者ID，使用0
-                )
+                self._handle_intercepted_message(group_id, message, source_plugin)
             )
             
             # 阻止原消息发送
@@ -98,6 +101,18 @@ class MessageRelayInterceptor(MessageInterceptor):
         
         # 其他消息类型放行
         return InterceptorResult(allow=True)
+    
+    async def _handle_intercepted_message(self, group_id: int, message: str, source_plugin: Optional[str]):
+        """异步处理被拦截的消息（记录日志并发送到中继）"""
+        try:
+            self.relay_client.api.log("info", f"拦截到消息发送: 群{group_id}, 来源: {source_plugin or '框架'}")
+            await self.relay_client._send_to_relay(
+                group_id=group_id,
+                message=message if isinstance(message, str) else str(message),
+                sender_id=0  # 拦截器无法获取发送者ID，使用0
+            )
+        except Exception as e:
+            self.relay_client.api.log("error", f"处理拦截消息失败: {e}")
 
 
 class MessageRelayClient:
@@ -251,23 +266,32 @@ class MessageRelayClient:
                 await self._save_group_openid(group_id, text_message)
                 return
             
-            # 检查是否@了本机器人
-            bot_qq = await self._get_bot_qq()
-            is_at_me = False
+            # 检查是否@了官方机器人（触发消息格式：@官方机器人 [群号]）
+            is_at_official_bot = False
+            extracted_group_id = None
             
             if isinstance(message, list):
                 for seg in message:
                     if isinstance(seg, dict) and seg.get('type') == 'at':
                         at_qq = str(seg.get('data', {}).get('qq', ''))
-                        if at_qq == str(bot_qq):
-                            is_at_me = True
+                        if at_qq == str(self.official_bot_qq):
+                            is_at_official_bot = True
+                            # 尝试从文本中提取群号
+                            if text_message and text_message.strip().isdigit():
+                                try:
+                                    extracted_group_id = int(text_message.strip())
+                                except:
+                                    pass
                             break
             
-            # 如果@了本机器人，处理消息
-            if is_at_me and self.enabled:
-                if text_message:
-                    # 发送到官方机器人
-                    await self._send_to_relay(group_id, text_message, user_id)
+            # 如果@了官方机器人且消息是群号，触发中继发送
+            if is_at_official_bot and self.enabled:
+                if extracted_group_id:
+                    # 这是触发消息，不需要处理（拦截器会放行）
+                    self.api.log("info", f"检测到触发消息: @官方机器人 {extracted_group_id}")
+                elif text_message:
+                    # 如果@了官方机器人但消息不是群号，可能是其他指令，暂时忽略
+                    pass
         
         except Exception as e:
             self.api.log("error", f"处理消息异常: {e}")
@@ -581,18 +605,32 @@ class MessageRelayClient:
                     if response.status == 200:
                         result = await response.json()
                         if result.get('success'):
-                            # 提示用户@官方机器人
+                            # 发送触发消息：@官方机器人 [群号]
+                            trigger_msg = f"[CQ:at,qq={self.official_bot_qq}] {group_id}"
+                            trigger_result = await self.api.send_group_msg(group_id, trigger_msg, auto_escape=False)
+                            
+                            # 获取消息ID并撤回
+                            trigger_message_id = None
+                            if isinstance(trigger_result, dict):
+                                if trigger_result.get('success') and 'data' in trigger_result:
+                                    trigger_message_id = trigger_result['data'].get('message_id')
+                                elif 'message_id' in trigger_result:
+                                    trigger_message_id = trigger_result.get('message_id')
+                            elif isinstance(trigger_result, (int, str)):
+                                trigger_message_id = trigger_result
+                            
+                            if trigger_message_id:
+                                try:
+                                    await asyncio.sleep(0.5)
+                                    await self.api.delete_msg(trigger_message_id)
+                                    self.api.log("info", f"已撤回测试触发消息: {trigger_message_id}")
+                                except Exception as e:
+                                    self.api.log("warning", f"撤回测试触发消息失败: {e}")
+                            
                             await self.api.send_group_msg(
                                 group_id,
-                                f"✅ 测试消息已提交到中继服务器\n"
-                                f"请@官方机器人 [CQ:at,qq={self.official_bot_qq}] 以触发消息发送"
+                                f"✅ 测试消息已提交到中继服务器"
                             )
-                            
-                            # 自动触发官方机器人
-                            await asyncio.sleep(1)
-                            trigger_msg = f"[CQ:at,qq={self.official_bot_qq}] #测试触发"
-                            self.api.log("info", f"发送触发消息: {trigger_msg}, QQ号: {self.official_bot_qq}")
-                            await self.api.send_group_msg(group_id, trigger_msg, auto_escape=False)
                         else:
                             error = result.get('error', '未知错误')
                             await self.api.send_group_msg(
@@ -651,6 +689,37 @@ class MessageRelayClient:
             else:
                 data['bot_qq'] = self.official_bot_qq
             
+            # 先发送触发消息：@官方机器人 [群号]
+            trigger_msg = f"[CQ:at,qq={self.official_bot_qq}] {group_id}"
+            self.api.log("info", f"发送触发消息: @官方机器人 {group_id}")
+            
+            # 发送触发消息并获取消息ID
+            try:
+                # 使用 send_group_msg 方法（会被拦截器拦截，但拦截器会识别触发消息并放行）
+                trigger_result = await self.api.send_group_msg(group_id, trigger_msg, auto_escape=False)
+                trigger_message_id = None
+                
+                # 解析返回的消息ID
+                if isinstance(trigger_result, dict):
+                    if trigger_result.get('success') and 'data' in trigger_result:
+                        trigger_message_id = trigger_result['data'].get('message_id')
+                    elif 'message_id' in trigger_result:
+                        trigger_message_id = trigger_result.get('message_id')
+                elif isinstance(trigger_result, (int, str)):
+                    trigger_message_id = trigger_result
+                
+                # 立即撤回触发消息
+                if trigger_message_id:
+                    try:
+                        await asyncio.sleep(0.3)  # 稍微延迟确保消息已发送
+                        await self.api.delete_msg(trigger_message_id)
+                        self.api.log("info", f"已撤回触发消息: {trigger_message_id}")
+                    except Exception as e:
+                        self.api.log("warning", f"撤回触发消息失败: {e}")
+            except Exception as e:
+                self.api.log("error", f"发送触发消息失败: {e}")
+                # 继续执行，即使触发消息失败也尝试发送到中继
+            
             # 发送HTTP GET请求（参数通过URL传递）
             import urllib.parse
             import ssl
@@ -673,32 +742,16 @@ class MessageRelayClient:
                         result = await response.json()
                         if result.get('success'):
                             self.api.log("info", f"消息已提交到中继服务器: 群{group_id}")
-                            
-                            # 触发官方机器人（@官方机器人）
-                            trigger_msg = f"[CQ:at,qq={self.official_bot_qq}] #trigger"
-                            self.api.log("info", f"发送触发消息: {trigger_msg}")
-                            await self.api.send_group_msg(group_id, trigger_msg, auto_escape=False)
                         else:
                             error = result.get('error', '未知错误')
                             self.api.log("error", f"中继服务器返回错误: {error}")
-                            # 发送错误提示
-                            await self.api.send_group_msg(
-                                group_id,
-                                f"❌ 消息中继失败: {error}"
-                            )
                     else:
                         self.api.log("error", f"HTTP请求失败: {response.status}")
-                        await self.api.send_group_msg(
-                            group_id,
-                            f"❌ 无法连接到官方机器人API"
-                        )
         
         except asyncio.TimeoutError:
             self.api.log("error", "请求官方机器人API超时")
-            await self.api.send_group_msg(group_id, "❌ 连接超时，请检查网络")
         except Exception as e:
             self.api.log("error", f"发送到中继服务器失败: {e}")
-            await self.api.send_group_msg(group_id, f"❌ 中继错误: {str(e)}")
     
     async def _echo_message(self, group_id: int, user_id: int, content: str):
         """Echo功能 - 通过官方机器人发送指定内容
@@ -738,12 +791,6 @@ class MessageRelayClient:
                     "❌ 配置不完整！请检查API地址和密钥配置"
                 )
                 return
-            
-            # 发送提示
-            await self.api.send_group_msg(
-                group_id,
-                f"🔄 正在通过官方机器人发送Echo消息..."
-            )
             
             # 通过中继发送echo内容
             await self._send_to_relay(

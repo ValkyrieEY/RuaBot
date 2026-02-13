@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
+import { useTranslation } from 'react-i18next'
 import { api } from '@/utils/api'
-import { Save } from 'lucide-react'
+import { Save, Server, Eye, EyeOff } from 'lucide-react'
 
 interface GroupConfig {
   config_type: string
@@ -15,6 +16,7 @@ interface GroupConfig {
 }
 
 export default function AIConfigPage() {
+  const { t } = useTranslation()
   const [globalEnabled, setGlobalEnabled] = useState(false)
   const [globalModel, setGlobalModel] = useState<string>('')
   const [globalPreset, setGlobalPreset] = useState<string>('')
@@ -37,6 +39,12 @@ export default function AIConfigPage() {
   const [presets, setPresets] = useState<any[]>([])
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
+  
+  // TTS配置
+  const [tencentSecretId, setTencentSecretId] = useState('')
+  const [tencentSecretKey, setTencentSecretKey] = useState('')
+  const [showTencentKey, setShowTencentKey] = useState(false)
+  const [ttsConfigLoaded, setTtsConfigLoaded] = useState(false)
 
   useEffect(() => {
     loadData()
@@ -46,7 +54,7 @@ export default function AIConfigPage() {
     try {
       setLoading(true)
       // 获取所有数据
-      const [globalConfig, groups, modelsList, presetsList, contacts] = await Promise.all([
+      const [globalConfig, groups, modelsList, presetsList, contacts, systemConfig] = await Promise.all([
         api.getAIConfig('global'),
         api.listGroupConfigs(),
         api.listModels(),
@@ -55,7 +63,14 @@ export default function AIConfigPage() {
           console.error('Failed to load contacts:', err)
           return { groups: [], friends: [] }
         }),
+        api.getSystemConfig().catch(() => null),
       ])
+      
+      // 加载TTS配置
+      if (systemConfig?.tencent_cloud) {
+        setTencentSecretId(systemConfig.tencent_cloud.secret_id || '')
+        setTtsConfigLoaded(true)
+      }
 
       setGlobalEnabled(globalConfig.enabled || false)
       setGlobalModel(globalConfig.model_uuid || '')
@@ -187,6 +202,33 @@ export default function AIConfigPage() {
       setSaving(false)
     }
   }
+  
+  const handleSaveTTS = async () => {
+    try {
+      setSaving(true)
+      const updateData: any = {}
+      
+      if (tencentSecretId || tencentSecretKey) {
+        updateData.tencent_cloud = {
+          secret_id: tencentSecretId,
+          secret_key: tencentSecretKey || undefined,
+        }
+      }
+      
+      await api.updateSystemConfig(updateData)
+      if (tencentSecretKey) {
+        setTencentSecretKey('')
+        setShowTencentKey(false)
+      }
+      setTtsConfigLoaded(true)
+      alert('TTS配置保存成功')
+    } catch (error) {
+      console.error('Failed to save TTS config:', error)
+      alert('TTS配置保存失败')
+    } finally {
+      setSaving(false)
+    }
+  }
 
   const handleBatchUpdate = async (enabled?: boolean, modelUuid?: string, presetUuid?: string) => {
     if (selectedGroups.size === 0) {
@@ -236,10 +278,11 @@ export default function AIConfigPage() {
   }
 
   return (
-    <div className="space-y-6">
-      <div className="bg-white rounded-xl shadow p-6">
-        <h2 className="text-xl font-semibold mb-4">功能总开关</h2>
-        <div className="flex items-center gap-4">
+    <div className="space-y-4 sm:space-y-6">
+      {/* 功能总开关 */}
+      <div className="space-y-3 sm:space-y-4">
+        <h2 className="text-lg sm:text-xl font-semibold text-gray-900">功能总开关</h2>
+        <div className="flex flex-col sm:flex-row sm:items-center gap-3 sm:gap-4">
           <label className="flex items-center gap-2 cursor-pointer">
             <input
               type="checkbox"
@@ -247,12 +290,12 @@ export default function AIConfigPage() {
               onChange={(e) => setGlobalEnabled(e.target.checked)}
               className="w-4 h-4"
             />
-            <span>启用AI功能</span>
+            <span className="text-sm sm:text-base">启用AI功能</span>
           </label>
           <button
             onClick={handleSaveGlobal}
             disabled={saving}
-            className="flex items-center gap-2 px-4 py-2 bg-blue-500 text-white rounded hover:bg-blue-600 disabled:opacity-50"
+            className="btn btn-primary flex items-center justify-center gap-2 w-full sm:w-auto"
           >
             <Save className="w-4 h-4" />
             {saving ? '保存中...' : '保存'}
@@ -260,15 +303,16 @@ export default function AIConfigPage() {
         </div>
       </div>
 
-      <div className="bg-white rounded-xl shadow p-6">
-        <h2 className="text-xl font-semibold mb-4">全局设置</h2>
-        <div className="space-y-4">
+      {/* 全局设置 */}
+      <div className="space-y-3 sm:space-y-4">
+        <h2 className="text-lg sm:text-xl font-semibold text-gray-900">全局设置</h2>
+        <div className="space-y-3 sm:space-y-4">
           <div>
-            <label className="block text-sm font-medium mb-2">默认模型</label>
+            <label className="label">默认模型</label>
             <select
               value={globalModel}
               onChange={(e) => setGlobalModel(e.target.value)}
-              className="w-full px-3 py-2 border rounded"
+              className="input"
             >
               <option value="">未选择</option>
               {models.map((model) => (
@@ -279,11 +323,11 @@ export default function AIConfigPage() {
             </select>
           </div>
           <div>
-            <label className="block text-sm font-medium mb-2">默认预设</label>
+            <label className="label">默认预设</label>
             <select
               value={globalPreset}
               onChange={(e) => setGlobalPreset(e.target.value)}
-              className="w-full px-3 py-2 border rounded-lg"
+              className="input"
             >
               <option value="">未选择</option>
               {presets.map((preset) => (
@@ -294,7 +338,7 @@ export default function AIConfigPage() {
             </select>
           </div>
           <div>
-            <label className="block text-sm font-medium mb-2">触发模式</label>
+            <label className="label">触发模式</label>
             <div className="space-y-3">
               <div className="space-y-2">
                 <label className="flex items-center gap-2 cursor-pointer">
@@ -318,7 +362,7 @@ export default function AIConfigPage() {
                       value={globalTriggerCommand}
                       onChange={(e) => setGlobalTriggerCommand(e.target.value)}
                       placeholder="例如：@AI 或 /ai"
-                      className="w-full px-3 py-2 border rounded-lg"
+                      className="input"
                     />
                     <p className="text-sm text-gray-500 mt-1">
                       设置触发指令后，只有以该指令开头的消息才会触发AI回复。例如：输入"@AI"后，只有"@AI 你好"这样的消息才会触发。
@@ -394,7 +438,7 @@ export default function AIConfigPage() {
             </p>
           </div>
           
-          <div className="border-t pt-4 mt-4">
+          <div className="border-t border-gray-200 pt-4 mt-4">
             <label className="flex items-center gap-2 cursor-pointer mb-3">
               <input
                 type="checkbox"
@@ -439,8 +483,8 @@ export default function AIConfigPage() {
           </div>
           
           {triggerMode === 'maxtoken' && (
-            <div className="border-t pt-4 mt-4">
-              <h3 className="text-lg font-semibold mb-3">RuaBot 高级配置</h3>
+            <div className="border-t border-gray-200 pt-4 mt-4">
+              <h3 className="text-base sm:text-lg font-semibold mb-3">RuaBot 高级配置</h3>
               <p className="text-sm text-gray-500 mb-4">
                 RuaBot 是一个智能的 AI 系统，具有自主学习、智能规划、表达学习等高级功能。仅在 MaxToken 模式下可用。
               </p>
@@ -471,7 +515,7 @@ export default function AIConfigPage() {
                           value={botName}
                           onChange={(e) => setBotName(e.target.value)}
                           placeholder="AI助手"
-                          className="w-full px-3 py-2 border rounded-lg"
+                          className="input"
                         />
                         <p className="text-xs text-gray-500 mt-1">
                           AI 的名字，会在对话中使用（例如：小助手、AI酱）
@@ -537,13 +581,93 @@ export default function AIConfigPage() {
         </div>
       </div>
 
-      <div className="bg-white rounded-xl shadow p-6">
-        <div className="flex items-center justify-between mb-4">
-          <h2 className="text-xl font-semibold">群组功能开关</h2>
+      {/* TTS配置 */}
+      <div className="space-y-3 sm:space-y-4">
+        <div className="flex items-center gap-2">
+          <Server className="w-5 h-5 text-primary-600" />
+          <h2 className="text-lg sm:text-xl font-semibold text-gray-900">{t('system.ttsConfig')}</h2>
+        </div>
+        <p className="text-sm text-gray-600">
+          {t('system.ttsConfigDesc')}
+          <a 
+            href="https://cloud.tencent.com/document/api/1073/37995" 
+            target="_blank" 
+            rel="noopener noreferrer"
+            className="text-primary-600 hover:text-primary-700 ml-1 underline"
+          >
+            {t('system.viewDocs')}
+          </a>
+        </p>
+        <div className="space-y-3 sm:space-y-4">
+          <div>
+            <label className="label">
+              {t('system.secretId')} <span className="text-red-500">*</span>
+            </label>
+            <input
+              type="text"
+              value={tencentSecretId}
+              onChange={(e) => setTencentSecretId(e.target.value)}
+              placeholder={t('system.secretIdPlaceholder')}
+              className="input"
+            />
+            <p className="text-xs text-gray-500 mt-1">
+              {t('system.secretIdHelp')}
+            </p>
+          </div>
+          <div>
+            <label className="label">
+              {t('system.secretKey')} {ttsConfigLoaded && !showTencentKey && (
+                <span className="text-green-600 text-xs ml-2">{t('system.secretKeySet')}</span>
+              )}
+            </label>
+            <div className="relative">
+              <input
+                type={showTencentKey ? "text" : "password"}
+                value={tencentSecretKey}
+                onChange={(e) => setTencentSecretKey(e.target.value)}
+                placeholder={ttsConfigLoaded ? t('system.secretKeyUpdatePlaceholder') : t('system.secretKeyPlaceholder')}
+                className="input pr-10"
+              />
+              {ttsConfigLoaded && (
+                <button
+                  type="button"
+                  onClick={() => setShowTencentKey(!showTencentKey)}
+                  className="absolute right-2 top-1/2 -translate-y-1/2 text-gray-500 hover:text-gray-700"
+                >
+                  {showTencentKey ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                </button>
+              )}
+            </div>
+            <p className="text-xs text-gray-500 mt-1">
+              {ttsConfigLoaded 
+                ? t('system.secretKeyUpdateHelp')
+                : t('system.secretKeyHelp')}
+            </p>
+          </div>
+          <div className="bg-blue-50 border border-blue-200 rounded-lg p-3 sm:p-4">
+            <p className="text-sm text-blue-800">
+              <strong>{t('common.tips')}:</strong> {t('system.configTip')}
+            </p>
+          </div>
+          <button
+            onClick={handleSaveTTS}
+            disabled={saving || !tencentSecretId}
+            className="btn btn-primary w-full sm:w-auto flex items-center justify-center gap-2"
+          >
+            <Save className="w-4 h-4" />
+            {saving ? t('system.saving') : t('system.saveTTSConfig')}
+          </button>
+        </div>
+      </div>
+
+      {/* 群组功能开关 */}
+      <div className="space-y-3 sm:space-y-4">
+        <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 sm:gap-4">
+          <h2 className="text-lg sm:text-xl font-semibold text-gray-900">群组功能开关</h2>
           <div className="flex items-center gap-2">
             <button
               onClick={toggleAllGroups}
-              className="text-sm text-blue-500 hover:text-blue-600"
+              className="text-sm text-primary-600 hover:text-primary-700"
             >
               {selectedGroups.size === groupConfigs.length ? '取消全选' : '全选'}
             </button>
@@ -553,18 +677,18 @@ export default function AIConfigPage() {
           </div>
         </div>
 
-        <div className="mb-4 flex flex-wrap gap-2">
+        <div className="flex flex-wrap gap-2">
           <button
             onClick={() => handleBatchUpdate(true)}
             disabled={selectedGroups.size === 0 || saving}
-            className="px-3 sm:px-4 py-2 text-sm sm:text-base bg-green-500 text-white rounded hover:bg-green-600 disabled:opacity-50 whitespace-nowrap"
+            className="btn btn-success text-sm whitespace-nowrap"
           >
             批量开启
           </button>
           <button
             onClick={() => handleBatchUpdate(false)}
             disabled={selectedGroups.size === 0 || saving}
-            className="px-3 sm:px-4 py-2 text-sm sm:text-base bg-red-500 text-white rounded hover:bg-red-600 disabled:opacity-50 whitespace-nowrap"
+            className="btn btn-danger text-sm whitespace-nowrap"
           >
             批量关闭
           </button>
@@ -576,7 +700,7 @@ export default function AIConfigPage() {
               }
             }}
             disabled={selectedGroups.size === 0 || saving}
-            className="px-2 sm:px-3 py-2 text-sm sm:text-base border rounded-lg disabled:opacity-50 min-w-0 flex-1 sm:flex-initial sm:min-w-[140px]"
+            className="input text-sm min-w-0 flex-1 sm:flex-initial sm:min-w-[140px]"
           >
             <option value="">批量设置模型</option>
             {models.map((model) => (
@@ -593,7 +717,7 @@ export default function AIConfigPage() {
               }
             }}
             disabled={selectedGroups.size === 0 || saving}
-            className="px-2 sm:px-3 py-2 text-sm sm:text-base border rounded-lg disabled:opacity-50 min-w-0 flex-1 sm:flex-initial sm:min-w-[140px]"
+            className="input text-sm min-w-0 flex-1 sm:flex-initial sm:min-w-[140px]"
           >
             <option value="">批量设置预设</option>
             {presets.map((preset) => (
@@ -604,10 +728,10 @@ export default function AIConfigPage() {
           </select>
         </div>
 
-        <div className="overflow-x-auto -mx-4 sm:mx-0">
+        <div className="overflow-x-auto -mx-4 sm:mx-0 border border-gray-200 rounded-lg">
           <table className="w-full min-w-[600px]">
-            <thead>
-              <tr className="border-b">
+            <thead className="bg-gray-50">
+              <tr className="border-b border-gray-200">
                 <th className="text-left p-2 sm:p-3">
                   <input
                     type="checkbox"
@@ -632,7 +756,7 @@ export default function AIConfigPage() {
                 </tr>
               ) : (
                 groupConfigs.map((config) => (
-                  <tr key={config.target_id} className={`border-b hover:bg-gray-50 ${config.is_left ? 'opacity-60' : ''}`}>
+                  <tr key={config.target_id} className={`border-b border-gray-100 hover:bg-gray-50 transition-colors ${config.is_left ? 'opacity-60' : ''}`}>
                     <td className="p-2 sm:p-3">
                       <input
                         type="checkbox"

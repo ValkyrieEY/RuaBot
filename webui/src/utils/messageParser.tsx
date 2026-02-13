@@ -75,8 +75,10 @@ function parseCQCode(cqString: string): CQCode | null {
 
 /**
  * 将消息文本转换为React元素
+ * @param message 消息文本
+ * @param isSelf 是否是机器人自己的消息（用于调整样式）
  */
-export function parseMessageContent(message: string): React.ReactNode[] {
+export function parseMessageContent(message: string, isSelf: boolean = false): React.ReactNode[] {
   const elements: React.ReactNode[] = []
   let lastIndex = 0
   const cqRegex = /\[CQ:[^\]]+\]/g
@@ -93,7 +95,7 @@ export function parseMessageContent(message: string): React.ReactNode[] {
     const cq = parseCQCode(match[0])
     
     if (cq) {
-      elements.push(renderCQCode(cq, match.index))
+      elements.push(renderCQCode(cq, match.index, isSelf))
     } else {
       // 如果解析失败，显示原始文本
       elements.push(<span key={`cq-${match.index}`}>{match[0]}</span>)
@@ -113,37 +115,45 @@ export function parseMessageContent(message: string): React.ReactNode[] {
 
 /**
  * 渲染CQ码为React组件
+ * @param cq CQ码对象
+ * @param key 唯一键
+ * @param isSelf 是否是机器人自己的消息（用于调整样式）
  */
-function renderCQCode(cq: CQCode, key: number): React.ReactNode {
+function renderCQCode(cq: CQCode, key: number, isSelf: boolean = false): React.ReactNode {
   switch (cq.type) {
     case 'image':
       // 优先使用 url，如果没有则使用 file
-      let imgSrc = cq.params.url || cq.params.file
+      const imageUrl = cq.params.url
+      const imageFile = cq.params.file
       
-      // 如果 file 是文件名（不是 URL），显示占位符
-      if (!imgSrc || (!imgSrc.startsWith('http://') && !imgSrc.startsWith('https://') && !imgSrc.startsWith('data:'))) {
-        imgSrc = '' // 设置为空，显示占位符
-      }
+      // 构建图片源：如果有URL就用URL，否则用file参数通过代理获取
+      let imgSrc = imageUrl || imageFile
+      let finalImgSrc = imgSrc
       
-      if (!imgSrc) {
-        // 如果没有有效的图片源，显示占位符
+      // 如果只有file参数（不是URL），需要通过代理接口获取
+      if (imageFile && !imageUrl && (!imageFile.startsWith('http://') && !imageFile.startsWith('https://'))) {
+        // 通过代理接口，传递file参数
+        finalImgSrc = `${API_BASE_URL}/chat/image-proxy?file=${encodeURIComponent(imageFile)}`
+        imgSrc = imageFile // 保存原始file用于错误处理
+      } else if (imageUrl) {
+        // 如果有URL，对于 QQ 多媒体服务器的 URL，使用代理
+        const isQQMultimedia = imageUrl.includes('multimedia.nt.qq.com.cn')
+        finalImgSrc = isQQMultimedia 
+          ? `${API_BASE_URL}/chat/image-proxy?url=${encodeURIComponent(imageUrl)}`
+          : imageUrl
+        imgSrc = imageUrl
+      } else if (!imgSrc) {
+        // 如果既没有url也没有file，显示占位符
         return (
           <div key={`img-${key}`} className="my-2 p-4 bg-gray-100 rounded-lg border border-gray-300">
             <div className="flex items-center gap-2 text-gray-500">
               <div>
                 <p className="text-sm font-medium">[图片]</p>
-                {cq.params.file && <p className="text-xs text-gray-400">{cq.params.file}</p>}
               </div>
             </div>
           </div>
         )
       }
-      
-      // 对于 QQ 多媒体服务器的 URL，使用代理
-      const isQQMultimedia = imgSrc.includes('multimedia.nt.qq.com.cn')
-      const finalImgSrc = isQQMultimedia 
-        ? `${API_BASE_URL}/chat/image-proxy?url=${encodeURIComponent(imgSrc)}`
-        : imgSrc
       
       return (
         <div key={`img-${key}`} className="my-2">
@@ -151,7 +161,14 @@ function renderCQCode(cq: CQCode, key: number): React.ReactNode {
             src={finalImgSrc}
             alt={cq.params.summary || '图片'}
             className="max-w-xs max-h-64 rounded-lg cursor-pointer hover:opacity-90 transition-opacity block"
-            onClick={() => window.open(imgSrc, '_blank')}
+            onClick={() => {
+              // 如果原始源是file参数，使用代理URL；否则直接打开
+              if (imageFile && !imageUrl) {
+                window.open(finalImgSrc, '_blank')
+              } else {
+                window.open(imgSrc, '_blank')
+              }
+            }}
             onError={(e) => {
               console.error('Image load failed:', finalImgSrc)
               const target = e.currentTarget as HTMLImageElement
@@ -171,10 +188,40 @@ function renderCQCode(cq: CQCode, key: number): React.ReactNode {
                   </div>
                 `
                 const link = document.createElement('a')
-                link.href = imgSrc
-                link.target = '_blank'
-                link.className = 'text-xs text-blue-600 hover:underline mt-1 block'
+                // 使用图片代理接口，而不是直接打开原始URL
+                const proxyUrl = imgSrc.startsWith('http://') || imgSrc.startsWith('https://')
+                  ? `${API_BASE_URL}/chat/image-proxy?url=${encodeURIComponent(imgSrc)}`
+                  : imgSrc
+                link.href = '#'
+                link.className = 'text-xs text-blue-600 hover:underline mt-1 block cursor-pointer'
                 link.textContent = '查看图片'
+                link.onclick = async (event) => {
+                  event.preventDefault()
+                  // 尝试通过代理打开图片
+                  try {
+                    // 先尝试通过代理获取图片
+                    const response = await fetch(proxyUrl)
+                    if (response.ok) {
+                      // 如果成功，在新窗口打开代理URL
+                      window.open(proxyUrl, '_blank')
+                    } else {
+                      // 如果代理失败，尝试直接打开原始URL（可能已过期）
+                      if (imgSrc.startsWith('http://') || imgSrc.startsWith('https://')) {
+                        window.open(imgSrc, '_blank')
+                      } else {
+                        alert('图片链接无效或已过期')
+                      }
+                    }
+                  } catch (error) {
+                    // 如果代理请求失败，尝试直接打开原始URL
+                    console.error('Failed to load image via proxy:', error)
+                    if (imgSrc.startsWith('http://') || imgSrc.startsWith('https://')) {
+                      window.open(imgSrc, '_blank')
+                    } else {
+                      alert('图片链接无效或已过期')
+                    }
+                  }
+                }
                 fallback.appendChild(link)
                 parent.appendChild(fallback)
               }
@@ -198,8 +245,9 @@ function renderCQCode(cq: CQCode, key: number): React.ReactNode {
       )
 
     case 'at':
+      // 如果是机器人自己的消息，使用白色文字；否则使用蓝色
       return (
-        <span key={`at-${key}`} className="text-blue-600 font-medium">
+        <span key={`at-${key}`} className={`font-medium ${isSelf ? 'text-white' : 'text-blue-600'}`}>
           @{cq.params.qq === 'all' ? '全体成员' : cq.params.qq}
         </span>
       )

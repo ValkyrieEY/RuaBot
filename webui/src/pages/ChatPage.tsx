@@ -1,6 +1,6 @@
 import { useEffect, useState, useRef } from 'react'
 import { useTranslation } from 'react-i18next'
-import { Send, Users, User, Search, RefreshCw, MessageSquare, ArrowLeft, Wifi, WifiOff, Image as ImageIcon } from 'lucide-react'
+import { Send, Users, User, Search, RefreshCw, MessageSquare, ArrowLeft, Wifi, WifiOff, Image as ImageIcon, X } from 'lucide-react'
 import { api } from '@/utils/api'
 import { useWebSocket, type WebSocketMessage } from '@/hooks/useWebSocket'
 import { parseMessageContent } from '@/utils/messageParser'
@@ -48,6 +48,9 @@ export default function ChatPage() {
   const [lastCheckedTime, setLastCheckedTime] = useState<number>(Date.now()) // Track when we last checked messages
   const viewedChatsRef = useRef<Set<string>>(new Set()) // Track which chats have been viewed
   const fileInputRef = useRef<HTMLInputElement>(null)
+  const [showMembersModal, setShowMembersModal] = useState(false)
+  const [groupMembers, setGroupMembers] = useState<any[]>([])
+  const [loadingMembers, setLoadingMembers] = useState(false)
   
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const messageContainerRef = useRef<HTMLDivElement>(null)
@@ -552,8 +555,10 @@ export default function ChatPage() {
                       <p className="text-xs text-gray-500 truncate">{contact.lastMessage}</p>
                     ) : contact.type === 'group' && contact.member_count ? (
                       <p className="text-xs text-gray-500">
-                        {t('chat.memberCount', { count: contact.member_count })}
+                        {t('chat.memberCount', { count: contact.member_count })} · {contact.id}
                       </p>
+                    ) : contact.type === 'group' ? (
+                      <p className="text-xs text-gray-500">群号: {contact.id}</p>
                     ) : contact.remark ? (
                       <p className="text-xs text-gray-500 truncate">{contact.remark}</p>
                     ) : (
@@ -603,18 +608,54 @@ export default function ChatPage() {
                       </span>
                     )}
                   </div>
-                  {selectedContact.type === 'group' && selectedContact.member_count && (
-                    <p className="text-xs text-gray-500">{t('chat.members', { count: selectedContact.member_count })}</p>
+                  {selectedContact.type === 'group' ? (
+                    <p className="text-xs text-gray-500">
+                      {selectedContact.member_count && `${t('chat.members', { count: selectedContact.member_count })} · `}
+                      {selectedContact.id}
+                    </p>
+                  ) : (
+                    <p className="text-xs text-gray-500">{selectedContact.id}</p>
                   )}
                 </div>
               </div>
-              <button
-                onClick={() => loadMessages(selectedContact)}
-                className="p-2 hover:bg-gray-100 rounded-lg transition-colors flex-shrink-0"
-                title={t('common.refresh')}
-              >
-                <RefreshCw className="w-5 h-5 text-gray-600" />
-              </button>
+              <div className="flex items-center gap-2">
+                {selectedContact.type === 'group' && (
+                  <button
+                    onClick={async () => {
+                      setShowMembersModal(true)
+                      setLoadingMembers(true)
+                      try {
+                        const data = await api.getGroupMembers(selectedContact.id)
+                        const members = data.members || []
+                        // 按角色排序：群主 > 管理员 > 普通成员
+                        const sortedMembers = members.sort((a, b) => {
+                          const roleOrder = { 'owner': 0, 'admin': 1, 'member': 2 }
+                          const aOrder = roleOrder[a.role as keyof typeof roleOrder] ?? 3
+                          const bOrder = roleOrder[b.role as keyof typeof roleOrder] ?? 3
+                          return aOrder - bOrder
+                        })
+                        setGroupMembers(sortedMembers)
+                      } catch (error) {
+                        console.error('Failed to load group members:', error)
+                        alert('加载群成员列表失败')
+                      } finally {
+                        setLoadingMembers(false)
+                      }
+                    }}
+                    className="p-2 hover:bg-gray-100 rounded-lg transition-colors flex-shrink-0"
+                    title="查看群成员"
+                  >
+                    <Users className="w-5 h-5 text-gray-600" />
+                  </button>
+                )}
+                <button
+                  onClick={() => loadMessages(selectedContact)}
+                  className="p-2 hover:bg-gray-100 rounded-lg transition-colors flex-shrink-0"
+                  title={t('common.refresh')}
+                >
+                  <RefreshCw className="w-5 h-5 text-gray-600" />
+                </button>
+              </div>
             </div>
 
             {/* Messages */}
@@ -631,7 +672,7 @@ export default function ChatPage() {
                   return (
                     <div key={msg.id} className={`flex gap-2 md:gap-3 ${msg.is_self ? 'flex-row-reverse' : ''}`}>
                       <img
-                        src={`http://q.qlogo.cn/headimg_dl?dst_uin=${msg.user_id}&spec=640`}
+                        src={`https://q.qlogo.cn/headimg_dl?dst_uin=${msg.user_id}&spec=640`}
                         alt={senderName}
                         className="w-8 h-8 md:w-10 md:h-10 rounded-full object-cover flex-shrink-0"
                         onError={(e) => {
@@ -653,7 +694,7 @@ export default function ChatPage() {
                           }`}
                         >
                           <div className="whitespace-pre-wrap break-words">
-                            {parseMessageContent(msg.message)}
+                            {parseMessageContent(msg.message, msg.is_self)}
                           </div>
                         </div>
                         <p className="text-xs text-gray-400 mt-1">
@@ -726,6 +767,92 @@ export default function ChatPage() {
           </div>
         )}
       </div>
+
+      {/* Group Members Modal */}
+      {showMembersModal && selectedContact && selectedContact.type === 'group' && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 z-50 flex items-center justify-center p-4">
+          <div className="bg-white rounded-lg shadow-xl max-w-2xl w-full max-h-[80vh] flex flex-col">
+            {/* Header */}
+            <div className="flex items-center justify-between p-6 border-b border-gray-200 flex-shrink-0">
+              <h2 className="text-xl font-bold text-gray-900">群成员列表 - {selectedContact.name}</h2>
+              <button
+                onClick={() => {
+                  setShowMembersModal(false)
+                  setGroupMembers([])
+                }}
+                className="p-2 hover:bg-gray-100 rounded-lg transition-colors"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+            
+            {/* Content */}
+            <div className="flex-1 overflow-y-auto p-6">
+              {loadingMembers ? (
+                <div className="flex items-center justify-center py-12">
+                  <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary-600"></div>
+                </div>
+              ) : groupMembers.length === 0 ? (
+                <div className="text-center py-12 text-gray-500">暂无成员</div>
+              ) : (
+                <div className="space-y-2">
+                  {groupMembers.map((member) => (
+                    <div
+                      key={member.user_id}
+                      className="flex items-center gap-3 p-3 hover:bg-gray-50 rounded-lg transition-colors"
+                    >
+                      <img
+                        src={`https://q.qlogo.cn/headimg_dl?dst_uin=${member.user_id}&spec=640`}
+                        alt={member.nickname || member.card || `用户${member.user_id}`}
+                        className="w-10 h-10 rounded-full object-cover flex-shrink-0"
+                        onError={(e) => {
+                          e.currentTarget.src = 'data:image/svg+xml,%3Csvg xmlns="http://www.w3.org/2000/svg" width="40" height="40"%3E%3Crect width="40" height="40" fill="%23e5e7eb"/%3E%3Ctext x="50%25" y="50%25" text-anchor="middle" dy=".3em" fill="%239ca3af" font-size="14"%3E%3C/text%3E%3C/svg%3E'
+                        }}
+                      />
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center gap-2">
+                          <span className="font-medium text-gray-900 truncate">
+                            {member.card || member.nickname || `用户${member.user_id}`}
+                          </span>
+                          {member.role === 'owner' && (
+                            <span className="px-2 py-0.5 text-xs bg-yellow-100 text-yellow-700 rounded">群主</span>
+                          )}
+                          {member.role === 'admin' && (
+                            <span className="px-2 py-0.5 text-xs bg-blue-100 text-blue-700 rounded">管理员</span>
+                          )}
+                        </div>
+                        <div className="flex items-center gap-2 text-xs text-gray-500 mt-1">
+                          <span>{member.user_id}</span>
+                          {member.nickname && member.card && member.nickname !== member.card && (
+                            <>
+                              <span>·</span>
+                              <span className="truncate">{member.nickname}</span>
+                            </>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+            
+            {/* Footer */}
+            <div className="flex items-center justify-between p-6 border-t border-gray-200 flex-shrink-0">
+              <span className="text-sm text-gray-500">共 {groupMembers.length} 名成员</span>
+              <button
+                onClick={() => {
+                  setShowMembersModal(false)
+                  setGroupMembers([])
+                }}
+                className="btn btn-secondary"
+              >
+                关闭
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }

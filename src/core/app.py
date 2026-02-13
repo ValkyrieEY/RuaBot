@@ -143,6 +143,22 @@ class Application:
             if event.get('type') == 'message':
                 from ..core.event_context import EventContext
                 
+                # Cache images in message (non-blocking)
+                try:
+                    from ..ui.image_cache import get_image_cache_manager
+                    image_cache = get_image_cache_manager()
+                    raw_message = plugin_payload.get('raw_message', '')
+                    if raw_message and '[CQ:image' in raw_message:
+                        # Extract and cache images asynchronously (don't wait)
+                        asyncio.create_task(
+                            image_cache.extract_and_cache_images(
+                                raw_message,
+                                self.onebot_adapter if hasattr(self, 'onebot_adapter') else None
+                            )
+                        )
+                except Exception as e:
+                    logger.debug(f"Failed to cache images in message: {e}")
+                
                 # Create event context for message received
                 ctx = EventContext(
                     event_name='message.received',
@@ -151,16 +167,25 @@ class Application:
                 )
                 
                 # Emit with context (allows plugins to modify/block)
-                if hasattr(self, 'plugin_connector') and self.plugin_connector:
-                    modified_ctx = await self.plugin_connector.emit_event_with_context(
-                        ctx,
-                        bound_plugins=None  # All enabled plugins
-                    )
-                    
-                    # If None is returned, it means event was blocked or error occurred
-                    if modified_ctx is None:
-                        logger.info("Message blocked by plugin or error occurred")
-                        return
+                modified_ctx = ctx  # Default to original context
+                if not hasattr(self, 'plugin_connector') or not self.plugin_connector:
+                    logger.warning("plugin_connector not available, skipping plugin event processing")
+                else:
+                    logger.debug(f"Emitting message.received event to plugins: {plugin_payload.get('raw_message', '')[:50]}")
+                    try:
+                        modified_ctx = await self.plugin_connector.emit_event_with_context(
+                            ctx,
+                            bound_plugins=None  # All enabled plugins
+                        )
+                        
+                        # If None is returned, it means event was blocked or error occurred
+                        if modified_ctx is None:
+                            logger.info("Message blocked by plugin or error occurred")
+                            return
+                    except Exception as e:
+                        logger.error(f"Error emitting event to plugins: {e}", exc_info=True)
+                        # Continue processing even if plugin handling fails
+                        modified_ctx = ctx  # Use original context on error
                     
                     # Check if default behavior was prevented
                     if modified_ctx.is_prevented_default():
@@ -218,6 +243,16 @@ class Application:
                 logger.info("AI message handler disabled due to initialization error")
         else:
             logger.info("AI system not available, skipping AI message handler initialization")
+        
+        # Initialize image cache manager and cleanup on startup
+        try:
+            from ..ui.image_cache import get_image_cache_manager
+            image_cache = get_image_cache_manager()
+            await image_cache.cleanup_all_images()  # Clean up all images on startup
+            await image_cache.start_periodic_cleanup(interval_hours=6)  # Clean up every 6 hours
+            logger.info("Image cache manager initialized and cleanup scheduled")
+        except Exception as e:
+            logger.warning(f"Failed to initialize image cache manager: {e}")
         
         # Initialize plugin system
         try:
@@ -342,6 +377,14 @@ class Application:
         # Stop plugin system
         if self.plugin_connector:
             await self.plugin_connector.dispose()
+        
+        # Stop image cache cleanup task
+        try:
+            from ..ui.image_cache import get_image_cache_manager
+            image_cache = get_image_cache_manager()
+            await image_cache.stop_periodic_cleanup()
+        except Exception as e:
+            logger.warning(f"Failed to stop image cache cleanup: {e}")
 
         # Cancel all tasks
         for task in self._tasks:

@@ -88,12 +88,22 @@ class RuntimeConnectionHandler:
         key = data.get('key')
         value_b64 = data.get('value')
         
-        # Decode base64
-        import base64
-        value = base64.b64decode(value_b64)
-        
-        success = await self.db_manager.set_binary('plugin', owner, key, value)
-        return {'success': success}
+        try:
+            # Decode base64
+            import base64
+            value = base64.b64decode(value_b64)
+            
+            logger.debug(f"Saving binary for plugin={owner}, key={key}, size={len(value)} bytes")
+            success = await self.db_manager.set_binary('plugin', owner, key, value)
+            logger.debug(f"Save result: {success}")
+            
+            if not success:
+                logger.error(f"set_binary returned False for plugin={owner}, key={key}")
+            
+            return {'success': success}
+        except Exception as e:
+            logger.error(f"Exception in _handle_set_binary: {e}", exc_info=True)
+            return {'success': False, 'error': str(e)}
     
     async def _handle_delete_binary(self, data: Dict[str, Any]) -> Dict[str, Any]:
         """Handle delete_binary request."""

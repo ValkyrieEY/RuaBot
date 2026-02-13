@@ -214,6 +214,10 @@ class PluginRuntime:
             await self.reload_plugin(data.get('plugin_name'), data.get('config'))
         elif msg_type == 'unload_plugin':
             await self.unload_plugin(data.get('plugin_name'))
+        elif msg_type == 'shutdown':
+            # Gracefully unload all plugins before shutdown
+            await self.shutdown_all_plugins()
+            self.running = False
         elif msg_type == 'event':
             await self.handle_event(data)
         elif msg_type == 'event_with_context':
@@ -259,7 +263,7 @@ class PluginRuntime:
                 if not future.done():
                     if success:
                         # Return appropriate result based on action
-                        result = {}
+                        result = {'success': True}  # 🔥 始终包含 success 字段
                         if value is not None:
                             result['value'] = value
                         if keys is not None:
@@ -314,15 +318,24 @@ class PluginRuntime:
             params = data.get('params', {})
             source_plugin = data.get('source_plugin')
             
+            self.log("debug", f"Received intercept_message request: request_id={request_id}, plugin_id={plugin_id}, action={action}")
+            
             # Get interceptor from runtime
             if hasattr(self, '_interceptors') and plugin_id in self._interceptors:
                 interceptor = self._interceptors[plugin_id]
                 try:
-                    # Run interceptor
-                    result = await interceptor.intercept_message(action, params, source_plugin)
+                    # Run interceptor with timeout to prevent blocking
+                    # Use reasonable timeout to allow interceptor to complete quickly
+                    # Interceptors should return immediately, but some may need a bit more time
+                    result = await asyncio.wait_for(
+                        interceptor.intercept_message(action, params, source_plugin),
+                        timeout=1.0  # 1 second timeout for interceptor (increased to allow async tasks to start)
+                    )
                     
-                    # Send response
-                    self.send_message({
+                    self.log("debug", f"Interceptor result: allow={result.allow}, request_id={request_id}")
+                    
+                    # Send response immediately (synchronous, should be fast)
+                    response_msg = {
                         'type': 'intercept_message_response',
                         'data': {
                             'request_id': request_id,
@@ -330,9 +343,23 @@ class PluginRuntime:
                             'modified_data': result.modified_data,
                             'block_reason': result.block_reason
                         }
+                    }
+                    self.send_message(response_msg)
+                    self.log("debug", f"Sent intercept_message_response: request_id={request_id}, allow={result.allow}")
+                except asyncio.TimeoutError:
+                    self.log("warning", f"Interceptor timeout for {plugin_id}, allowing message")
+                    # On timeout, allow the message
+                    self.send_message({
+                        'type': 'intercept_message_response',
+                        'data': {
+                            'request_id': request_id,
+                            'allow': True
+                        }
                     })
                 except Exception as e:
                     self.log("error", f"Interceptor error: {e}")
+                    import traceback
+                    self.log("error", f"Traceback: {traceback.format_exc()}")
                     # On error, allow the message
                     self.send_message({
                         'type': 'intercept_message_response',
@@ -343,6 +370,7 @@ class PluginRuntime:
                     })
             else:
                 # No interceptor found, allow the message
+                self.log("warning", f"Interceptor not found for {plugin_id}, allowing message")
                 self.send_message({
                     'type': 'intercept_message_response',
                     'data': {
@@ -511,6 +539,23 @@ class PluginRuntime:
             self.log("error", f"Failed to unload plugin {plugin_name}: {e}")
             import traceback
             self.log("error", traceback.format_exc())
+    
+    async def shutdown_all_plugins(self):
+        """Gracefully shutdown all loaded plugins by calling their on_unload methods."""
+        self.log("info", f"Shutting down all plugins ({len(self.plugins)} loaded)...")
+        
+        for plugin_id, plugin_instance in list(self.plugins.items()):
+            try:
+                if hasattr(plugin_instance, 'on_unload'):
+                    self.log("info", f"Calling on_unload for plugin: {plugin_id}")
+                    await plugin_instance.on_unload()
+                    self.log("info", f"Plugin {plugin_id} unloaded successfully")
+            except Exception as e:
+                self.log("error", f"Error calling on_unload for plugin {plugin_id}: {e}")
+                import traceback
+                self.log("error", traceback.format_exc())
+        
+        self.log("info", "All plugins shut down")
     
     async def reload_plugin(self, plugin_name: str, config_override: Optional[Dict[str, Any]] = None):
         """Reload a single plugin.
@@ -976,6 +1021,31 @@ class PluginAPI:
             Status info dict
         """
         return await self.call_api('get_status')
+    
+    async def delete_msg(self, message_id: int) -> Dict[str, Any]:
+        """Delete a message.
+        
+        Args:
+            message_id: Message ID to delete
+            
+        Returns:
+            Response dict with 'success' field
+        """
+        try:
+            result = await self.call_api('delete_msg', message_id=message_id)
+            # Normalize response format
+            if result is None or result == {}:
+                return {'success': True}
+            if isinstance(result, dict):
+                if 'success' in result:
+                    return result
+                # If result has 'status' field (OneBot format)
+                if result.get('status') == 'ok':
+                    return {'success': True}
+            return {'success': True, 'data': result}
+        except Exception as e:
+            self.log("error", f"Failed to delete message {message_id}: {e}")
+            return {'success': False, 'error': str(e)}
     
     async def set_group_ban(self, group_id: int, user_id: int, duration: int = 30 * 60) -> Dict[str, Any]:
         """Ban group member.

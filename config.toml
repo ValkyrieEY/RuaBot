@@ -1,6 +1,6 @@
 [app]
 name = "XQNEXT Framework"
-version = "0.0.3"
+version = "0.0.4"
 
 # 环境模式："development"（开发）或 "production"（生产）
 environment = "development"
@@ -8,8 +8,6 @@ environment = "development"
 # 启用调试模式（影响日志记录和错误处理）
 debug = true
 
-# 日志级别："DEBUG"（调试）、"INFO"（信息）、"WARNING"（警告）、"ERROR"（错误）、"CRITICAL"（严重）
-log_level = "DEBUG"
 
 # 服务器配置
 [server]
@@ -89,6 +87,9 @@ auto_load = true
 
 # 为插件执行启用线程池
 thread_pool_enabled = true
+
+# 是否文件改动自动重启
+auto_reload = false
 
 [web_ui]
 # 启用 Web 界面

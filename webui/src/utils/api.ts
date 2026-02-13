@@ -238,6 +238,11 @@ class ApiClient {
     return response.data
   }
 
+  async getGroupMembers(groupId: string): Promise<{ group_id: string, members: any[], count: number }> {
+    const response = await this.client.get(`/chat/groups/${groupId}/members`)
+    return response.data
+  }
+
   // AI APIs
   async checkAIAvailability(): Promise<{ available: boolean; message: string; module_path?: string }> {
     const response = await this.client.get('/ai/availability')

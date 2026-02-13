@@ -1,7 +1,7 @@
 import { useState, FormEvent, useEffect } from 'react'
 import { useTranslation } from 'react-i18next'
 import { api } from '@/utils/api'
-import { Server, Settings as SettingsIcon, Lock, Save, AlertCircle, CheckCircle } from 'lucide-react'
+import { Settings as SettingsIcon, Lock, Save, AlertCircle, CheckCircle } from 'lucide-react'
 
 interface SystemConfig {
   app_name: string
@@ -13,10 +13,6 @@ interface SystemConfig {
   web_ui_enabled: boolean
   ai_thread_pool_enabled?: boolean
   plugin_thread_pool_enabled?: boolean
-  tencent_cloud?: {
-    secret_id?: string
-    secret_key_set?: boolean
-  }
 }
 
 export default function SystemPage() {
@@ -35,11 +31,6 @@ export default function SystemPage() {
   const [passwordSuccess, setPasswordSuccess] = useState(false)
   const [passwordError, setPasswordError] = useState('')
   
-  // Tencent Cloud TTS config
-  const [tencentSecretId, setTencentSecretId] = useState('')
-  const [tencentSecretKey, setTencentSecretKey] = useState('')
-  const [showTencentKey, setShowTencentKey] = useState(false)
-  
   // AI Thread Pool config
   const [aiThreadPoolEnabled, setAiThreadPoolEnabled] = useState(true)
   
@@ -54,12 +45,6 @@ export default function SystemPage() {
     try {
       const data = await api.getSystemConfig()
       setConfig(data)
-      // Load Tencent Cloud config
-      if (data.tencent_cloud) {
-        setTencentSecretId(data.tencent_cloud.secret_id || '')
-        // Don't load secret_key, only show if it's set
-        setShowTencentKey(false)
-      }
       // Load AI Thread Pool config
       setAiThreadPoolEnabled(data.ai_thread_pool_enabled !== undefined ? data.ai_thread_pool_enabled : true)
       // Load Plugin Thread Pool config
@@ -88,21 +73,8 @@ export default function SystemPage() {
         plugin_thread_pool_enabled: pluginThreadPoolEnabled,
       }
       
-      // Include Tencent Cloud config if provided
-      if (tencentSecretId || tencentSecretKey) {
-        updateData.tencent_cloud = {
-          secret_id: tencentSecretId,
-          secret_key: tencentSecretKey || undefined,  // Only send if provided
-        }
-      }
-      
       await api.updateSystemConfig(updateData)
       setSuccess(true)
-      // Clear secret key input after saving
-      if (tencentSecretKey) {
-        setTencentSecretKey('')
-        setShowTencentKey(false)
-      }
       // Reload config after saving to ensure UI reflects saved values
       await loadConfig()
       setTimeout(() => setSuccess(false), 3000)
@@ -305,90 +277,6 @@ export default function SystemPage() {
         </button>
       </form>
 
-      {/* Tencent Cloud TTS Configuration */}
-      <form onSubmit={handleSubmit} className="card space-y-6">
-        <div className="flex items-center gap-3 mb-4">
-          <Server className="w-6 h-6 text-primary-600" />
-          <h2 className="text-xl font-semibold text-gray-900">{t('system.ttsConfig')}</h2>
-        </div>
-
-        <p className="text-sm text-gray-600">
-          {t('system.ttsConfigDesc')}
-          <a 
-            href="https://cloud.tencent.com/document/api/1073/37995" 
-            target="_blank" 
-            rel="noopener noreferrer"
-            className="text-primary-600 hover:text-primary-700 ml-1 underline"
-          >
-            {t('system.viewDocs')}
-          </a>
-        </p>
-
-        {/* SecretId */}
-        <div>
-          <label className="label">
-            {t('system.secretId')} <span className="text-red-500">*</span>
-          </label>
-          <input
-            type="text"
-            value={tencentSecretId}
-            onChange={(e) => setTencentSecretId(e.target.value)}
-            placeholder={t('system.secretIdPlaceholder')}
-            className="input"
-          />
-          <p className="text-xs text-gray-500 mt-1">
-            {t('system.secretIdHelp')}
-          </p>
-        </div>
-
-        {/* SecretKey */}
-        <div>
-          <label className="label">
-            {t('system.secretKey')} {config?.tencent_cloud?.secret_key_set && !showTencentKey && (
-              <span className="text-green-600 text-xs ml-2">{t('system.secretKeySet')}</span>
-            )}
-          </label>
-          <div className="relative">
-            <input
-              type={showTencentKey ? "text" : "password"}
-              value={tencentSecretKey}
-              onChange={(e) => setTencentSecretKey(e.target.value)}
-              placeholder={config?.tencent_cloud?.secret_key_set ? t('system.secretKeyUpdatePlaceholder') : t('system.secretKeyPlaceholder')}
-              className="input pr-10"
-            />
-            {config?.tencent_cloud?.secret_key_set && (
-              <button
-                type="button"
-                onClick={() => setShowTencentKey(!showTencentKey)}
-                className="absolute right-2 top-1/2 -translate-y-1/2 text-gray-500 hover:text-gray-700 text-sm"
-              >
-                {showTencentKey ? t('system.hide') : t('system.show')}
-              </button>
-            )}
-          </div>
-          <p className="text-xs text-gray-500 mt-1">
-            {config?.tencent_cloud?.secret_key_set 
-              ? t('system.secretKeyUpdateHelp')
-              : t('system.secretKeyHelp')}
-          </p>
-        </div>
-
-        <div className="bg-blue-50 border border-blue-200 rounded-lg p-4">
-          <p className="text-sm text-blue-800">
-            <strong>{t('common.tips')}:</strong>{t('system.configTip')}
-          </p>
-        </div>
-
-        <button
-          type="submit"
-          disabled={saving || !tencentSecretId}
-          className="btn btn-primary w-full flex items-center justify-center gap-2"
-        >
-          <Save className="w-5 h-5" />
-          {saving ? t('system.saving') : t('system.saveTTSConfig')}
-        </button>
-      </form>
-
       {/* Admin Password Reset */}
       <div className="card space-y-6">
         <div className="flex items-center gap-3 mb-4">
@@ -473,7 +361,7 @@ export default function SystemPage() {
       {/* System Info (Read-only) */}
       <div className="card">
         <div className="flex items-center gap-3 mb-4">
-          <Server className="w-6 h-6 text-primary-600" />
+          <SettingsIcon className="w-6 h-6 text-primary-600" />
           <h2 className="text-xl font-semibold text-gray-900">{t('system.systemInfo')}</h2>
         </div>
         <div className="space-y-3">

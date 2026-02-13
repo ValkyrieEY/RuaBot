@@ -1,0 +1,12 @@
+# 临时文件
+temp/
+*.txt
+
+# Python缓存
+__pycache__/
+*.py[cod]
+*$py.class
+
+# 数据文件
+*.json.bak
+

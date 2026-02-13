@@ -1,0 +1,1 @@
+curl -# -fSL https://raw.githubusercontent.com/ValkyrieEY/RuaBot/main/install.sh -o /tmp/ruabot_install.sh && bash /tmp/ruabot_install.sh

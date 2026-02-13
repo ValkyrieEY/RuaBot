@@ -25,6 +25,7 @@ interface PluginConfigModalProps {
 }
 
 function PluginConfigModal({ pluginName, isOpen, onClose, onSave }: PluginConfigModalProps) {
+  const toast = useToast()
   const [config, setConfig] = useState<any>({})
   const [schema, setSchema] = useState<any>(null)
   const [loading, setLoading] = useState(true)
@@ -41,11 +42,12 @@ function PluginConfigModal({ pluginName, isOpen, onClose, onSave }: PluginConfig
   const loadPluginInfo = async () => {
     try {
       const data = await api.getPlugin(pluginName)
-      if (data?.system_data?.priority !== undefined) {
-        setPriority(data.system_data.priority)
-      }
+      // Priority should always be defined from API, but fallback to 100 if not
+      const loadedPriority = data?.system_data?.priority
+      setPriority(loadedPriority !== undefined ? loadedPriority : 100)
     } catch (error) {
       console.error('Failed to load plugin info:', error)
+      // Keep default 100 on error
     }
   }
 
@@ -73,10 +75,19 @@ function PluginConfigModal({ pluginName, isOpen, onClose, onSave }: PluginConfig
       // Update local config state with returned config
       setConfig(updatedConfig)
       
+      // Update priority from response if available
+      if (response?.priority !== undefined) {
+        setPriority(response.priority)
+      }
+      
+      // Show success message
+      toast.success('配置保存成功')
+      
+      // Notify parent but don't close modal
       onSave(updatedConfig)
-      onClose()
+      // Don't close modal automatically - let user close it manually
     } catch (error: any) {
-      alert(error.response?.data?.detail || '保存失败')
+      toast.error(error.response?.data?.detail || '保存失败')
     } finally {
       setSaving(false)
     }
@@ -86,8 +97,9 @@ function PluginConfigModal({ pluginName, isOpen, onClose, onSave }: PluginConfig
 
   return (
     <div className="fixed inset-0 bg-black bg-opacity-50 z-50 flex items-center justify-center p-4">
-      <div className="bg-white rounded-lg shadow-xl max-w-2xl w-full max-h-[90vh] overflow-y-auto">
-        <div className="flex items-center justify-between p-6 border-b border-gray-200">
+      <div className="bg-white rounded-lg shadow-xl max-w-2xl w-full max-h-[90vh] flex flex-col">
+        {/* Fixed Header */}
+        <div className="flex items-center justify-between p-6 border-b border-gray-200 flex-shrink-0">
           <h2 className="text-xl font-bold text-gray-900">插件设置: {pluginName}</h2>
           <button
             onClick={onClose}
@@ -97,7 +109,8 @@ function PluginConfigModal({ pluginName, isOpen, onClose, onSave }: PluginConfig
           </button>
         </div>
         
-        <div className="p-6 space-y-6">
+        {/* Scrollable Content */}
+        <div className="flex-1 overflow-y-auto p-6 space-y-6">
           {/* Priority Setting */}
           <div className="border-b border-gray-200 pb-4">
             <label className="block text-sm font-medium text-gray-700 mb-2">
@@ -137,7 +150,8 @@ function PluginConfigModal({ pluginName, isOpen, onClose, onSave }: PluginConfig
           )}
         </div>
         
-        <div className="flex items-center justify-end gap-3 p-6 border-t border-gray-200">
+        {/* Fixed Footer */}
+        <div className="flex items-center justify-end gap-3 p-6 border-t border-gray-200 flex-shrink-0">
           <button
             onClick={onClose}
             className="btn btn-secondary"
@@ -605,34 +619,34 @@ export default function PluginsPage() {
       ) : (
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
           {plugins.map((plugin) => (
-            <div key={plugin.name} className="card flex flex-col h-full">
-              <div className="flex items-start justify-between mb-4">
-                <div className="flex-1 min-h-[80px]">
-                  <h3 className="font-semibold text-gray-900 mb-1">{plugin.name}</h3>
+            <div key={plugin.name} className="card flex flex-col h-full overflow-hidden">
+              <div className="flex items-start justify-between mb-4 min-w-0">
+                <div className="flex-1 min-h-[80px] min-w-0">
+                  <h3 className="font-semibold text-gray-900 mb-1 truncate">{plugin.name}</h3>
                   {(plugin.metadata?.description || plugin.description) && (
-                    <p className="text-sm text-gray-600 mb-2 line-clamp-2">
+                    <p className="text-sm text-gray-600 mb-2 line-clamp-2 break-words">
                       {plugin.metadata?.description || plugin.description}
                     </p>
                   )}
-                  <div className="flex items-center gap-2 text-xs text-gray-500">
+                  <div className="flex items-center gap-2 text-xs text-gray-500 flex-wrap">
                     {(plugin.metadata?.version || plugin.version) && (
-                      <span>v{plugin.metadata?.version || plugin.version}</span>
+                      <span className="whitespace-nowrap">v{plugin.metadata?.version || plugin.version}</span>
                     )}
                     {(plugin.metadata?.author || plugin.author) && (
                       <>
                         {(plugin.metadata?.version || plugin.version) && <span>•</span>}
-                        <span>{plugin.metadata?.author || plugin.author}</span>
+                        <span className="truncate">{plugin.metadata?.author || plugin.author}</span>
                       </>
                     )}
                   </div>
                   {(plugin as any).adapter && (
-                    <div className="text-xs text-gray-500 mt-1">
+                    <div className="text-xs text-gray-500 mt-1 truncate">
                       {t('plugins.adapter')}: <span className="font-medium">{(plugin as any).adapter}</span>
                     </div>
                   )}
                 </div>
                 <div
-                  className={`px-2 py-1 rounded text-xs font-medium flex-shrink-0 h-fit ${
+                  className={`px-2 py-1 rounded text-xs font-medium flex-shrink-0 h-fit ml-2 ${
                     plugin.enabled
                       ? 'bg-green-100 text-green-700'
                       : 'bg-gray-100 text-gray-600'

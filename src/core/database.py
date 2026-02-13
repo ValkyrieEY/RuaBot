@@ -52,6 +52,7 @@ class DatabaseManager:
             db_url,
             echo=False,
             poolclass=StaticPool,
+            pool_pre_ping=True,  # Enable connection health checks
         )
         
         # Create session factory
@@ -62,6 +63,7 @@ class DatabaseManager:
         )
         
         self._initialized = False
+        self._monitor_task: Optional[asyncio.Task] = None
     
     async def initialize(self):
         """Initialize database tables."""
@@ -90,6 +92,10 @@ class DatabaseManager:
                 logger.info("Knowledge graph module not available, skipping KG tables")
         
         self._initialized = True
+        
+        # Start connection pool monitoring
+        self._monitor_task = asyncio.create_task(self._monitor_connection_pool())
+        
         logger.info(f"Framework database initialized", db_path=str(self.db_path))
     
     @asynccontextmanager
@@ -239,34 +245,43 @@ class DatabaseManager:
         Returns:
             True if successful
         """
-        if len(value) > 10 * 1024 * 1024:  # 10MB
-            logger.warning(f"Binary data exceeds 10MB", size=len(value))
-        
-        unique_key = BinaryStorage.make_unique_key(owner_type, owner, key)
-        
-        async with self.session() as session:
-            # Try to get existing
-            result = await session.execute(
-                select(BinaryStorage).where(BinaryStorage.unique_key == unique_key)
-            )
-            storage = result.scalar_one_or_none()
+        try:
+            if len(value) > 10 * 1024 * 1024:  # 10MB
+                logger.warning(f"Binary data exceeds 10MB", size=len(value))
             
-            if storage:
-                # Update existing
-                storage.value = value
-            else:
-                # Create new
-                storage = BinaryStorage(
-                    unique_key=unique_key,
-                    key=key,
-                    owner_type=owner_type,
-                    owner=owner,
-                    value=value
+            unique_key = BinaryStorage.make_unique_key(owner_type, owner, key)
+            
+            logger.debug(f"set_binary: unique_key={unique_key}, size={len(value)}")
+            
+            async with self.session() as session:
+                # Try to get existing
+                result = await session.execute(
+                    select(BinaryStorage).where(BinaryStorage.unique_key == unique_key)
                 )
-                session.add(storage)
-            
-            await session.flush()
-            return True
+                storage = result.scalar_one_or_none()
+                
+                if storage:
+                    # Update existing
+                    logger.debug(f"Updating existing storage for {unique_key}")
+                    storage.value = value
+                else:
+                    # Create new
+                    logger.debug(f"Creating new storage for {unique_key}")
+                    storage = BinaryStorage(
+                        unique_key=unique_key,
+                        key=key,
+                        owner_type=owner_type,
+                        owner=owner,
+                        value=value
+                    )
+                    session.add(storage)
+                
+                await session.flush()
+                logger.debug(f"set_binary: flush successful for {unique_key}")
+                return True
+        except Exception as e:
+            logger.error(f"set_binary exception for {owner_type}:{owner}:{key}: {e}", exc_info=True)
+            return False
     
     async def delete_binary(
         self,
@@ -768,8 +783,49 @@ class DatabaseManager:
             )
             return result.rowcount > 0
     
+    async def _monitor_connection_pool(self) -> None:
+        """Monitor database connection pool health."""
+        try:
+            while True:
+                await asyncio.sleep(300)  # Check every 5 minutes
+                
+                try:
+                    # Check pool status
+                    pool = self.engine.pool
+                    if hasattr(pool, 'size'):
+                        size = pool.size()
+                        checked_in = pool.checkedin()
+                        checked_out = pool.checkedout()
+                        overflow = pool.overflow()
+                        
+                        logger.debug(
+                            f"Database pool status: size={size}, checked_in={checked_in}, "
+                            f"checked_out={checked_out}, overflow={overflow}"
+                        )
+                        
+                        # Warn if too many connections are checked out
+                        if checked_out > 5:
+                            logger.warning(
+                                f"High number of database connections in use: {checked_out}/{size}"
+                            )
+                except Exception as e:
+                    logger.debug(f"Error monitoring connection pool: {e}")
+                    
+        except asyncio.CancelledError:
+            pass
+        except Exception as e:
+            logger.error(f"Error in connection pool monitor: {e}", exc_info=True)
+    
     async def close(self):
         """Close database connections."""
+        # Stop monitoring task
+        if self._monitor_task and not self._monitor_task.done():
+            self._monitor_task.cancel()
+            try:
+                await self._monitor_task
+            except asyncio.CancelledError:
+                pass
+        
         await self.engine.dispose()
         logger.info("Database connections closed")
 

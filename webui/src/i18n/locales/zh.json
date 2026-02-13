@@ -3,6 +3,7 @@
     "login": "登录",
     "logout": "退出登录",
     "save": "保存",
+    "saving": "保存中...",
     "cancel": "取消",
     "delete": "删除",
     "edit": "编辑",

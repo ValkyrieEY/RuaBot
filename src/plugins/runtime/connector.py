@@ -191,8 +191,9 @@ class ProxyMessageInterceptor(MessageInterceptor):
         })
         
         try:
-            # 等待响应（超时1秒）
-            result = await asyncio.wait_for(future, timeout=1.0)
+            # 等待响应（超时2秒，给拦截器更多时间）
+            result = await asyncio.wait_for(future, timeout=2.0)
+            logger.debug(f"拦截器响应成功: {self.plugin_id}, allow={result.allow}")
             return result
         except asyncio.TimeoutError:
             # 超时则放行
@@ -1099,12 +1100,30 @@ class PluginRuntimeConnector:
         if not self.is_running:
             return event_context
         
+        # Check if runtime process is actually alive
+        if self.runtime_process is not None:
+            try:
+                # Check if process is still running
+                if hasattr(self.runtime_process, 'returncode'):
+                    if self.runtime_process.returncode is not None:
+                        logger.error(f"Runtime process has exited with code {self.runtime_process.returncode}")
+                        self.is_running = False
+                        return event_context
+                elif hasattr(self.runtime_process, 'poll'):
+                    if self.runtime_process.poll() is not None:
+                        logger.error(f"Runtime process has exited")
+                        self.is_running = False
+                        return event_context
+            except Exception as e:
+                logger.warning(f"Error checking runtime process status: {e}")
+        
         # Send event context to runtime for plugin processing
         import uuid
         request_id = str(uuid.uuid4())
         future = asyncio.get_event_loop().create_future()
         self.pending_requests[request_id] = future
         
+        logger.debug(f"Emitting event_with_context to runtime: {event_context.event_name}, request_id={request_id}")
         await self._send_to_runtime({
             'type': 'event_with_context',
             'data': {
@@ -1121,9 +1140,13 @@ class PluginRuntimeConnector:
             # Use shorter timeout for message.before_send to avoid blocking API calls
             if event_context.event_name == 'message.before_send':
                 timeout = 5.0  # Short timeout for before_send to avoid blocking
+            elif event_context.event_name == 'message.received':
+                timeout = 30.0  # 30 seconds for message.received (reduced from 180s to prevent blocking)
             else:
-                timeout = 180.0  # Longer timeout for received events (same as LangBot)
+                timeout = 60.0  # 60 seconds for other events (reduced from 180s)
+            logger.debug(f"Waiting for event_with_context response: {event_context.event_name}, timeout={timeout}s")
             result = await asyncio.wait_for(future, timeout=timeout)
+            logger.debug(f"Received event_with_context response: {event_context.event_name}, success={result.get('success', True)}")
             
             if result.get('success', True):  # Default to True if not specified
                 # Get modified context from result
@@ -1629,6 +1652,19 @@ class PluginRuntimeConnector:
         """Cleanup runtime resources."""
         logger.info("Disposing plugin runtime...")
         self.is_running = False
+        
+        # Send shutdown message to runtime to properly unload all plugins
+        try:
+            logger.info("Sending shutdown message to plugin runtime...")
+            await self._send_to_runtime({
+                'type': 'shutdown',
+                'data': {}
+            })
+            # Give plugins time to save data (up to 5 seconds)
+            await asyncio.sleep(0.5)
+            logger.info("Plugin runtime shutdown message sent")
+        except Exception as e:
+            logger.error(f"Error sending shutdown message: {e}")
         
         # Cancel tasks
         if self.heartbeat_task and not self.heartbeat_task.done():

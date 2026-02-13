@@ -559,7 +559,7 @@ def create_app() -> FastAPI:
                 
                 # Get enabled status from database
                 enabled = False
-                # Priority: database > plugin.json > default (100)
+                # Priority: database (always if exists) > plugin.json > default (100)
                 priority_from_json = plugin_config.get("priority")
                 priority = 100  # Default: 100 (lower = earlier execution)
                 config_data = metadata.get("default_config", {})
@@ -569,8 +569,10 @@ def create_app() -> FastAPI:
                         db_setting = await db_manager.get_plugin_setting(author, plugin_name)
                         if db_setting:
                             enabled = db_setting.enabled
-                            priority = db_setting.priority
                             config_data = db_setting.config or config_data
+                            # Always use database priority if it exists (even if it's 100)
+                            # User may have explicitly set it to 100, so we should respect that
+                            priority = db_setting.priority
                             logger.debug(f"Plugin {author}/{plugin_name} enabled status from DB: {enabled}")
                         else:
                             # No database setting, use plugin.json priority if available
@@ -658,6 +660,9 @@ def create_app() -> FastAPI:
         # Get status from database
         enabled = False
         config_data = metadata.get("default_config", {})
+        # Priority: database (always if exists) > plugin.json > default (100)
+        priority_from_json = plugin_config.get("priority")
+        priority = 100  # Default: 100 (lower = earlier execution)
         
         if db_manager:
             try:
@@ -665,6 +670,13 @@ def create_app() -> FastAPI:
                 if db_setting:
                     enabled = db_setting.enabled
                     config_data = db_setting.config or config_data
+                    # Always use database priority if it exists (even if it's 100)
+                    # User may have explicitly set it to 100, so we should respect that
+                    priority = db_setting.priority
+                else:
+                    # No database setting, use plugin.json priority if available
+                    if priority_from_json is not None:
+                        priority = priority_from_json
             except Exception as e:
                 logger.error(f"Failed to get plugin status: {e}")
         
@@ -672,7 +684,12 @@ def create_app() -> FastAPI:
             "name": name,
             "enabled": enabled,
             "metadata": metadata,
-            "config": config_data
+            "config": config_data,
+            "system_data": {
+                "enabled": enabled,
+                "priority": priority,
+                "config": config_data
+            }
         }
     
     @app.delete("/api/plugins/{plugin_name}")
@@ -1190,14 +1207,19 @@ def create_app() -> FastAPI:
             except Exception:
                 pass
             
-            # Priority priority: request > database > plugin.json > default
+            # Priority: request priority (if provided) > current database value > plugin.json > default
+            # If user explicitly sets priority, always use it (even if it's 100)
             if hasattr(config_update, 'priority') and config_update.priority is not None:
+                # User explicitly set priority, use it
                 priority = config_update.priority
-            elif setting and setting.priority != 100:
+            elif setting:
+                # No priority in request, use database value (even if it's 100)
                 priority = setting.priority
             elif priority_from_json is not None:
+                # No database setting, use plugin.json
                 priority = priority_from_json
             else:
+                # Default to 100
                 priority = 100
             
             if not setting:
@@ -1211,18 +1233,24 @@ def create_app() -> FastAPI:
                     install_source='local'
                 )
             else:
-                # Update existing setting (including priority if provided)
+                # Update existing setting (always update priority if provided in request)
                 update_data = {'config': normalized_config}
+                # Always update priority if it was provided in the request
                 if hasattr(config_update, 'priority') and config_update.priority is not None:
-                    update_data['priority'] = priority
+                    update_data['priority'] = config_update.priority
                 await db_manager.update_plugin_setting(author, name, **update_data)
             
-            logger.info(f"Updated config for plugin {author}/{name}")
+            logger.info(f"Updated config for plugin {author}/{name}, priority={priority}")
             
-            # Get the updated config from database to return to frontend
+            # Get the updated config and priority from database to return to frontend
             updated_setting = await db_manager.get_plugin_setting(author, name)
-            if updated_setting and updated_setting.config:
-                updated_config = updated_setting.config
+            if updated_setting:
+                if updated_setting.config:
+                    updated_config = updated_setting.config
+                # Get the actual saved priority from database
+                saved_priority = updated_setting.priority
+            else:
+                saved_priority = priority
             
             # Reload plugin in runtime if it's running
             if plugin_connector:
@@ -1240,13 +1268,14 @@ def create_app() -> FastAPI:
             plugin_name,
             user.get("username"),
             True,
-            {"config": normalized_config}
+            {"config": normalized_config, "priority": saved_priority}
         )
         
-        # Return updated config so frontend doesn't need to reload
+        # Return updated config and priority so frontend doesn't need to reload
         return {
             "message": "Configuration updated successfully",
-            "config": updated_config
+            "config": updated_config,
+            "priority": saved_priority
         }
     
     # Note: Plugin adapter endpoint removed - new system uses independent process runtime
@@ -1532,11 +1561,15 @@ def create_app() -> FastAPI:
                 logger.info(f"Updated existing plugin: {plugin_author}/{plugin_name}")
             else:
                 # Create new plugin setting (disabled by default)
+                # Get priority from plugin.json if available, otherwise use default 100
+                priority_from_json = plugin_metadata.get('priority')
+                initial_priority = priority_from_json if priority_from_json is not None else 100
+                
                 await db_manager.create_plugin_setting(
                     author=plugin_author,
                     name=plugin_name,
                     enabled=False,
-                    priority=0,
+                    priority=initial_priority,
                     config=default_config,
                     install_source='upload',
                     install_info={
@@ -2173,18 +2206,43 @@ def create_app() -> FastAPI:
         await _ws_manager.connect(websocket)
         try:
             # Keep connection alive and handle incoming messages (e.g., ping/pong)
+            # Use asyncio.wait to handle both receive and timeout
+            ping_interval = 30  # Send ping every 30 seconds to keep connection alive
+            
             while True:
-                # Wait for any message from client (typically ping/pong or keep-alive)
                 try:
-                    data = await websocket.receive_text()
-                    # Echo back for keep-alive - send as JSON to match frontend expectations
-                    if data == "ping":
-                        await websocket.send_json({"type": "pong"})
+                    # Wait for message with timeout to allow periodic ping
+                    try:
+                        data = await asyncio.wait_for(
+                            websocket.receive_text(),
+                            timeout=ping_interval
+                        )
+                        # Echo back for keep-alive - send as JSON to match frontend expectations
+                        if data == "ping":
+                            await websocket.send_json({"type": "pong"})
+                    except asyncio.TimeoutError:
+                        # Timeout reached, send ping to keep connection alive
+                        try:
+                            await websocket.send_json({"type": "ping"})
+                        except Exception as ping_error:
+                            # If ping fails, connection is likely dead
+                            logger.debug(f"Failed to send ping, connection may be dead: {ping_error}")
+                            break
                 except WebSocketDisconnect:
+                    logger.debug("WebSocket client disconnected normally")
                     break
                 except Exception as e:
-                    logger.error(f"WebSocket error: {e}")
-                    break
+                    # Log error but don't break immediately - some errors are recoverable
+                    error_msg = str(e)
+                    if "1000" in error_msg or "1001" in error_msg:
+                        # Normal closure codes, break gracefully
+                        logger.debug(f"WebSocket closed normally: {e}")
+                        break
+                    else:
+                        logger.warning(f"WebSocket error (will retry): {e}")
+                        # Wait a bit before breaking to avoid rapid reconnection loops
+                        await asyncio.sleep(1)
+                        break
         finally:
             _ws_manager.disconnect(websocket)
     
@@ -2248,56 +2306,80 @@ def create_app() -> FastAPI:
                 logger.warning("OneBot adapter is not running")
                 return contacts
             
-            try:
-                # Get group list (with timeout to prevent hanging)
-                group_result = await asyncio.wait_for(
-                    app_instance.onebot_adapter.call_api("get_group_list", {}),
-                    timeout=10.0
-                )
-                if isinstance(group_result, dict) and "data" in group_result:
-                    groups = group_result["data"]
-                elif isinstance(group_result, list):
-                    groups = group_result
-                else:
-                    groups = []
-                
-                for group in groups:
-                    contacts["groups"].append({
-                        "id": str(group.get("group_id", "")),
-                        "name": group.get("group_name", "未知群"),
-                        "avatar": f"http://p.qlogo.cn/gh/{group.get('group_id', '')}/{group.get('group_id', '')}/640/",
-                        "member_count": group.get("member_count", 0),
-                        "max_member_count": group.get("max_member_count", 0)
-                    })
-            except asyncio.TimeoutError:
-                logger.error("Timeout getting group list")
-            except Exception as e:
-                logger.error(f"Failed to get group list: {e}", exc_info=True)
+            # Get group list with retry mechanism
+            groups = []
+            max_retries = 2
+            for attempt in range(max_retries):
+                try:
+                    group_result = await asyncio.wait_for(
+                        app_instance.onebot_adapter.call_api("get_group_list", {}),
+                        timeout=10.0
+                    )
+                    if isinstance(group_result, dict) and "data" in group_result:
+                        groups = group_result["data"]
+                    elif isinstance(group_result, list):
+                        groups = group_result
+                    else:
+                        groups = []
+                    break  # Success, exit retry loop
+                except asyncio.TimeoutError:
+                    if attempt < max_retries - 1:
+                        logger.warning(f"Timeout getting group list (attempt {attempt + 1}/{max_retries}), retrying...")
+                        await asyncio.sleep(1)  # Wait 1 second before retry
+                    else:
+                        logger.error("Timeout getting group list after all retries")
+                except Exception as e:
+                    if attempt < max_retries - 1:
+                        logger.warning(f"Failed to get group list (attempt {attempt + 1}/{max_retries}): {e}, retrying...")
+                        await asyncio.sleep(1)
+                    else:
+                        logger.error(f"Failed to get group list after all retries: {e}", exc_info=True)
             
-            try:
-                # Get friend list (with timeout to prevent hanging)
-                friend_result = await asyncio.wait_for(
-                    app_instance.onebot_adapter.call_api("get_friend_list", {}),
-                    timeout=10.0
-                )
-                if isinstance(friend_result, dict) and "data" in friend_result:
-                    friends = friend_result["data"]
-                elif isinstance(friend_result, list):
-                    friends = friend_result
-                else:
-                    friends = []
-                
-                for friend in friends:
-                    contacts["friends"].append({
-                        "id": str(friend.get("user_id", "")),
-                        "name": friend.get("nickname", "") or friend.get("remark", "") or "未知好友",
-                        "avatar": f"http://q.qlogo.cn/headimg_dl?dst_uin={friend.get('user_id', '')}&spec=640",
-                        "remark": friend.get("remark", "")
-                    })
-            except asyncio.TimeoutError:
-                logger.error("Timeout getting friend list")
-            except Exception as e:
-                logger.error(f"Failed to get friend list: {e}", exc_info=True)
+            for group in groups:
+                contacts["groups"].append({
+                    "id": str(group.get("group_id", "")),
+                    "name": group.get("group_name", "未知群"),
+                    "avatar": f"http://p.qlogo.cn/gh/{group.get('group_id', '')}/{group.get('group_id', '')}/640/",
+                    "member_count": group.get("member_count", 0),
+                    "max_member_count": group.get("max_member_count", 0)
+                })
+            
+            # Get friend list with retry mechanism
+            friends = []
+            max_retries = 2
+            for attempt in range(max_retries):
+                try:
+                    friend_result = await asyncio.wait_for(
+                        app_instance.onebot_adapter.call_api("get_friend_list", {}),
+                        timeout=10.0
+                    )
+                    if isinstance(friend_result, dict) and "data" in friend_result:
+                        friends = friend_result["data"]
+                    elif isinstance(friend_result, list):
+                        friends = friend_result
+                    else:
+                        friends = []
+                    break  # Success, exit retry loop
+                except asyncio.TimeoutError:
+                    if attempt < max_retries - 1:
+                        logger.warning(f"Timeout getting friend list (attempt {attempt + 1}/{max_retries}), retrying...")
+                        await asyncio.sleep(1)  # Wait 1 second before retry
+                    else:
+                        logger.error("Timeout getting friend list after all retries")
+                except Exception as e:
+                    if attempt < max_retries - 1:
+                        logger.warning(f"Failed to get friend list (attempt {attempt + 1}/{max_retries}): {e}, retrying...")
+                        await asyncio.sleep(1)
+                    else:
+                        logger.error(f"Failed to get friend list after all retries: {e}", exc_info=True)
+            
+            for friend in friends:
+                contacts["friends"].append({
+                    "id": str(friend.get("user_id", "")),
+                    "name": friend.get("nickname", "") or friend.get("remark", "") or "未知好友",
+                    "avatar": f"http://q.qlogo.cn/headimg_dl?dst_uin={friend.get('user_id', '')}&spec=640",
+                    "remark": friend.get("remark", "")
+                })
                 
         except Exception as e:
             logger.error(f"Failed to get contacts: {e}", exc_info=True)
@@ -2415,32 +2497,94 @@ def create_app() -> FastAPI:
     
     @app.get("/api/chat/image-proxy")
     async def proxy_chat_image(
-        url: str,
+        url: str = None,
+        file: str = None,
         user: Dict[str, Any] = Depends(get_current_user)
     ):
-        """Proxy chat images to bypass CORS and referer restrictions."""
+        """Proxy chat images to bypass CORS and referer restrictions.
+        
+        First tries to serve from local cache, then downloads if not cached.
+        
+        Args:
+            url: Image URL (if available)
+            file: CQ image file reference (if URL not available, will call get_image API)
+        """
+        from ..ui.image_cache import get_image_cache_manager
+        from fastapi.responses import FileResponse, Response
         import httpx
         
         try:
+            # 优先使用 url 参数，如果没有则使用 file 参数
+            image_url = url or file
+            if not image_url:
+                raise HTTPException(status_code=400, detail="Missing 'url' or 'file' parameter")
+            
             # 解码 URL（前端可能进行了编码）
-            image_url = url
             if image_url.startswith('http%3A') or image_url.startswith('https%3A'):
                 from urllib.parse import unquote
                 image_url = unquote(image_url)
             
-            # 添加必要的请求头来绕过防盗链
+            # If it's a file reference (not a URL), get URL from OneBot first
+            onebot_adapter = None
+            original_file_ref = None
+            if not image_url.startswith('http://') and not image_url.startswith('https://'):
+                # This is a file reference, need to get URL from OneBot
+                original_file_ref = image_url
+                app = get_app()
+                if app and hasattr(app, 'onebot_adapter'):
+                    onebot_adapter = app.onebot_adapter
+                    try:
+                        image_info = await onebot_adapter.call_api('get_image', {'file': image_url})
+                        if image_info and isinstance(image_info, dict):
+                            image_url = image_info.get('url', '')
+                            if not image_url:
+                                logger.warning(f"get_image API returned no URL for file: {original_file_ref}")
+                                raise HTTPException(status_code=404, detail="Could not get image URL from OneBot")
+                        else:
+                            logger.warning(f"get_image API returned invalid response: {image_info}")
+                            raise HTTPException(status_code=404, detail="Invalid response from get_image API")
+                    except HTTPException:
+                        raise
+                    except Exception as e:
+                        logger.error(f"Failed to get image URL from OneBot for file {original_file_ref}: {e}", exc_info=True)
+                        raise HTTPException(status_code=500, detail=f"Failed to get image URL: {str(e)}")
+                else:
+                    raise HTTPException(status_code=503, detail="OneBot adapter not available to get image URL")
+            
+            # Try to get from cache first (using the resolved URL)
+            image_cache = get_image_cache_manager()
+            cached_path = await image_cache.get_cached_image_path(image_url)
+            
+            if cached_path and Path(cached_path).exists():
+                # Serve from cache
+                logger.debug(f"Serving image from cache: {cached_path}")
+                return FileResponse(
+                    cached_path,
+                    media_type="image/jpeg"  # Default, browser will detect actual type
+                )
+            
+            # Not in cache, download and cache
+            cached_path = await image_cache.download_and_cache_image(image_url, onebot_adapter)
+            
+            if cached_path and Path(cached_path).exists():
+                # Serve from newly cached file
+                logger.debug(f"Serving newly cached image: {cached_path}")
+                return FileResponse(
+                    cached_path,
+                    media_type="image/jpeg"
+                )
+            
+            # Fallback: download and return directly (if caching failed)
             headers = {
                 'Referer': 'https://qzone.qq.com/',
                 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
             }
             
-            # 下载图片
             async with httpx.AsyncClient(follow_redirects=True, timeout=10.0) as client:
                 response = await client.get(image_url, headers=headers)
                 response.raise_for_status()
                 
-                # 返回图片内容
-                from fastapi.responses import Response
+                # Return image content
                 return Response(
                     content=response.content,
                     media_type=response.headers.get('content-type', 'image/jpeg')
@@ -2515,6 +2659,62 @@ def create_app() -> FastAPI:
         messages.sort(key=lambda x: x["timestamp"])
         
         return messages[-limit:]  # Return last N messages
+    
+    @app.get("/api/chat/groups/{group_id}/members")
+    async def get_group_members(
+        group_id: str,
+        user: Dict[str, Any] = Depends(get_current_user)
+    ):
+        """Get group member list."""
+        try:
+            app = get_app()
+            if not hasattr(app, 'onebot_adapter') or not app.onebot_adapter:
+                raise HTTPException(status_code=503, detail="OneBot adapter not available")
+            
+            # Call get_group_member_list API
+            try:
+                result = await asyncio.wait_for(
+                    app.onebot_adapter.call_api("get_group_member_list", {"group_id": int(group_id)}),
+                    timeout=30.0
+                )
+                
+                # Normalize result format
+                if isinstance(result, dict) and "data" in result:
+                    members = result["data"]
+                elif isinstance(result, list):
+                    members = result
+                else:
+                    members = []
+                
+                # Format member data
+                formatted_members = []
+                for member in members:
+                    formatted_members.append({
+                        "user_id": str(member.get("user_id", "")),
+                        "nickname": member.get("nickname", ""),
+                        "card": member.get("card", ""),
+                        "role": member.get("role", "member"),  # owner, admin, member
+                        "title": member.get("title", ""),
+                        "level": member.get("level", ""),
+                        "join_time": member.get("join_time", 0),
+                        "last_sent_time": member.get("last_sent_time", 0),
+                    })
+                
+                return {
+                    "group_id": group_id,
+                    "members": formatted_members,
+                    "count": len(formatted_members)
+                }
+            except asyncio.TimeoutError:
+                raise HTTPException(status_code=504, detail="Timeout getting group members")
+            except Exception as e:
+                logger.error(f"Failed to get group members: {e}", exc_info=True)
+                raise HTTPException(status_code=500, detail=f"Failed to get group members: {str(e)}")
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.error(f"Error in get_group_members: {e}", exc_info=True)
+            raise HTTPException(status_code=500, detail="Internal server error")
     
     @app.get("/api/onebot/login-info")
     async def get_login_info(

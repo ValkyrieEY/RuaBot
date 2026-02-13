@@ -90,6 +90,9 @@ auto_load = true
 # 为插件执行启用线程池
 thread_pool_enabled = true
 
+# 是否文件改动自动重启
+auto_reload = false
+
 [web_ui]
 # 启用 Web 界面
 enabled = true

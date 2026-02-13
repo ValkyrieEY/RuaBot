@@ -64,6 +64,7 @@ class OneBotAdapter(ProtocolAdapter):
         # API 响应等待队列（用于 WebSocket 调用 API 时等待响应）
         self._api_responses: Dict[str, asyncio.Future] = {}
         self._echo_counter = 0
+        self._cleanup_task: Optional[asyncio.Task] = None  # 清理任务
         
         # Timeout 配置
         self.http_timeout = config.get("http_timeout", 120.0)  # HTTP 请求超时（发送消息、上传文件等）
@@ -130,6 +131,10 @@ class OneBotAdapter(ProtocolAdapter):
             logger.info("Using HTTP connection", url=self.http_url)
 
         self._running = True
+        
+        # Start cleanup task for expired API responses
+        self._cleanup_task = asyncio.create_task(self._cleanup_expired_responses())
+        
         logger.info("OneBot adapter started")
 
     async def stop(self) -> None:
@@ -172,6 +177,17 @@ class OneBotAdapter(ProtocolAdapter):
         # Close HTTP client
         if self._http_client:
             await self._http_client.aclose()
+        
+        # Cancel cleanup task
+        if self._cleanup_task and not self._cleanup_task.done():
+            self._cleanup_task.cancel()
+            try:
+                await self._cleanup_task
+            except asyncio.CancelledError:
+                pass
+        
+        # Cancel all pending API response futures
+        self._cancel_all_pending_responses()
 
         logger.info("OneBot adapter stopped")
 
@@ -264,11 +280,15 @@ class OneBotAdapter(ProtocolAdapter):
                                 logger.error("Error handling WebSocket message", error=str(e), exc_info=True)
                     except websockets.exceptions.ConnectionClosed as e:
                         logger.warning("WebSocket connection closed", code=e.code, reason=e.reason)
+                        # Cancel all pending API response futures when connection closes
+                        self._cancel_all_pending_responses()
                     finally:
                         # Close connection
                         if ws:
                             await ws.close()
                         self._ws = None
+                        # Cancel all pending API response futures
+                        self._cancel_all_pending_responses()
                         logger.warning("WebSocket connection closed normally")
                         
                 except websockets.exceptions.InvalidURI as e:
@@ -284,6 +304,8 @@ class OneBotAdapter(ProtocolAdapter):
                         await asyncio.sleep(5)
                 except Exception as e:
                     logger.error("Forward WebSocket connection error", error=str(e), error_type=type(e).__name__, exc_info=True)
+                    # Cancel all pending API response futures on connection error
+                    self._cancel_all_pending_responses()
                     if self._running:
                         logger.info("Reconnecting in 5 seconds...")
                         await asyncio.sleep(5)
@@ -355,8 +377,11 @@ class OneBotAdapter(ProtocolAdapter):
             except websockets.exceptions.ConnectionClosed:
                 logger.info("Reverse WebSocket client disconnected")
             finally:
+                # Ensure the client is removed from the list
                 if websocket in self._reverse_clients:
                     self._reverse_clients.remove(websocket)
+                # Cancel all pending API response futures when client disconnects
+                self._cancel_all_pending_responses()
         
         try:
             self._ws_server = await serve(
@@ -1015,13 +1040,14 @@ class OneBotAdapter(ProtocolAdapter):
                         logger.error(f"API call failed: {error_info['message']}")
                         raise RuntimeError(error_info['message'])
                 except asyncio.TimeoutError:
-                    self._api_responses.pop(echo, None)
                     logger.error(f"API call timeout: {action} (echo={echo})")
                     raise RuntimeError(f"API call timeout: {action}")
             except Exception as e:
-                self._api_responses.pop(echo, None)
                 logger.error(f"Failed to call API via WebSocket: {e}", exc_info=True)
                 raise RuntimeError(f"Failed to call API via WebSocket: {e}")
+            finally:
+                # Always remove the future from the dictionary to prevent memory leaks
+                self._api_responses.pop(echo, None)
                 
         elif self.connection_type == "ws_reverse" and self._reverse_clients:
             # Send via reverse WebSocket
@@ -1055,11 +1081,12 @@ class OneBotAdapter(ProtocolAdapter):
                             logger.error(f"API call failed: {error_info['message']}")
                             raise RuntimeError(error_info['message'])
                     except asyncio.TimeoutError:
-                        self._api_responses.pop(echo, None)
                         raise RuntimeError(f"API call timeout: {action}")
             except Exception as e:
-                self._api_responses.pop(echo, None)
                 raise RuntimeError(f"Failed to call API via reverse WebSocket: {e}")
+            finally:
+                # Always remove the future from the dictionary to prevent memory leaks
+                self._api_responses.pop(echo, None)
         else:
             # Fallback to HTTP
             if not self._http_client:
@@ -1102,5 +1129,56 @@ class OneBotAdapter(ProtocolAdapter):
                 await handler(event)
             except Exception as e:
                 logger.error(f"Error in event handler: {e}", exc_info=True)
-
-
+    
+    async def _cleanup_expired_responses(self) -> None:
+        """Periodically cleanup expired API response futures."""
+        try:
+            while self._running:
+                await asyncio.sleep(30)  # Check every 30 seconds
+                
+                # Make a copy of the current responses to avoid race conditions
+                current_responses = dict(self._api_responses)
+                
+                if not current_responses:
+                    continue
+                
+                expired = []
+                for echo, future in current_responses.items():
+                    if future.done():
+                        expired.append(echo)
+                
+                for echo in expired:
+                    # Double-check the item still exists before removing
+                    if echo in self._api_responses:
+                        self._api_responses.pop(echo, None)
+                        logger.debug(f"Cleaned up expired API response future: {echo}")
+                
+                # Log warning if too many pending responses
+                if len(self._api_responses) > 100:
+                    logger.warning(f"Too many pending API responses: {len(self._api_responses)}, possible memory leak")
+                    
+        except asyncio.CancelledError:
+            pass
+        except Exception as e:
+            logger.error(f"Error in cleanup task: {e}", exc_info=True)
+    
+    def _cancel_all_pending_responses(self) -> None:
+        """Cancel all pending API response futures (e.g., when WebSocket disconnects)."""
+        # Create a copy of the items to avoid modifying the dictionary during iteration
+        responses_copy = dict(self._api_responses)
+        
+        count = 0
+        for echo, future in responses_copy.items():
+            if echo in self._api_responses:  # Double-check the item still exists
+                if not future.done():
+                    try:
+                        future.cancel()
+                        count += 1
+                    except Exception:
+                        # Ignore errors when cancelling futures
+                        pass
+                # Remove from the original dictionary
+                self._api_responses.pop(echo, None)
+        
+        if count > 0:
+            logger.warning(f"Cancelled {count} pending API response futures due to connection close")

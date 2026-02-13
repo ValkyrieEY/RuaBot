@@ -104,7 +104,7 @@ export default function MessageLogPage() {
       {/* Header */}
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
         <div className="min-w-0 flex-shrink">
-          <div className="flex items-center gap-3">
+          <div className="flex items-center gap-3 flex-wrap">
             <h1 className="text-xl sm:text-2xl font-bold text-gray-900 truncate">{t('messages.title')}</h1>
             {/* WebSocket Status Indicator */}
             <div className="flex items-center gap-1.5 text-xs">
@@ -125,8 +125,8 @@ export default function MessageLogPage() {
             {t('messages.description')} {isConnected ? ` (${t('messages.realtimePush')})` : ` (${t('messages.pollingRefresh')})`}
           </p>
         </div>
-        <div className="flex items-center gap-2 sm:gap-4 flex-nowrap flex-shrink-0">
-          <label className="flex items-center gap-2 text-sm text-gray-600 cursor-pointer whitespace-nowrap">
+        <div className="flex items-center gap-2 sm:gap-4 flex-wrap min-w-0">
+          <label className="flex items-center gap-2 text-sm text-gray-600 cursor-pointer whitespace-nowrap flex-shrink-0">
             <span>{t('common.autoRefresh')}</span>
             <button
               type="button"
@@ -144,7 +144,7 @@ export default function MessageLogPage() {
           <select
             value={limit}
             onChange={(e) => setLimit(Number(e.target.value))}
-            className="input py-2 text-sm min-w-[120px]"
+            className="input py-2 text-sm w-[120px] sm:min-w-[120px] flex-shrink-0"
           >
             <option value={50}>{t('common.recentEntries', { count: 50 })}</option>
             <option value={100}>{t('common.recentEntries', { count: 100 })}</option>
@@ -154,7 +154,7 @@ export default function MessageLogPage() {
           <button
             onClick={() => loadMessages(true)}
             disabled={refreshing}
-            className="btn btn-secondary flex items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed whitespace-nowrap"
+            className="btn btn-secondary flex items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed whitespace-nowrap flex-shrink-0"
           >
             <RefreshCw className={`w-4 h-4 ${refreshing ? 'animate-spin' : ''}`} />
             <span>{t('common.refresh')}</span>
@@ -273,57 +273,92 @@ export default function MessageLogPage() {
 
             // Normal message style
             const isSelf = (msg as any).is_self || false
+            // For private messages: if self-sent, show target_id; if received, show user_id
+            // For group messages: always show user_id (sender)
+            const displayUserId = msg.message_type === 'private' && isSelf 
+              ? (msg as any).target_id || msg.user_id 
+              : msg.user_id
             
             return (
               <div
                 key={msg.id || index}
                 className={`card hover:shadow-md transition-shadow ${
-                  isSelf ? 'bg-gradient-to-r from-green-50 to-blue-50 border-l-4 border-green-400' : ''
+                  isSelf ? 'bg-gradient-to-r from-blue-50 to-primary-50 border-l-4 border-primary-400' : ''
                 }`}
               >
                 <div className="flex items-start gap-4">
                   {/* Avatar */}
                   <div className="flex-shrink-0">
-                    <div className={`w-12 h-12 rounded-full flex items-center justify-center text-white font-bold ${
-                      isSelf 
-                        ? 'bg-gradient-to-br from-green-400 to-blue-500' 
-                        : 'bg-gradient-to-br from-blue-400 to-purple-600'
-                    }`}>
-                      {msg.sender?.nickname?.[0]?.toUpperCase() || 'U'}
-                    </div>
+                    {displayUserId ? (
+                      <img
+                        src={`https://q.qlogo.cn/headimg_dl?dst_uin=${displayUserId}&spec=640`}
+                        alt={msg.sender?.nickname || `User ${displayUserId}`}
+                        className="w-12 h-12 rounded-full object-cover"
+                        onError={(e) => {
+                          // Fallback to gradient avatar if image fails
+                          const target = e.currentTarget as HTMLImageElement
+                          target.style.display = 'none'
+                          const parent = target.parentElement
+                          if (parent) {
+                            const fallback = document.createElement('div')
+                            fallback.className = `w-12 h-12 rounded-full flex items-center justify-center text-white font-bold ${
+                              isSelf 
+                                ? 'bg-gradient-to-br from-primary-500 to-primary-600' 
+                                : 'bg-gradient-to-br from-blue-400 to-purple-600'
+                            }`
+                            fallback.textContent = msg.sender?.nickname?.[0]?.toUpperCase() || 'U'
+                            parent.appendChild(fallback)
+                          }
+                        }}
+                      />
+                    ) : (
+                      <div className={`w-12 h-12 rounded-full flex items-center justify-center text-white font-bold ${
+                        isSelf 
+                          ? 'bg-gradient-to-br from-primary-500 to-primary-600' 
+                          : 'bg-gradient-to-br from-blue-400 to-purple-600'
+                      }`}>
+                        {msg.sender?.nickname?.[0]?.toUpperCase() || 'U'}
+                      </div>
+                    )}
                   </div>
 
                   {/* Content */}
                   <div className="flex-1 min-w-0">
                     <div className="flex items-center gap-2 mb-2 flex-wrap">
-                      <span className={`font-medium ${isSelf ? 'text-green-900' : 'text-gray-900'}`}>
-                        {msg.sender?.nickname || `User ${msg.user_id}`}
-                        {isSelf && <span className="ml-2 text-xs text-green-600">{t('messages.me')}</span>}
+                      <span className={`font-medium ${isSelf ? 'text-primary-900' : 'text-gray-900'}`}>
+                        {msg.sender?.nickname || `User ${displayUserId}`}
+                        {displayUserId && (
+                          <span className="ml-2 text-xs text-gray-500">({displayUserId})</span>
+                        )}
+                        {isSelf && <span className="ml-2 text-xs text-primary-600">{t('messages.me')}</span>}
                       </span>
                       {msg.message_type === 'group' ? (
                         <div className={`flex items-center gap-1 text-xs px-2 py-1 rounded ${
-                          isSelf ? 'text-green-700 bg-green-100' : 'text-gray-500 bg-blue-50'
+                          isSelf ? 'text-primary-700 bg-primary-100' : 'text-gray-500 bg-blue-50'
                         }`}>
                           <Users className="w-3 h-3" />
                           <span>{t('messages.group')} {msg.group_id}</span>
                         </div>
                       ) : (
                         <div className={`flex items-center gap-1 text-xs px-2 py-1 rounded ${
-                          isSelf ? 'text-green-700 bg-green-100' : 'text-gray-500 bg-purple-50'
+                          isSelf ? 'text-primary-700 bg-primary-100' : 'text-gray-500 bg-purple-50'
                         }`}>
                           <User className="w-3 h-3" />
                           <span>{t('messages.private')}</span>
+                          {msg.message_type === 'private' && displayUserId && (
+                            <span className="ml-1">{displayUserId}</span>
+                          )}
                         </div>
                       )}
                       <div className={`flex items-center gap-1 text-xs ${
-                        isSelf ? 'text-green-700' : 'text-gray-500'
+                        isSelf ? 'text-primary-700' : 'text-gray-500'
                       }`}>
                         <Clock className="w-3 h-3" />
                         <span>{formatTime(msg.time || msg.timestamp)}</span>
                       </div>
                     </div>
                     <p className={`break-words whitespace-pre-wrap ${
-                      isSelf ? 'text-green-900 font-medium' : 'text-gray-700'
+                      isSelf ? 'text-primary-900 font-medium' : 'text-gray-700'
                     }`}>
                       {msg.message || msg.raw_message}
                     </p>

@@ -2,6 +2,8 @@
 
 import asyncio
 import sys
+import tomllib
+from pathlib import Path
 from typing import Any, Dict, Optional, Type
 from contextlib import asynccontextmanager
 from datetime import datetime
@@ -259,8 +261,20 @@ class Application:
             from ..plugins.runtime import PluginRuntimeConnector
             from ..plugins.interceptor import ExecutionMode
             
-            # Read interceptor configuration from config
-            interceptor_config = self.config.get('plugins', {}).get('interceptor', {})
+            # Read interceptor configuration from TOML file directly
+            # since Config is a Pydantic model and doesn't support .get() method
+            interceptor_config = {}
+            try:
+                project_root = Path(__file__).parent.parent.parent
+                toml_file = project_root / "config.toml"
+                if toml_file.exists():
+                    with open(toml_file, "rb") as f:
+                        toml_data = tomllib.load(f)
+                        plugins_config = toml_data.get('plugins', {})
+                        interceptor_config = plugins_config.get('interceptor', {})
+            except Exception as e:
+                logger.warning(f"Failed to read interceptor config from TOML: {e}")
+            
             execution_mode_str = interceptor_config.get('execution_mode', 'hybrid')
             
             # Convert string to ExecutionMode enum

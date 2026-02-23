@@ -177,34 +177,8 @@ class JargonMiner:
     
     def _build_extraction_prompt(self, chat_str: str, bot_name: str) -> str:
         """Build prompt for jargon extraction."""
-        return f"""{chat_str}
-
-你的名字是{bot_name}，现在请你完成一个提取任务：
-
-请从上面这段聊天内容中提取"可能是黑话"的候选项（黑话/俚语/网络缩写/口头禅）。
-
-要求：
-- 必须为对话中真实出现过的短词或短语
-- 必须是你无法理解含义的词语，没有明确含义的词语
-- 不要选择有明确含义，或者含义清晰的词语
-- 排除：人名、@、表情包/图片中的内容、纯标点、常规功能词（如的、了、呢、啊等）
-- 排除：SELF的发言中的词语
-- 每个词条长度建议 2-8 个字符，尽量短小
-- 最多提取30个黑话
-
-黑话必须为以下几种类型：
-- 由字母构成的，汉语拼音首字母的简写词，例如：nb、yyds、xswl
-- 英文词语的缩写，用英文字母概括一个词汇或含义，例如：CPU、GPU、API
-- 中文词语的缩写，用几个汉字概括一个词汇或含义，例如：社死、内卷
-
-以 JSON 数组输出：
-[
-  {{"content": "词条1"}},
-  {{"content": "词条2"}}
-]
-
-现在请输出 JSON 数组：
-"""
+        from .prompts import build_jargon_extraction_prompt
+        return build_jargon_extraction_prompt(chat_str, bot_name)
     
     def _parse_jargon_response(
         self,
@@ -325,24 +299,9 @@ class JargonMiner:
                 
                 # Dual inference
                 # 1. Inference with context
+                from .prompts import build_jargon_inference_prompt_with_context
                 context_text = "\n".join(raw_content[:10])  # Use up to 10 contexts
-                prompt1 = f"""**词条内容**
-{content}
-
-**词条出现的上下文**
-{context_text}
-
-请根据上下文，推断"{content}"这个词条的含义。
-- 如果这是一个黑话、俚语或网络用语，请推断其含义
-- 如果含义明确（常规词汇），也请说明
-- 如果上下文信息不足，无法推断含义，请设置 no_info 为 true
-
-以 JSON 格式输出：
-{{
-  "meaning": "详细含义说明",
-  "no_info": false
-}}
-"""
+                prompt1 = build_jargon_inference_prompt_with_context(content, context_text)
                 
                 response1 = await llm_client.chat_completion(
                     messages=[{"role": "user", "content": prompt1}],
@@ -363,18 +322,8 @@ class JargonMiner:
                     return
                 
                 # 2. Inference content only
-                prompt2 = f"""**词条内容**
-{content}
-
-请仅根据这个词条本身，推断其含义。
-- 如果这是一个黑话、俚语或网络用语，请推断其含义
-- 如果含义明确（常规词汇），也请说明
-
-以 JSON 格式输出：
-{{
-  "meaning": "详细含义说明"
-}}
-"""
+                from .prompts import build_jargon_inference_prompt_content_only
+                prompt2 = build_jargon_inference_prompt_content_only(content)
                 
                 response2 = await llm_client.chat_completion(
                     messages=[{"role": "user", "content": prompt2}],
@@ -394,22 +343,11 @@ class JargonMiner:
                     return
                 
                 # 3. Compare inferences
-                prompt3 = f"""**推断结果1（基于上下文）**
-{inference1.get('meaning', '')}
-
-**推断结果2（仅基于词条）**
-{inference2.get('meaning', '')}
-
-请比较这两个推断结果，判断它们是否相同或类似。
-- 如果两个推断结果的"含义"相同或类似，说明这个词条不是黑话（含义明确）
-- 如果两个推断结果有差异，说明这个词条可能是黑话（需要上下文才能理解）
-
-以 JSON 格式输出：
-{{
-  "is_similar": true/false,
-  "reason": "判断理由"
-}}
-"""
+                from .prompts import build_jargon_inference_comparison_prompt
+                prompt3 = build_jargon_inference_comparison_prompt(
+                    inference1.get('meaning', ''),
+                    inference2.get('meaning', '')
+                )
                 
                 response3 = await llm_client.chat_completion(
                     messages=[{"role": "user", "content": prompt3}],

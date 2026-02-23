@@ -181,39 +181,8 @@ class ExpressionLearner:
         Returns:
             Learning prompt
         """
-        return f"""{chat_str}
-
-你的名字是{bot_name},现在请你完成一个提取任务:
-
-请从上面这段群聊中提取用户的语言风格和说话方式
-
-要求:
-1. 只考虑文字,不要考虑表情包和图片
-2. 不要总结SELF的发言,因为这是你自己的发言
-3. 不要涉及具体的人名,也不要涉及具体名词
-4. 思考有没有特殊的梗,一并总结成语言风格
-5. 总结成如下格式的规律,总结的内容要详细,但具有概括性
-
-格式要求:
-- 每个表达方式格式为: "当[情境]时,[表达方式]"
-- 情境描述不超过20个字,表达方式不超过20个字
-- 提取3-10个表达方式
-- 每个表达方式需要标注来源行编号 (上方聊天记录中方括号里的数字)
-
-示例:
-[
-  {{"situation": "对某件事表示十分惊叹", "style": "使用 我嘞个xxxx", "source_id": "3"}},
-  {{"situation": "表示讽刺的赞同,不讲道理", "style": "对对对", "source_id": "7"}},
-  {{"situation": "涉及游戏相关时,夸赞,略带戏谑意味", "style": "使用 这么强!", "source_id": "12"}}
-]
-
-其中:
-- situation: 表示"在什么情境下"的简短概括(不超过20个字)
-- style: 表示对应的语言风格或常用表达(不超过20个字)
-- source_id: 该表达方式对应的"来源行编号",即上方聊天记录中方括号里的数字,请只输出数字本身
-
-现在请输出 JSON 数组:
-"""
+        from .prompts import build_expression_learning_prompt
+        return build_expression_learning_prompt(chat_str, bot_name)
     
     def _parse_expression_response(self, response_text: str) -> List[Tuple[str, str, str]]:
         """Parse LLM response to extract expressions.
@@ -342,23 +311,13 @@ class ExpressionLearner:
             
             # Use LLM to select appropriate expressions
             # Build selection prompt
+            from .prompts import build_expression_selection_prompt
             expressions_str = "\n".join([
                 f"{i+1}. 当{e.situation}时: {e.style}"
                 for i, e in enumerate(expressions)
             ])
             
-            prompt = f"""根据以下聊天内容和回复理由,选择最合适的表达方式(最多{max_count}个):
-
-聊天内容:
-{context}
-
-{"回复理由: " + reply_reason if reply_reason else ""}
-
-可用的表达方式:
-{expressions_str}
-
-请选择最合适的表达方式编号(用逗号分隔,例如: 1,3,5):
-"""
+            prompt = build_expression_selection_prompt(context, expressions_str, reply_reason, max_count)
             
             try:
                 response = await llm_client.chat_completion(

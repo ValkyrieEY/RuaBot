@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useState, useRef } from 'react'
 import { useTranslation } from 'react-i18next'
 import { useToast } from '@/components/Toast'
 import { api, type PluginInfo } from '@/utils/api'
@@ -29,39 +29,69 @@ function PluginConfigModal({ pluginName, isOpen, onClose, onSave }: PluginConfig
   const [config, setConfig] = useState<any>({})
   const [schema, setSchema] = useState<any>(null)
   const [loading, setLoading] = useState(true)
+  const [loadError, setLoadError] = useState('')
   const [saving, setSaving] = useState(false)
   const [priority, setPriority] = useState<number>(100)
+  
+  // 用于防止竞态条件
+  const loadingRequestRef = useRef(0)
 
   useEffect(() => {
     if (isOpen && pluginName) {
-      loadConfigSchema()
-      loadPluginInfo()
+      loadConfigData()
     }
   }, [isOpen, pluginName])
 
-  const loadPluginInfo = async () => {
+  const loadConfigData = async () => {
+    const currentRequest = ++loadingRequestRef.current
+    setLoading(true)
+    setLoadError('')
+    
     try {
-      const data = await api.getPlugin(pluginName)
-      // Priority should always be defined from API, but fallback to 100 if not
-      const loadedPriority = data?.system_data?.priority
-      setPriority(loadedPriority !== undefined ? loadedPriority : 100)
-    } catch (error) {
-      console.error('Failed to load plugin info:', error)
-      // Keep default 100 on error
-    }
-  }
-
-  const loadConfigSchema = async () => {
-    try {
-      setLoading(true)
-      const data = await api.getPluginConfigSchema(pluginName)
-      setSchema(data)
-      const loadedConfig = data.current_config || data.default_config || {}
-      setConfig(loadedConfig)
-    } catch (error) {
-      console.error('Failed to load config schema:', error)
+      // 并行加载配置和插件信息
+      const [schemaData, pluginData] = await Promise.allSettled([
+        api.getPluginConfigSchema(pluginName),
+        api.getPlugin(pluginName)
+      ])
+      
+      // 只有最新的请求才更新状态
+      if (currentRequest !== loadingRequestRef.current) {
+        return
+      }
+      
+      // 处理配置schema
+      if (schemaData.status === 'fulfilled') {
+        setSchema(schemaData.value)
+        const loadedConfig = schemaData.value.current_config || schemaData.value.default_config || {}
+        setConfig(loadedConfig)
+      } else {
+        console.error('Failed to load config schema:', schemaData.reason)
+        throw new Error('加载配置失败: ' + (schemaData.reason?.message || '未知错误'))
+      }
+      
+      // 处理优先级
+      if (pluginData.status === 'fulfilled') {
+        const loadedPriority = pluginData.value?.system_data?.priority
+        setPriority(loadedPriority !== undefined ? loadedPriority : 100)
+      } else {
+        console.error('Failed to load plugin info:', pluginData.reason)
+        // 优先级加载失败不影响整体，使用默认值
+        setPriority(100)
+      }
+    } catch (error: any) {
+      if (currentRequest !== loadingRequestRef.current) {
+        return
+      }
+      
+      console.error('Failed to load config data:', error)
+      const errorMessage = error.response?.data?.detail || 
+                          error.message || 
+                          '加载插件配置失败'
+      setLoadError(errorMessage)
     } finally {
-      setLoading(false)
+      if (currentRequest === loadingRequestRef.current) {
+        setLoading(false)
+      }
     }
   }
 
@@ -111,42 +141,67 @@ function PluginConfigModal({ pluginName, isOpen, onClose, onSave }: PluginConfig
         
         {/* Scrollable Content */}
         <div className="flex-1 overflow-y-auto p-6 space-y-6">
-          {/* Priority Setting */}
-          <div className="border-b border-gray-200 pb-4">
-            <label className="block text-sm font-medium text-gray-700 mb-2">
-              插件优先级
-            </label>
-            <div className="space-y-2">
-              <input
-                type="number"
-                min="0"
-                max="1000"
-                value={priority}
-                onChange={(e) => setPriority(parseInt(e.target.value) || 100)}
-                className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent"
-                placeholder="100"
-              />
-              <p className="text-xs text-gray-500">
-                优先级越小，越早执行（默认：100）。用于控制事件上下文处理的顺序。
-              </p>
+          {/* 错误显示 */}
+          {loadError && (
+            <div className="bg-red-50 border border-red-200 rounded-lg p-4">
+              <div className="flex items-start gap-3">
+                <AlertCircle className="w-5 h-5 text-red-500 flex-shrink-0 mt-0.5" />
+                <div className="flex-1 min-w-0">
+                  <h4 className="text-sm font-medium text-red-800 mb-1">加载配置失败</h4>
+                  <p className="text-sm text-red-700 break-words">{loadError}</p>
+                  <button
+                    onClick={loadConfigData}
+                    disabled={loading}
+                    className="mt-3 px-3 py-1.5 bg-red-100 hover:bg-red-200 text-red-700 rounded text-sm font-medium transition-colors inline-flex items-center gap-1.5"
+                  >
+                    <RotateCw className={`w-3.5 h-3.5 ${loading ? 'animate-spin' : ''}`} />
+                    {loading ? '加载中...' : '重试'}
+                  </button>
+                </div>
+              </div>
             </div>
-          </div>
+          )}
+          
+          {/* Priority Setting */}
+          {!loadError && (
+            <div className="border-b border-gray-200 pb-4">
+              <label className="block text-sm font-medium text-gray-700 mb-2">
+                插件优先级
+              </label>
+              <div className="space-y-2">
+                <input
+                  type="number"
+                  min="0"
+                  max="1000"
+                  value={priority}
+                  onChange={(e) => setPriority(parseInt(e.target.value) || 100)}
+                  className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent"
+                  placeholder="100"
+                />
+                <p className="text-xs text-gray-500">
+                  优先级越小，越早执行（默认：100）。用于控制事件上下文处理的顺序。
+                </p>
+              </div>
+            </div>
+          )}
 
           {/* Plugin Configuration */}
-          {loading ? (
-            <div className="flex items-center justify-center py-12">
-              <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary-600"></div>
-            </div>
-          ) : schema && schema.config_schema ? (
-            <DynamicFormComponent
-              schema={schema.config_schema}
-              initialValues={config}
-              onSubmit={(values) => setConfig(values)}
-            />
-          ) : (
-            <div className="text-center py-12 text-gray-500">
-              此插件没有可配置项
-            </div>
+          {!loadError && (
+            loading ? (
+              <div className="flex items-center justify-center py-12">
+                <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary-600"></div>
+              </div>
+            ) : schema && schema.config_schema ? (
+              <DynamicFormComponent
+                schema={schema.config_schema}
+                initialValues={config}
+                onSubmit={(values) => setConfig(values)}
+              />
+            ) : (
+              <div className="text-center py-12 text-gray-500">
+                此插件没有可配置项
+              </div>
+            )
           )}
         </div>
         
@@ -160,7 +215,7 @@ function PluginConfigModal({ pluginName, isOpen, onClose, onSave }: PluginConfig
           </button>
           <button
             onClick={handleSave}
-            disabled={saving}
+            disabled={saving || loading || !!loadError}
             className="btn btn-primary flex items-center gap-2"
           >
             <Save className="w-4 h-4" />
@@ -492,10 +547,14 @@ export default function PluginsPage() {
   const [plugins, setPlugins] = useState<PluginInfo[]>([])
   const [loading, setLoading] = useState(false)
   const [initialLoading, setInitialLoading] = useState(true)
+  const [loadError, setLoadError] = useState('')
   const [actionLoading, setActionLoading] = useState<string | null>(null)
   const [showUploadModal, setShowUploadModal] = useState(false)
   const [showGitHubModal, setShowGitHubModal] = useState(false)
   const [configPlugin, setConfigPlugin] = useState<string | null>(null)
+  
+  // 用于防止竞态条件
+  const loadingRequestRef = useRef(0)
 
   useEffect(() => {
     const loadInitialData = async () => {
@@ -506,15 +565,43 @@ export default function PluginsPage() {
   }, [])
 
   const loadPlugins = async () => {
+    const currentRequest = ++loadingRequestRef.current
+    
     try {
       setLoading(true)
+      setLoadError('') // 清除之前的错误
+      
       const data = await api.getPlugins()
+      
+      // 只有最新的请求才更新状态
+      if (currentRequest !== loadingRequestRef.current) {
+        return
+      }
+      
+      // 验证数据
+      if (!Array.isArray(data)) {
+        throw new Error('Invalid plugins data received')
+      }
+      
       console.log('Loaded plugins:', data)
       setPlugins(data)
-    } catch (error) {
+    } catch (error: any) {
+      // 只有最新的请求才更新错误状态
+      if (currentRequest !== loadingRequestRef.current) {
+        return
+      }
+      
       console.error('Failed to load plugins:', error)
+      const errorMessage = error.response?.data?.detail || 
+                          error.message || 
+                          '加载插件列表失败'
+      setLoadError(errorMessage)
+      toast.error(errorMessage)
     } finally {
-      setLoading(false)
+      // 只有最新的请求才更新加载状态
+      if (currentRequest === loadingRequestRef.current) {
+        setLoading(false)
+      }
     }
   }
 
@@ -567,6 +654,36 @@ export default function PluginsPage() {
     )
   }
 
+  // 加载失败显示
+  if (loadError && plugins.length === 0) {
+    return (
+      <div className="space-y-6">
+        <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
+          <div className="min-w-0 flex-shrink">
+            <h1 className="text-xl sm:text-2xl font-bold text-gray-900 truncate">{t('plugins.title')}</h1>
+            <p className="text-gray-500 text-sm mt-1">{t('plugins.description')}</p>
+          </div>
+        </div>
+        
+        <div className="card text-center py-12">
+          <AlertCircle className="w-12 h-12 text-red-500 mx-auto mb-4" />
+          <h3 className="text-lg font-medium text-gray-900 mb-2">
+            加载插件失败
+          </h3>
+          <p className="text-sm text-gray-600 mb-4">{loadError}</p>
+          <button
+            onClick={loadPlugins}
+            disabled={loading}
+            className="px-4 py-2 bg-primary-600 text-white rounded-lg hover:bg-primary-700 transition-colors inline-flex items-center gap-2"
+          >
+            <RotateCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} />
+            {loading ? '加载中...' : t('common.retry') || '重试'}
+          </button>
+        </div>
+      </div>
+    )
+  }
+
   return (
     <div className="space-y-6 max-w-full overflow-x-hidden">
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
@@ -574,27 +691,29 @@ export default function PluginsPage() {
           <h1 className="text-xl sm:text-2xl font-bold text-gray-900 truncate">{t('plugins.title')}</h1>
           <p className="text-gray-500 text-sm mt-1">{t('plugins.description')}</p>
         </div>
-        <div className="flex items-center gap-2 flex-shrink-0">
+        <div className="flex items-center gap-2 flex-shrink-0 flex-wrap">
           <button
             onClick={() => setShowGitHubModal(true)}
-            className="btn btn-secondary flex items-center gap-2"
+            className="btn btn-secondary flex items-center gap-1.5 text-sm px-3 py-2 whitespace-nowrap"
           >
             <Download className="w-4 h-4" />
-            GitHub 安装
+            <span className="hidden xl:inline">GitHub 安装</span>
+            <span className="xl:hidden">GitHub</span>
           </button>
           <button
             onClick={() => setShowUploadModal(true)}
-            className="btn btn-primary flex items-center gap-2"
+            className="btn btn-primary flex items-center gap-1.5 text-sm px-3 py-2 whitespace-nowrap"
           >
             <Upload className="w-4 h-4" />
-            {t('plugins.uploadPlugin')}
+            <span className="hidden lg:inline">{t('plugins.uploadPlugin')}</span>
+            <span className="lg:hidden">{t('common.upload')}</span>
           </button>
           <button
             onClick={loadPlugins}
-            className="btn btn-secondary flex items-center gap-2"
+            className="btn btn-secondary flex items-center gap-1.5 text-sm px-3 py-2 whitespace-nowrap"
           >
             <RotateCw className="w-4 h-4" />
-            {t('common.refresh')}
+            <span className="hidden lg:inline">{t('common.refresh')}</span>
           </button>
         </div>
       </div>
@@ -656,52 +775,60 @@ export default function PluginsPage() {
                 </div>
               </div>
 
-              <div className="flex gap-2 mt-auto">
-                {plugin.enabled === true ? (
-                  <>
+              <div className="space-y-2 mt-auto">
+                {/* 主操作按钮行 */}
+                <div className="flex gap-2">
+                  {plugin.enabled === true ? (
+                    <>
+                      <button
+                        onClick={() => handleAction(plugin.name, 'reload')}
+                        disabled={actionLoading === plugin.name || loading}
+                        className="btn btn-secondary flex-1 flex items-center justify-center gap-1.5 text-sm whitespace-nowrap"
+                      >
+                        <RotateCw className="w-4 h-4" />
+                        {t('plugins.reload')}
+                      </button>
+                      <button
+                        onClick={() => handleAction(plugin.name, 'disable')}
+                        disabled={actionLoading === plugin.name || loading}
+                        className="btn btn-secondary flex-1 flex items-center justify-center gap-1.5 text-sm whitespace-nowrap"
+                      >
+                        <Square className="w-4 h-4" />
+                        {t('plugins.disable')}
+                      </button>
+                    </>
+                  ) : (
                     <button
-                      onClick={() => handleAction(plugin.name, 'reload')}
+                      onClick={() => handleAction(plugin.name, 'enable')}
                       disabled={actionLoading === plugin.name || loading}
-                      className="btn btn-secondary flex-1 flex items-center justify-center gap-2 text-sm"
+                      className="btn btn-primary flex-1 flex items-center justify-center gap-1.5 text-sm whitespace-nowrap"
                     >
-                      <RotateCw className="w-4 h-4" />
-                      {t('plugins.reload')}
+                      <Play className="w-4 h-4" />
+                      {t('plugins.enable')}
                     </button>
-                    <button
-                      onClick={() => handleAction(plugin.name, 'disable')}
-                      disabled={actionLoading === plugin.name || loading}
-                      className="btn btn-secondary flex-1 flex items-center justify-center gap-2 text-sm"
-                    >
-                      <Square className="w-4 h-4" />
-                      {t('plugins.disable')}
-                    </button>
-                  </>
-                ) : (
+                  )}
+                </div>
+                {/* 次要操作按钮行 */}
+                <div className="flex gap-2">
                   <button
-                    onClick={() => handleAction(plugin.name, 'enable')}
-                    disabled={actionLoading === plugin.name || loading}
-                    className="btn btn-primary flex-1 flex items-center justify-center gap-2 text-sm"
+                    onClick={() => setConfigPlugin(plugin.name)}
+                    disabled={loading}
+                    className="btn btn-secondary flex-1 flex items-center justify-center gap-1.5 text-sm whitespace-nowrap"
+                    title="配置"
                   >
-                    <Play className="w-4 h-4" />
-                    {t('plugins.enable')}
+                    <Settings className="w-4 h-4" />
+                    <span>配置</span>
                   </button>
-                )}
-                <button
-                  onClick={() => setConfigPlugin(plugin.name)}
-                  disabled={loading}
-                  className="btn btn-secondary p-2"
-                  title="配置"
-                >
-                  <Settings className="w-4 h-4" />
-                </button>
-                <button
-                  onClick={() => handleDelete(plugin.name)}
-                  disabled={actionLoading === plugin.name || loading}
-                  className="btn btn-danger p-2"
-                  title="删除插件"
-                >
-                  <Trash2 className="w-4 h-4" />
-                </button>
+                  <button
+                    onClick={() => handleDelete(plugin.name)}
+                    disabled={actionLoading === plugin.name || loading}
+                    className="btn btn-danger flex-1 flex items-center justify-center gap-1.5 text-sm whitespace-nowrap"
+                    title="删除插件"
+                  >
+                    <Trash2 className="w-4 h-4" />
+                    <span>删除</span>
+                  </button>
+                </div>
               </div>
             </div>
           ))}

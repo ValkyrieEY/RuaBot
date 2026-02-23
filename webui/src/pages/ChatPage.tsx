@@ -436,7 +436,7 @@ export default function ChatPage() {
   }
 
   return (
-    <div className="fixed top-16 left-0 lg:left-64 right-0 bottom-0 flex bg-gray-50 overflow-hidden">
+    <div className="fixed top-16 left-0 md:left-64 right-0 bottom-0 flex bg-gray-50 overflow-hidden">
       {/* Contact List Sidebar - Hidden on mobile when chat is selected */}
       <div className={`w-full md:w-80 bg-white md:border-r border-gray-200 flex flex-col ${
         selectedContact ? 'hidden md:flex' : 'flex'

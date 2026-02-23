@@ -15,7 +15,7 @@ from datetime import datetime
 from ...core.logger import get_logger
 from ...core.event_bus import EventBus
 from ...core.database import DatabaseManager
-from ..interceptor import InterceptorRegistry, MessageInterceptor, InterceptorResult
+from ..interceptor import InterceptorRegistry, MessageInterceptor, InterceptorResult, ExecutionMode
 
 logger = get_logger(__name__)
 
@@ -191,8 +191,8 @@ class ProxyMessageInterceptor(MessageInterceptor):
         })
         
         try:
-            # 等待响应（超时2秒，给拦截器更多时间）
-            result = await asyncio.wait_for(future, timeout=2.0)
+            # 等待响应（超时3秒，与运行时拦截器超时保持一致）
+            result = await asyncio.wait_for(future, timeout=3.0)
             logger.debug(f"拦截器响应成功: {self.plugin_id}, allow={result.allow}")
             return result
         except asyncio.TimeoutError:
@@ -218,7 +218,8 @@ class PluginRuntimeConnector:
         event_bus: EventBus,
         db_manager: DatabaseManager,
         app: Optional[Any] = None,
-        runtime_script: Optional[str] = None
+        runtime_script: Optional[str] = None,
+        interceptor_mode: ExecutionMode = ExecutionMode.HYBRID
     ):
         """Initialize plugin runtime connector.
         
@@ -227,6 +228,7 @@ class PluginRuntimeConnector:
             db_manager: Database manager for plugin settings
             app: Application instance (for accessing OneBot adapter)
             runtime_script: Path to plugin runtime script (default: auto-detect)
+            interceptor_mode: Execution mode for interceptors (default: HYBRID)
         """
         self.event_bus = event_bus
         self.db_manager = db_manager
@@ -251,8 +253,23 @@ class PluginRuntimeConnector:
         # Callbacks
         self.disconnect_callback: Optional[Callable[[], Coroutine]] = None
         
-        # Interceptor registry for high-privilege plugins
-        self.interceptor_registry = InterceptorRegistry()
+        # Interceptor registry for high-privilege plugins (with optimized execution)
+        self.interceptor_registry = InterceptorRegistry(execution_mode=interceptor_mode)
+        
+        # Configure interceptor optimization settings
+        self.interceptor_registry.configure_circuit_breaker(
+            threshold=3,    # Open circuit after 3 consecutive failures
+            duration=30.0   # Keep circuit open for 30 seconds
+        )
+        self.interceptor_registry.configure_timeouts(
+            base_timeout=3.0,   # Base timeout for interceptors
+            max_timeout=10.0    # Maximum adaptive timeout
+        )
+        
+        logger.info(
+            f"Initialized interceptor registry with mode: {interceptor_mode.value}, "
+            f"circuit breaker enabled"
+        )
         
         # Interceptor futures for async communication
         self._interceptor_futures: Dict[str, asyncio.Future] = {}
@@ -540,12 +557,26 @@ class PluginRuntimeConnector:
                     consecutive_errors = 0
                     
                     try:
-                        # Parse JSON message
-                        message = json.loads(line.decode().strip())
+                        # Parse JSON message - 使用 utf-8 编码解码，添加错误处理
+                        try:
+                            message = json.loads(line.decode('utf-8').strip())
+                        except UnicodeDecodeError:
+                            # 如果UTF-8解码失败，尝试其他编码
+                            try:
+                                message = json.loads(line.decode('gbk').strip())
+                            except UnicodeDecodeError:
+                                # 最后尝试Latin-1
+                                message = json.loads(line.decode('latin-1').strip())
                         await self._handle_runtime_message(message)
                     except json.JSONDecodeError as e:
                         # Don't log the full line if it's too long (might contain base64)
-                        line_str = line.decode().strip()
+                        try:
+                            line_str = line.decode('utf-8').strip()
+                        except UnicodeDecodeError:
+                            try:
+                                line_str = line.decode('gbk').strip()
+                            except UnicodeDecodeError:
+                                line_str = line.decode('latin-1').strip()
                         if len(line_str) > 500:
                             line_preview = line_str[:200] + f"... (truncated, total {len(line_str)} chars)"
                         else:
@@ -750,6 +781,10 @@ class PluginRuntimeConnector:
             
             if is_message_action:
                 # Run message interceptors
+                logger.debug(
+                    f"Running interceptors for {action} from {source_plugin}, "
+                    f"registered: {len(self.interceptor_registry.get_message_interceptors())}"
+                )
                 allow, modified_params = await self.interceptor_registry.intercept_message(
                     action, params, source_plugin
                 )
@@ -1135,15 +1170,16 @@ class PluginRuntimeConnector:
         
         try:
             # Wait for response (with timeout)
-            # Inspired by LangBot: use longer timeout (180s) for event processing
-            # to allow plugins to perform complex operations (API calls, LLM invocations, etc.)
-            # Use shorter timeout for message.before_send to avoid blocking API calls
+            # ⚡ 优化超时时间以避免阻塞：
+            # - before_send: 2秒（消息发送前，必须快速响应）
+            # - message.received: 10秒（消息接收，平衡响应速度和处理时间）
+            # - 其他事件: 30秒（非紧急事件，允许较长处理时间）
             if event_context.event_name == 'message.before_send':
-                timeout = 5.0  # Short timeout for before_send to avoid blocking
+                timeout = 2.0  # 快速响应，避免阻塞API调用
             elif event_context.event_name == 'message.received':
-                timeout = 30.0  # 30 seconds for message.received (reduced from 180s to prevent blocking)
+                timeout = 10.0  # 10秒超时，避免严重阻塞（从30秒优化）
             else:
-                timeout = 60.0  # 60 seconds for other events (reduced from 180s)
+                timeout = 30.0  # 其他事件保持30秒
             logger.debug(f"Waiting for event_with_context response: {event_context.event_name}, timeout={timeout}s")
             result = await asyncio.wait_for(future, timeout=timeout)
             logger.debug(f"Received event_with_context response: {event_context.event_name}, success={result.get('success', True)}")
@@ -1399,7 +1435,7 @@ class PluginRuntimeConnector:
                     # 更新现有设置
                     success = await self.db_manager.update_plugin_setting(
                         author, name,
-                        enabled=True,
+                        enabled=False,
                         config=default_config,
                         install_source='local' if Path(source).exists() else 'url',
                         install_info=install_info
@@ -1409,7 +1445,7 @@ class PluginRuntimeConnector:
                     try:
                         await self.db_manager.create_plugin_setting(
                             author, name,
-                            enabled=True,
+                            enabled=False,
                             config=default_config,
                             install_source='local' if Path(source).exists() else 'url',
                             install_info=install_info

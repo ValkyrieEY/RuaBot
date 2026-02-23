@@ -221,40 +221,8 @@ class ExpressionAutoChecker:
         
         expressions_text = "\n\n".join(expr_lines)
         
-        prompt = f"""你是一个AI表达方式质量评估专家。请评估以下学习的表达方式的质量。
-
-评估标准：
-1. **接受条件**：
-   - 表达方式自然、流畅
-   - 情境描述清晰、具体
-   - 没有明显的语法错误或病句
-   - 不包含敏感、不当内容
-   - 表达方式与情境匹配
-
-2. **拒绝条件**：
-   - 表达方式包含明显错误或无意义内容
-   - 情境描述过于模糊或不准确
-   - 包含占位符（如 [占位符]、<xxx>、{{xxx}}）
-   - 包含 SELF、BOT、AI 等自我指代（除非情境明确需要）
-   - 包含图片标记（如 [CQ:image...)、[图片]）
-   - 包含链接或特殊代码
-   - 表达方式与情境严重不匹配
-
-待评估的表达方式：
-
-{expressions_text}
-
-请对每个表达方式进行评估，并以JSON格式输出结果：
-
-{{
-    "evaluations": [
-        {{"id": 1, "accepted": true, "reason": "表达方式自然，情境清晰"}},
-        {{"id": 2, "accepted": false, "reason": "包含占位符"}},
-        ...
-    ]
-}}
-
-只输出JSON，不要其他内容。"""
+        from .prompts import build_expression_evaluation_prompt
+        prompt = build_expression_evaluation_prompt(expressions_text)
         
         return prompt
     

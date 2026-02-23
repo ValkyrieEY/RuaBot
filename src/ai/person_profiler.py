@@ -190,26 +190,8 @@ class PersonProfiler:
     
     def _build_profile_prompt(self, user_text: str) -> str:
         """Build prompt for user profiling."""
-        return f"""请分析以下用户的聊天记录，生成用户画像：
-
-{user_text}
-
-要求：
-1. 给这个用户起一个简短的称呼或标签（例如：技术大神、搞笑王、沉默寡言的小伙伴等）
-2. 解释为什么给这个称呼
-3. 提取3-5个关于这个用户的记忆点（性格特点、兴趣爱好、说话风格等）
-
-请以 JSON 格式输出：
-{{
-  "person_name": "用户称呼",
-  "name_reason": "起这个称呼的原因",
-  "memory_points": [
-    "记忆点1：喜欢讨论技术话题",
-    "记忆点2：说话风格幽默风趣",
-    "记忆点3：经常在晚上活跃"
-  ]
-}}
-"""
+        from .prompts import build_person_profile_prompt
+        return build_person_profile_prompt(user_text)
     
     def _parse_profile_response(self, response_text: str) -> Optional[Dict[str, Any]]:
         """Parse profile response from LLM."""

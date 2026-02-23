@@ -213,38 +213,10 @@ class ExpressionSelector:
             situations_str = "\n".join(situation_lines)
             
             # Build prompt
-            context_block = ""
-            if reply_reason:
-                context_block = f"你的回复理由是：{reply_reason}\n"
-            else:
-                context_block = f"以下是正在进行的聊天内容：{chat_context}\n"
-            
-            target_block = ""
-            target_extra = ""
-            if target_message:
-                target_block = f'，现在你想要对这条消息进行回复："{target_message}"'
-                target_extra = "4. 考虑你要回复的目标消息\n"
-            
-            prompt = f"""{context_block}{target_block}
-
-以下是可选的表达情境：
-{situations_str}
-
-请你分析聊天内容的语境、情绪、话题类型，从上述情境中选择最适合当前聊天情境的，最多{max_count}个情境。
-
-考虑因素包括：
-1. 聊天的情绪氛围（轻松、严肃、幽默等）
-2. 话题类型（日常、技术、游戏、情感等）
-3. 情境与当前语境的匹配度
-{target_extra}
-请以JSON格式输出，只需要输出选中的情境编号：
-例如：
-{{
-    "selected_situations": [2, 3, 5, 7]
-}}
-
-请严格按照JSON格式输出：
-"""
+            from .prompts import build_expression_situation_selection_prompt
+            prompt = build_expression_situation_selection_prompt(
+                chat_context, situations_str, reply_reason, target_message, max_count
+            )
             
             # Call LLM
             response = await llm_client.chat_completion(

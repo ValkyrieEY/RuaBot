@@ -1,4 +1,4 @@
-import { useState, FormEvent, useEffect } from 'react'
+import { useState, FormEvent, useEffect, useRef } from 'react'
 import { useTranslation } from 'react-i18next'
 import { Save, AlertCircle, RefreshCw } from 'lucide-react'
 import { api, type OneBotConfig } from '@/utils/api'
@@ -12,32 +12,63 @@ export default function OneBotPage() {
   const [success, setSuccess] = useState(false)
   const [error, setError] = useState('')
   const [reconnectSuccess, setReconnectSuccess] = useState(false)
+  
+  // 用于防止竞态条件
+  const loadingRequestRef = useRef(0)
 
   useEffect(() => {
     loadConfig()
   }, [])
 
   const loadConfig = async () => {
+    const currentRequest = ++loadingRequestRef.current
+    setLoading(true)
+    setError('') // 清除之前的错误
+    
     try {
       const data: any = await api.getOneBotConfig()
+      
+      // 只有最新的请求才更新状态
+      if (currentRequest !== loadingRequestRef.current) {
+        return
+      }
+      
       // Transform backend response to frontend format
       // Backend returns: version, connection_type, ws_url, etc.
       // Frontend expects: onebot_version, onebot_connection_type, onebot_ws_url, etc.
+      
+      // 验证数据完整性
+      if (!data || typeof data !== 'object') {
+        throw new Error('Invalid configuration data received')
+      }
+      
       const connectionType = data.connection_type || 'ws_forward'
       setConfig({
-        onebot_enabled: true, // Default to enabled
+        onebot_enabled: data.enabled !== undefined ? data.enabled : true,
         onebot_version: data.version || 'v11',
         onebot_connection_type: connectionType,
         onebot_ws_url: data.ws_url || '',
         onebot_ws_reverse_host: data.ws_reverse_host || '',
-        onebot_ws_reverse_port: data.ws_reverse_port || 8080,
+        onebot_ws_reverse_port: data.ws_reverse_port !== undefined ? data.ws_reverse_port : 8080,
         onebot_http_url: data.http_url || '',
         onebot_access_token: data.access_token || '',
       })
-    } catch (error) {
-      console.error('Failed to load config:', error)
+    } catch (err: any) {
+      // 只有最新的请求才更新错误状态
+      if (currentRequest !== loadingRequestRef.current) {
+        return
+      }
+      
+      console.error('Failed to load config:', err)
+      const errorMessage = err.response?.data?.detail || 
+                          err.message || 
+                          t('onebot.loadFailed')
+      setError(errorMessage)
     } finally {
-      setLoading(false)
+      // 只有最新的请求才更新加载状态
+      if (currentRequest === loadingRequestRef.current) {
+        setLoading(false)
+      }
     }
   }
 
@@ -106,6 +137,15 @@ export default function OneBotPage() {
         <h3 className="text-lg font-medium text-gray-900 mb-2">
           {t('onebot.loadFailed')}
         </h3>
+        {error && (
+          <p className="text-sm text-gray-600 mb-4">{error}</p>
+        )}
+        <button
+          onClick={loadConfig}
+          className="px-4 py-2 bg-primary-600 text-white rounded-lg hover:bg-primary-700 transition-colors"
+        >
+          {t('common.retry') || '重试'}
+        </button>
       </div>
     )
   }

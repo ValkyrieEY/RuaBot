@@ -22,6 +22,18 @@ A modern bot development platform based on OneBot v11/12 protocol
 
 ---
 
+## Quick Install
+
+One-line installation script (Linux/macOS):
+
+```bash
+curl -# -fSL https://raw.githubusercontent.com/ValkyrieEY/RuaBot/main/install.sh -o /tmp/ruabot_install.sh && bash /tmp/ruabot_install.sh
+```
+
+For detailed installation instructions, see [Installation Guide](docs/installation.md).
+
+---
+
 > [!Important]
 > 
 > **RuaBot is a powerful, multi-threaded, loosely coupled, and easily extensible QQ bot framework built on the OneBot v11 protocol. The framework provides a complete plugin system, strong AI integration capabilities, a modern Web management interface, as well as a comprehensive permission management and event-driven architecture.**

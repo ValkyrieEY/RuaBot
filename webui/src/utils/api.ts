@@ -1,6 +1,15 @@
 import axios, { AxiosInstance, AxiosError } from 'axios'
 
-const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || '/api'
+// Normalize API base URL - ensure it ends with /api but doesn't duplicate
+let API_BASE_URL = import.meta.env.VITE_API_BASE_URL || '/api'
+// Remove trailing /api if present, then add it back to ensure consistency
+if (API_BASE_URL.endsWith('/api')) {
+  API_BASE_URL = API_BASE_URL.slice(0, -4) // Remove '/api'
+}
+// Ensure it ends with /api
+if (!API_BASE_URL.endsWith('/api')) {
+  API_BASE_URL = API_BASE_URL + (API_BASE_URL.endsWith('/') ? 'api' : '/api')
+}
 
 class ApiClient {
   private client: AxiosInstance
@@ -8,6 +17,7 @@ class ApiClient {
   constructor() {
     this.client = axios.create({
       baseURL: API_BASE_URL,
+      timeout: 15000, // 15秒超时
       headers: {
         'Content-Type': 'application/json',
       },

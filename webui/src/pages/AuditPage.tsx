@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { api } from '@/utils/api'
-import { RefreshCw, FileText, AlertCircle, Info, AlertTriangle, XCircle } from 'lucide-react'
+import { RefreshCw, FileText, AlertCircle, Info, AlertTriangle, XCircle, Check } from 'lucide-react'
 
 interface LogEntry {
   timestamp: string
@@ -19,6 +19,7 @@ export default function AuditPage() {
   const [limit, setLimit] = useState(100)
   const [filterLevel, setFilterLevel] = useState<'all' | 'debug' | 'info' | 'warning' | 'error' | 'critical'>('all')
   const [autoRefresh, setAutoRefresh] = useState(false)
+  const [copiedIndex, setCopiedIndex] = useState<number | null>(null)
 
   useEffect(() => {
     loadLogs()
@@ -168,6 +169,34 @@ export default function AuditPage() {
     return lines.join('\n')
   }
 
+  // Copy log to clipboard
+  const copyLogToClipboard = async (log: LogEntry, index: number) => {
+    const logText = `[${formatTime(log.timestamp)}] [${log.level.toUpperCase()}] [${log.logger}]
+${getFullLogContent(log)}${log.exception ? '\n\nException:\n' + log.exception : ''}`
+    
+    try {
+      // Try modern clipboard API first
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        await navigator.clipboard.writeText(logText)
+      } else {
+        // Fallback for older browsers
+        const textArea = document.createElement('textarea')
+        textArea.value = logText
+        textArea.style.position = 'fixed'
+        textArea.style.left = '-999999px'
+        document.body.appendChild(textArea)
+        textArea.select()
+        document.execCommand('copy')
+        document.body.removeChild(textArea)
+      }
+      setCopiedIndex(index)
+      setTimeout(() => setCopiedIndex(null), 2000)
+    } catch (err) {
+      console.error('Failed to copy log:', err)
+      alert(t('common.copyFailed'))
+    }
+  }
+
   const filteredLogs = logs.filter((log) => {
     if (filterLevel === 'all') return true
     return log.level.toLowerCase() === filterLevel
@@ -193,52 +222,54 @@ export default function AuditPage() {
   return (
     <div className="space-y-6 max-w-full overflow-x-hidden">
       {/* Header */}
-      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
-        <div className="min-w-0 flex-shrink">
-          <h1 className="text-xl sm:text-2xl font-bold text-gray-900 truncate">{t('systemLog.title')}</h1>
-          <p className="text-gray-500 text-sm mt-1">{t('systemLog.description')}</p>
-        </div>
-        <div className="flex items-center gap-2 flex-wrap">
-          <div className="flex items-center gap-2">
-            <select
-              value={filterLevel}
-              onChange={(e) => setFilterLevel(e.target.value as any)}
-              className="input py-2 text-sm min-w-[120px] max-w-[140px]"
-            >
-              <option value="all">{t('systemLog.allLevels')}</option>
-              <option value="debug">DEBUG</option>
-              <option value="info">INFO</option>
-              <option value="warning">WARNING</option>
-              <option value="error">ERROR</option>
-              <option value="critical">CRITICAL</option>
-            </select>
+      <div className="space-y-4">
+        <div className="flex items-center justify-between">
+          <div className="min-w-0 flex-shrink">
+            <h1 className="text-xl sm:text-2xl font-bold text-gray-900 truncate">{t('systemLog.title')}</h1>
+            <p className="text-gray-500 text-sm mt-1">{t('systemLog.description')}</p>
           </div>
+        </div>
+        
+        {/* Controls */}
+        <div className="flex items-center gap-2 flex-wrap">
+          <select
+            value={filterLevel}
+            onChange={(e) => setFilterLevel(e.target.value as any)}
+            className="input py-2 text-sm w-[110px]"
+          >
+            <option value="all">{t('systemLog.allLevels')}</option>
+            <option value="debug">DEBUG</option>
+            <option value="info">INFO</option>
+            <option value="warning">WARNING</option>
+            <option value="error">ERROR</option>
+            <option value="critical">CRITICAL</option>
+          </select>
           <select
             value={limit}
             onChange={(e) => setLimit(Number(e.target.value))}
-            className="input py-2 text-sm min-w-[120px] max-w-[140px]"
+            className="input py-2 text-sm w-[90px]"
           >
-            <option value={50}>{t('common.recentEntries', { count: 50 })}</option>
-            <option value={100}>{t('common.recentEntries', { count: 100 })}</option>
-            <option value={200}>{t('common.recentEntries', { count: 200 })}</option>
-            <option value={500}>{t('common.recentEntries', { count: 500 })}</option>
-            <option value={1000}>{t('common.recentEntries', { count: 1000 })}</option>
+            <option value={50}>50条</option>
+            <option value={100}>100条</option>
+            <option value={200}>200条</option>
+            <option value={500}>500条</option>
+            <option value={1000}>1K条</option>
           </select>
           <button
             onClick={() => setAutoRefresh(!autoRefresh)}
-            className={`btn ${autoRefresh ? 'btn-primary' : 'btn-secondary'} flex items-center gap-2 whitespace-nowrap text-sm`}
+            className={`btn ${autoRefresh ? 'btn-primary' : 'btn-secondary'} flex items-center gap-1.5 whitespace-nowrap text-sm px-3 py-2`}
           >
             <RefreshCw className={`w-4 h-4 ${autoRefresh ? 'animate-spin' : ''}`} />
             <span className="hidden sm:inline">{autoRefresh ? t('common.autoRefreshing') : t('common.autoRefresh')}</span>
-            <span className="sm:hidden">{autoRefresh ? t('common.refreshing') : t('common.auto')}</span>
+            <span className="sm:hidden">{t('common.auto')}</span>
           </button>
           <button
             onClick={() => loadLogs(true)}
             disabled={refreshing}
-            className="btn btn-secondary flex items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed whitespace-nowrap text-sm"
+            className="btn btn-secondary flex items-center gap-1.5 disabled:opacity-50 disabled:cursor-not-allowed whitespace-nowrap text-sm px-3 py-2"
           >
             <RefreshCw className={`w-4 h-4 ${refreshing ? 'animate-spin' : ''}`} />
-            <span>{t('common.refresh')}</span>
+            <span className="hidden sm:inline">{t('common.refresh')}</span>
           </button>
         </div>
       </div>
@@ -330,7 +361,12 @@ export default function AuditPage() {
                   const truncatedMessage = shouldTruncate ? displayMessage.slice(0, maxLength) + '...' : displayMessage
                   
                   return (
-                    <tr key={index} className="border-b border-gray-100 hover:bg-gray-50 transition-colors group">
+                    <tr 
+                      key={index} 
+                      className="border-b border-gray-100 hover:bg-gray-50 transition-colors group cursor-pointer"
+                      onDoubleClick={() => copyLogToClipboard(log, index)}
+                      title={t('common.doubleClickToCopy')}
+                    >
                       <td className="py-3 px-4 text-sm text-gray-600 font-mono whitespace-nowrap">
                         {formatTime(log.timestamp)}
                       </td>
@@ -346,32 +382,41 @@ export default function AuditPage() {
                         {log.logger || '-'}
                       </td>
                       <td className="py-3 px-4 text-sm text-gray-900 relative">
-                        <div className="max-w-2xl">
-                          <div className="break-words">
-                            {truncatedMessage}
-                          </div>
-                          {/* Hover Tooltip */}
-                          <div className="absolute left-0 top-full mt-1 z-50 invisible group-hover:visible opacity-0 group-hover:opacity-100 transition-opacity duration-200 pointer-events-none">
-                            <div className="bg-gray-900 text-white text-xs rounded-lg shadow-2xl p-3 max-w-2xl min-w-[300px] border border-gray-700">
-                              <div className="whitespace-pre-wrap break-words max-h-96 overflow-y-auto custom-scrollbar">
-                                {fullContent}
+                        <div className="flex items-start gap-2">
+                          <div className="flex-1 max-w-2xl">
+                            <div className="break-words">
+                              {truncatedMessage}
+                            </div>
+                            {/* Copy success indicator */}
+                            {copiedIndex === index && (
+                              <div className="absolute right-0 top-0 bg-green-500 text-white text-xs px-2 py-1 rounded shadow-lg flex items-center gap-1 z-10">
+                                <Check className="w-3 h-3" />
+                                <span>{t('common.copied')}</span>
                               </div>
-                              {log.exception && (
-                                <div className="mt-2 pt-2 border-t border-gray-700">
-                                  <div className="text-red-400 font-semibold mb-1">{t('systemLog.exceptionDetail')}</div>
-                                  <pre className="text-xs whitespace-pre-wrap break-words text-red-300">
-                                    {log.exception}
-                                  </pre>
+                            )}
+                            {/* Hover Tooltip */}
+                            <div className="absolute left-0 top-full mt-1 z-50 invisible group-hover:visible opacity-0 group-hover:opacity-100 transition-opacity duration-200 pointer-events-none">
+                              <div className="bg-gray-900 text-white text-xs rounded-lg shadow-2xl p-3 max-w-2xl min-w-[300px] border border-gray-700">
+                                <div className="whitespace-pre-wrap break-words max-h-96 overflow-y-auto custom-scrollbar">
+                                  {fullContent}
                                 </div>
-                              )}
+                                {log.exception && (
+                                  <div className="mt-2 pt-2 border-t border-gray-700">
+                                    <div className="text-red-400 font-semibold mb-1">{t('systemLog.exceptionDetail')}</div>
+                                    <pre className="text-xs whitespace-pre-wrap break-words text-red-300">
+                                      {log.exception}
+                                    </pre>
+                                  </div>
+                                )}
+                              </div>
                             </div>
+                            {log.exception && (
+                              <div className="mt-1 text-xs text-red-600 flex items-center gap-1">
+                                <AlertTriangle className="w-3 h-3" />
+                                <span>{t('systemLog.hasException')}</span>
+                              </div>
+                            )}
                           </div>
-                          {log.exception && (
-                            <div className="mt-1 text-xs text-red-600 flex items-center gap-1">
-                              <AlertTriangle className="w-3 h-3" />
-                              <span>{t('systemLog.hasException')}</span>
-                            </div>
-                          )}
                         </div>
                       </td>
                     </tr>

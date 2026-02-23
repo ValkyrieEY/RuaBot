@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Optional, List, Dict, Any
 from contextlib import asynccontextmanager
 
-from sqlalchemy import create_engine, select, update, delete
+from sqlalchemy import create_engine, select, update, delete, text
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker
 from sqlalchemy.orm import declarative_base, Session
 from sqlalchemy.pool import StaticPool
@@ -90,6 +90,9 @@ class DatabaseManager:
                 logger.info("Knowledge graph tables initialized")
             except ImportError:
                 logger.info("Knowledge graph module not available, skipping KG tables")
+            
+            # Run database migrations
+            await self._run_migrations(conn)
         
         self._initialized = True
         
@@ -97,6 +100,21 @@ class DatabaseManager:
         self._monitor_task = asyncio.create_task(self._monitor_connection_pool())
         
         logger.info(f"Framework database initialized", db_path=str(self.db_path))
+    
+    async def _run_migrations(self, conn):
+        """Run database migrations to add missing columns."""
+        try:
+            # Check if repetition_penalty column exists in ai_presets table
+            result = await conn.execute(text("PRAGMA table_info(ai_presets)"))
+            columns = [row[1] for row in result.fetchall()]
+            
+            # Migration: Add repetition_penalty column to ai_presets table
+            if 'repetition_penalty' not in columns:
+                await conn.execute(text("ALTER TABLE ai_presets ADD COLUMN repetition_penalty REAL"))
+                logger.info("Migration: Added repetition_penalty column to ai_presets table")
+        except Exception as e:
+            logger.warning(f"Migration check failed: {e}")
+            # Don't raise - allow initialization to continue even if migration fails
     
     @asynccontextmanager
     async def session(self):
@@ -573,6 +591,7 @@ class DatabaseManager:
         description: Optional[str] = None,
         top_p: Optional[float] = None,
         top_k: Optional[int] = None,
+        repetition_penalty: Optional[float] = None,
         config: Optional[Dict[str, Any]] = None
     ) -> AIPreset:
         """Create AI preset."""
@@ -586,6 +605,7 @@ class DatabaseManager:
                 max_tokens=max_tokens,
                 top_p=top_p,
                 top_k=top_k,
+                repetition_penalty=repetition_penalty,
                 config=config or {}
             )
             session.add(preset)

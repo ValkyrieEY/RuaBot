@@ -131,15 +131,10 @@ class Replyer:
             
             # Step 4: Generate reply
             # Build system prompt with tool instructions if tools are available
-            sys_prompt = system_prompt or f"你是{bot_name}，一个友好、自然的AI助手。"
+            from .prompts import DEFAULT_SYSTEM_PROMPT, TOOL_USAGE_RULES
+            sys_prompt = system_prompt or DEFAULT_SYSTEM_PROMPT.format(bot_name=bot_name)
             if tools:
-                sys_prompt += (
-                    "\n\n[重要] 工具使用规则："
-                    "\n1. 正常对话回复时，直接返回文本内容即可，不要使用 send_group_message 或 send_private_message 工具。"
-                    "\n2. 只有在需要@用户、回复特定消息、或跨群发送时，才使用消息发送工具。"
-                    "\n3. 不要在回复文本中包含工具调用的XML格式（如 <arg_key>、<arg_value> 等），这些是系统内部格式。"
-                    "\n4. 如果需要使用工具，使用标准的 tool_calls 格式，不要在文本中描述工具调用。"
-                )
+                sys_prompt += TOOL_USAGE_RULES
             
             # Build user message with images if vision model
             user_message_content = []

@@ -127,6 +127,7 @@ class AIPreset(Base):
     max_tokens = Column(Integer, nullable=False, default=2000)
     top_p = Column(Float, nullable=True)
     top_k = Column(Integer, nullable=True)
+    repetition_penalty = Column(Float, nullable=True)  # 重复惩罚参数
     
     # Additional config
     config = Column(JSON, nullable=False, default=dict)
@@ -149,6 +150,7 @@ class AIPreset(Base):
             'max_tokens': self.max_tokens,
             'top_p': self.top_p,
             'top_k': self.top_k,
+            'repetition_penalty': self.repetition_penalty,
             'config': self.config,
             'created_at': self.created_at.isoformat() if self.created_at else None,
             'updated_at': self.updated_at.isoformat() if self.updated_at else None,

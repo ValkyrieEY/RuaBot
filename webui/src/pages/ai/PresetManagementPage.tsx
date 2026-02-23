@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { api } from '@/utils/api'
-import { Plus, Edit, Trash2 } from 'lucide-react'
+import { Plus, Edit2, Trash2, Copy, FileText } from 'lucide-react'
 
 export default function PresetManagementPage() {
   const [presets, setPresets] = useState<any[]>([])
@@ -15,6 +15,7 @@ export default function PresetManagementPage() {
     description: '',
     top_p: undefined as number | undefined,
     top_k: undefined as number | undefined,
+    repetition_penalty: undefined as number | undefined,
   })
 
   useEffect(() => {
@@ -43,6 +44,7 @@ export default function PresetManagementPage() {
       description: '',
       top_p: undefined,
       top_k: undefined,
+      repetition_penalty: undefined,
     })
     setShowModal(true)
   }
@@ -57,6 +59,7 @@ export default function PresetManagementPage() {
       description: preset.description || '',
       top_p: preset.top_p,
       top_k: preset.top_k,
+      repetition_penalty: preset.repetition_penalty,
     })
     setShowModal(true)
   }
@@ -66,6 +69,7 @@ export default function PresetManagementPage() {
       const data: any = { ...formData }
       if (!data.top_p) delete data.top_p
       if (!data.top_k) delete data.top_k
+      if (!data.repetition_penalty) delete data.repetition_penalty
 
       if (editingPreset) {
         await api.updatePreset(editingPreset.uuid, data)
@@ -92,226 +96,240 @@ export default function PresetManagementPage() {
   }
 
   if (loading) {
-    return <div className="text-center py-8">加载中...</div>
+    return (
+      <div className="flex items-center justify-center min-h-[400px]">
+        <div className="w-10 h-10 border-4 border-blue-600 border-t-transparent rounded-full animate-spin"></div>
+      </div>
+    )
   }
 
   return (
-    <div className="space-y-6">
-      <div className="flex items-center justify-between">
-        <h2 className="text-2xl font-semibold">预设管理</h2>
+    <div>
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 py-6 mb-2">
+        <div>
+          <h1 className="text-2xl font-bold text-gray-900 tracking-tight">预设管理</h1>
+          <p className="text-sm text-gray-500 mt-1">管理 AI 的人设和系统提示词</p>
+        </div>
         <button
           onClick={handleCreate}
-          className="flex items-center gap-2 px-4 py-2 bg-blue-500 text-white rounded hover:bg-blue-600"
+          className="flex items-center gap-2 px-4 py-2.5 bg-blue-600 text-white rounded-xl hover:bg-blue-700 transition-all shadow-sm hover:shadow-md"
         >
           <Plus className="w-4 h-4" />
-          添加预设
+          <span>添加预设</span>
         </button>
       </div>
 
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
         {presets.map((preset) => (
-          <div
-            key={preset.uuid}
-            className="bg-white rounded-xl shadow p-4"
-          >
-            <div className="flex items-start justify-between mb-2">
-              <h3 className="font-semibold text-lg">{preset.name}</h3>
-              <div className="flex gap-2">
+          <div key={preset.uuid} className="bg-white rounded-xl border border-gray-200 p-5 shadow-sm hover:shadow-md transition-all flex flex-col group">
+            <div className="flex items-start justify-between gap-4 mb-3">
+              <div className="flex items-center gap-3">
+                <div className="p-2 bg-gradient-to-br from-indigo-500 to-purple-600 rounded-lg text-white shadow-sm">
+                  <FileText className="w-5 h-5" />
+                </div>
+                <div>
+                  <h3 className="font-bold text-lg text-gray-900 line-clamp-1" title={preset.name}>{preset.name}</h3>
+                  {preset.description && (
+                    <p className="text-xs text-gray-500 mt-0.5 line-clamp-1" title={preset.description}>{preset.description}</p>
+                  )}
+                </div>
+              </div>
+              
+              <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
                 <button
                   onClick={() => handleEdit(preset)}
-                  className="text-blue-500 hover:text-blue-600"
+                  className="p-2 text-gray-400 hover:text-blue-600 hover:bg-blue-50 rounded-lg transition-colors"
+                  title="编辑"
                 >
-                  <Edit className="w-4 h-4" />
+                  <Edit2 className="w-4 h-4" />
                 </button>
                 <button
                   onClick={() => handleDelete(preset.uuid)}
-                  className="text-red-500 hover:text-red-600"
+                  className="p-2 text-gray-400 hover:text-red-600 hover:bg-red-50 rounded-lg transition-colors"
+                  title="删除"
                 >
                   <Trash2 className="w-4 h-4" />
                 </button>
               </div>
             </div>
-            {preset.description && (
-              <p className="text-sm text-gray-600 mb-2">
-                {preset.description}
-              </p>
-            )}
-            <div className="text-sm space-y-1">
-              <div>温度: {preset.temperature}</div>
-              <div>最大Token: {preset.max_tokens}</div>
-              {preset.top_p && <div>Top P: {preset.top_p}</div>}
-              {preset.top_k && <div>Top K: {preset.top_k}</div>}
+            
+            <div className="flex flex-wrap gap-2 mb-4">
+              <span className="inline-flex items-center px-2 py-1 rounded-md text-xs font-medium bg-gray-50 text-gray-600 border border-gray-100">
+                Temp: {preset.temperature}
+              </span>
+              <span className="inline-flex items-center px-2 py-1 rounded-md text-xs font-medium bg-gray-50 text-gray-600 border border-gray-100">
+                Max: {preset.max_tokens}
+              </span>
+              {preset.top_p && (
+                <span className="inline-flex items-center px-2 py-1 rounded-md text-xs font-medium bg-gray-50 text-gray-600 border border-gray-100">
+                  TopP: {preset.top_p}
+                </span>
+              )}
             </div>
-            <div className="mt-3 pt-3 border-t">
-              <p className="text-xs text-gray-500 line-clamp-3">
+
+            <div className="flex-1 bg-gray-50 rounded-lg border border-gray-100 p-3 relative group/code">
+              <div className="text-xs text-gray-500 font-mono line-clamp-4 leading-relaxed">
                 {preset.system_prompt}
-              </p>
+              </div>
+              <div className="absolute inset-0 bg-gray-50/50 opacity-0 group-hover/code:opacity-100 transition-opacity flex items-center justify-center rounded-lg backdrop-blur-[1px]">
+                <button 
+                  className="bg-white text-gray-700 text-xs px-3 py-1.5 rounded border border-gray-200 shadow-sm flex items-center gap-1.5 hover:text-blue-600 hover:border-blue-200 transition-colors"
+                  onClick={() => {
+                    navigator.clipboard.writeText(preset.system_prompt)
+                    alert('已复制到剪贴板')
+                  }}
+                >
+                  <Copy className="w-3 h-3" />
+                  复制提示词
+                </button>
+              </div>
             </div>
           </div>
         ))}
       </div>
 
       {showModal && (
-        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
-          <div className="bg-white rounded-xl p-6 w-full max-w-3xl max-h-[90vh] overflow-y-auto">
-            <h3 className="text-xl font-semibold mb-4">
-              {editingPreset ? '编辑预设' : '添加预设'}
-            </h3>
-            <div className="space-y-4">
-              <div>
-                <label className="block text-sm font-medium mb-1">名称</label>
-                <input
-                  type="text"
-                  value={formData.name}
-                  onChange={(e) => setFormData({ ...formData, name: e.target.value })}
-                  className="w-full px-3 py-2 border rounded-lg"
-                />
-              </div>
-              <div>
-                <label className="block text-sm font-medium mb-1">描述</label>
-                <input
-                  type="text"
-                  value={formData.description}
-                  onChange={(e) => setFormData({ ...formData, description: e.target.value })}
-                  className="w-full px-3 py-2 border rounded-lg"
-                />
-              </div>
-              <div>
-                <label className="block text-sm font-medium mb-1">系统提示词</label>
-                <textarea
-                  value={formData.system_prompt}
-                  onChange={(e) => setFormData({ ...formData, system_prompt: e.target.value })}
-                  className="w-full px-3 py-2 border rounded-lg"
-                  rows={8}
-                  placeholder="输入系统提示词，定义AI的角色和行为..."
-                />
-                <div className="mt-2 p-3 bg-gray-50 rounded-lg border border-gray-200">
-                  <p className="text-xs font-medium text-gray-700 mb-2">可用变量（点击复制）：</p>
-                  <div className="grid grid-cols-2 gap-2 text-xs">
-                    <div className="flex items-center gap-1">
-                      <code className="px-1.5 py-0.5 bg-white border rounded cursor-pointer hover:bg-gray-100" 
-                            onClick={() => navigator.clipboard.writeText('{user_id}')}
-                            title="点击复制">
-                        {'{user_id}'}
-                      </code>
-                      <span className="text-gray-500">用户QQ号</span>
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4 backdrop-blur-sm">
+          <div className="bg-white rounded-2xl shadow-2xl max-w-3xl w-full max-h-[90vh] overflow-y-auto">
+            <div className="sticky top-0 bg-white border-b border-gray-100 px-6 py-4 flex items-center justify-between z-10 rounded-t-2xl">
+              <h3 className="text-lg font-bold text-gray-900">
+                {editingPreset ? '编辑预设' : '添加预设'}
+              </h3>
+              <button 
+                onClick={() => setShowModal(false)} 
+                className="p-2 hover:bg-gray-100 rounded-full transition-colors text-gray-500"
+              >
+                <span className="text-xl leading-none">×</span>
+              </button>
+            </div>
+            
+            <div className="p-6 space-y-6">
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                <div className="space-y-4">
+                  <div className="space-y-1.5">
+                    <label className="block text-sm font-medium text-gray-700">名称</label>
+                    <input
+                      type="text"
+                      value={formData.name}
+                      onChange={(e) => setFormData({ ...formData, name: e.target.value })}
+                      className="block w-full rounded-lg border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500 sm:text-sm py-2.5 px-3"
+                      placeholder="给预设起个名字"
+                    />
+                  </div>
+                  <div className="space-y-1.5">
+                    <label className="block text-sm font-medium text-gray-700">描述</label>
+                    <input
+                      type="text"
+                      value={formData.description}
+                      onChange={(e) => setFormData({ ...formData, description: e.target.value })}
+                      className="block w-full rounded-lg border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500 sm:text-sm py-2.5 px-3"
+                      placeholder="简单描述这个预设的作用"
+                    />
+                  </div>
+                  
+                  <div className="grid grid-cols-2 gap-4">
+                    <div className="space-y-1.5">
+                      <label className="block text-sm font-medium text-gray-700">温度 (Temperature)</label>
+                      <input
+                        type="number"
+                        step="0.1"
+                        min="0"
+                        max="2"
+                        value={formData.temperature}
+                        onChange={(e) => setFormData({ ...formData, temperature: parseFloat(e.target.value) })}
+                        className="block w-full rounded-lg border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500 sm:text-sm py-2.5 px-3"
+                      />
                     </div>
-                    <div className="flex items-center gap-1">
-                      <code className="px-1.5 py-0.5 bg-white border rounded cursor-pointer hover:bg-gray-100"
-                            onClick={() => navigator.clipboard.writeText('{user_name}')}
-                            title="点击复制">
-                        {'{user_name}'}
-                      </code>
-                      <span className="text-gray-500">用户名称（优先群名片）</span>
+                    <div className="space-y-1.5">
+                      <label className="block text-sm font-medium text-gray-700">最大Token数</label>
+                      <input
+                        type="number"
+                        min="1"
+                        value={formData.max_tokens}
+                        onChange={(e) => setFormData({ ...formData, max_tokens: parseInt(e.target.value) })}
+                        className="block w-full rounded-lg border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500 sm:text-sm py-2.5 px-3"
+                      />
                     </div>
-                    <div className="flex items-center gap-1">
-                      <code className="px-1.5 py-0.5 bg-white border rounded cursor-pointer hover:bg-gray-100"
-                            onClick={() => navigator.clipboard.writeText('{user_nickname}')}
-                            title="点击复制">
-                        {'{user_nickname}'}
-                      </code>
-                      <span className="text-gray-500">用户昵称（QQ昵称）</span>
+                  </div>
+
+                  <div className="grid grid-cols-3 gap-4 pt-2 border-t border-gray-100">
+                    <div className="space-y-1.5">
+                      <label className="block text-xs font-bold text-gray-500 uppercase tracking-wide">Top P</label>
+                      <input
+                        type="number"
+                        step="0.1"
+                        min="0"
+                        max="1"
+                        placeholder="默认"
+                        value={formData.top_p || ''}
+                        onChange={(e) => setFormData({ ...formData, top_p: e.target.value ? parseFloat(e.target.value) : undefined })}
+                        className="block w-full rounded-lg border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500 sm:text-sm py-2 px-2"
+                      />
                     </div>
-                    <div className="flex items-center gap-1">
-                      <code className="px-1.5 py-0.5 bg-white border rounded cursor-pointer hover:bg-gray-100"
-                            onClick={() => navigator.clipboard.writeText('{group_id}')}
-                            title="点击复制">
-                        {'{group_id}'}
-                      </code>
-                      <span className="text-gray-500">群号</span>
+                    <div className="space-y-1.5">
+                      <label className="block text-xs font-bold text-gray-500 uppercase tracking-wide">Top K</label>
+                      <input
+                        type="number"
+                        min="1"
+                        placeholder="默认"
+                        value={formData.top_k || ''}
+                        onChange={(e) => setFormData({ ...formData, top_k: e.target.value ? parseInt(e.target.value) : undefined })}
+                        className="block w-full rounded-lg border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500 sm:text-sm py-2 px-2"
+                      />
                     </div>
-                    <div className="flex items-center gap-1">
-                      <code className="px-1.5 py-0.5 bg-white border rounded cursor-pointer hover:bg-gray-100"
-                            onClick={() => navigator.clipboard.writeText('{group_name}')}
-                            title="点击复制">
-                        {'{group_name}'}
-                      </code>
-                      <span className="text-gray-500">群名称</span>
+                    <div className="space-y-1.5">
+                      <label className="block text-xs font-bold text-gray-500 uppercase tracking-wide">重复惩罚</label>
+                      <input
+                        type="number"
+                        step="0.1"
+                        min="0"
+                        max="2"
+                        placeholder="默认"
+                        value={formData.repetition_penalty || ''}
+                        onChange={(e) => setFormData({ ...formData, repetition_penalty: e.target.value ? parseFloat(e.target.value) : undefined })}
+                        className="block w-full rounded-lg border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500 sm:text-sm py-2 px-2"
+                      />
                     </div>
-                    <div className="flex items-center gap-1">
-                      <code className="px-1.5 py-0.5 bg-white border rounded cursor-pointer hover:bg-gray-100"
-                            onClick={() => navigator.clipboard.writeText('{current_time}')}
-                            title="点击复制">
-                        {'{current_time}'}
-                      </code>
-                      <span className="text-gray-500">当前时间</span>
-                    </div>
-                    <div className="flex items-center gap-1">
-                      <code className="px-1.5 py-0.5 bg-white border rounded cursor-pointer hover:bg-gray-100"
-                            onClick={() => navigator.clipboard.writeText('{current_date}')}
-                            title="点击复制">
-                        {'{current_date}'}
-                      </code>
-                      <span className="text-gray-500">当前日期</span>
-                    </div>
-                    <div className="flex items-center gap-1">
-                      <code className="px-1.5 py-0.5 bg-white border rounded cursor-pointer hover:bg-gray-100"
-                            onClick={() => navigator.clipboard.writeText('{current_time_iso}')}
-                            title="点击复制">
-                        {'{current_time_iso}'}
-                      </code>
-                      <span className="text-gray-500">ISO时间</span>
+                  </div>
+                </div>
+
+                <div className="space-y-1.5 flex flex-col h-full">
+                  <label className="block text-sm font-medium text-gray-700">系统提示词</label>
+                  <textarea
+                    value={formData.system_prompt}
+                    onChange={(e) => setFormData({ ...formData, system_prompt: e.target.value })}
+                    className="block w-full flex-1 rounded-lg border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500 sm:text-sm font-mono py-2.5 px-3 min-h-[240px]"
+                    placeholder="输入系统提示词，定义AI的角色和行为..."
+                  />
+                  <div className="mt-2 text-xs text-gray-500 bg-blue-50 p-3 rounded-lg border border-blue-100">
+                    <p className="font-bold text-blue-800 mb-1.5">可用变量 (点击复制)：</p>
+                    <div className="flex flex-wrap gap-1.5">
+                      {['{user_id}', '{user_name}', '{group_id}', '{group_name}', '{current_time}'].map(v => (
+                        <button 
+                          key={v} 
+                          className="px-1.5 py-0.5 bg-white border border-blue-200 rounded text-blue-600 hover:bg-blue-100 transition-colors font-mono"
+                          onClick={() => navigator.clipboard.writeText(v)}
+                          title="点击复制"
+                        >
+                          {v}
+                        </button>
+                      ))}
                     </div>
                   </div>
                 </div>
               </div>
-              <div className="grid grid-cols-2 gap-4">
-                <div>
-                  <label className="block text-sm font-medium mb-1">温度 (Temperature)</label>
-                  <input
-                    type="number"
-                    step="0.1"
-                    min="0"
-                    max="2"
-                    value={formData.temperature}
-                    onChange={(e) => setFormData({ ...formData, temperature: parseFloat(e.target.value) })}
-                    className="w-full px-3 py-2 border rounded-lg"
-                  />
-                </div>
-                <div>
-                  <label className="block text-sm font-medium mb-1">最大Token数</label>
-                  <input
-                    type="number"
-                    min="1"
-                    value={formData.max_tokens}
-                    onChange={(e) => setFormData({ ...formData, max_tokens: parseInt(e.target.value) })}
-                    className="w-full px-3 py-2 border rounded-lg"
-                  />
-                </div>
-                <div>
-                  <label className="block text-sm font-medium mb-1">Top P (可选)</label>
-                  <input
-                    type="number"
-                    step="0.1"
-                    min="0"
-                    max="1"
-                    value={formData.top_p || ''}
-                    onChange={(e) => setFormData({ ...formData, top_p: e.target.value ? parseFloat(e.target.value) : undefined })}
-                    className="w-full px-3 py-2 border rounded-lg"
-                  />
-                </div>
-                <div>
-                  <label className="block text-sm font-medium mb-1">Top K (可选)</label>
-                  <input
-                    type="number"
-                    min="1"
-                    value={formData.top_k || ''}
-                    onChange={(e) => setFormData({ ...formData, top_k: e.target.value ? parseInt(e.target.value) : undefined })}
-                    className="w-full px-3 py-2 border rounded-lg"
-                  />
-                </div>
-              </div>
             </div>
-            <div className="flex justify-end gap-2 mt-6">
+
+            <div className="sticky bottom-0 bg-gray-50 px-6 py-4 flex gap-3 justify-end border-t border-gray-100 rounded-b-2xl">
               <button
                 onClick={() => setShowModal(false)}
-                className="px-4 py-2 border rounded-lg hover:bg-gray-100"
+                className="px-5 py-2.5 border border-gray-300 text-gray-700 text-sm font-medium rounded-xl hover:bg-white hover:text-gray-900 transition-colors"
               >
                 取消
               </button>
               <button
                 onClick={handleSave}
-                className="px-4 py-2 bg-blue-500 text-white rounded hover:bg-blue-600"
+                className="px-5 py-2.5 bg-blue-600 text-white text-sm font-medium rounded-xl hover:bg-blue-700 transition-colors shadow-sm"
               >
                 保存
               </button>
@@ -322,4 +340,3 @@ export default function PresetManagementPage() {
     </div>
   )
 }
-

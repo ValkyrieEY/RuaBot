@@ -74,34 +74,8 @@ class OpenIE:
     
     def _build_extraction_prompt(self, text: str, max_triples: int) -> str:
         """Build prompt for triple extraction."""
-        return f"""请从以下文本中提取知识三元组（Subject-Predicate-Object）。
-
-文本：
-{text}
-
-要求：
-1. 提取最多 {max_triples} 个最重要的知识三元组
-2. 每个三元组包含：主语（subject）、谓语（predicate）、宾语（object）
-3. 主语和宾语应该是具体的实体（人、地点、组织、物品、概念等）
-4. 谓语应该是关系或动作
-5. 为每个三元组评估置信度（0-1之间的小数）
-6. 如果能识别实体类型，也请标注（person/place/organization/thing/concept/time/event）
-
-输出格式（JSON）：
-{{
-    "triples": [
-        {{
-            "subject": "主语",
-            "subject_type": "实体类型（可选）",
-            "predicate": "谓语/关系",
-            "object": "宾语",
-            "object_type": "实体类型（可选）",
-            "confidence": 0.9
-        }}
-    ]
-}}
-
-只输出JSON，不要其他内容。"""
+        from ..prompts import build_triple_extraction_prompt
+        return build_triple_extraction_prompt(text, max_triples)
     
     def _parse_extraction_results(self, response_text: str) -> List[Dict[str, Any]]:
         """Parse LLM extraction results."""
@@ -156,23 +130,8 @@ class OpenIE:
             List of entity dicts with name, type, description
         """
         try:
-            prompt = f"""请从以下文本中识别所有重要的实体（人、地点、组织、物品、概念等）。
-
-文本：
-{text}
-
-输出格式（JSON）：
-{{
-    "entities": [
-        {{
-            "name": "实体名称",
-            "type": "实体类型（person/place/organization/thing/concept）",
-            "description": "简短描述（可选）"
-        }}
-    ]
-}}
-
-只输出JSON。"""
+            from ..prompts import build_entity_extraction_prompt
+            prompt = build_entity_extraction_prompt(text)
             
             response = await llm_client.chat_completion(
                 messages=[{"role": "user", "content": prompt}],
@@ -216,17 +175,8 @@ class OpenIE:
             List of relationship descriptions
         """
         try:
-            prompt = f"""在以下文本中，分析"{entity1}"和"{entity2}"之间的关系。
-
-文本：
-{text}
-
-请列出它们之间的关系（如果有的话），以JSON格式输出：
-{{
-    "relationships": ["关系1", "关系2", ...]
-}}
-
-只输出JSON。"""
+            from ..prompts import build_relationship_extraction_prompt
+            prompt = build_relationship_extraction_prompt(entity1, entity2, text)
             
             response = await llm_client.chat_completion(
                 messages=[{"role": "user", "content": prompt}],

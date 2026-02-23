@@ -1,6 +1,6 @@
 [app]
 name = "XQNEXT Framework"
-version = "0.0.4"
+version = "0.0.5"
 
 # 环境模式："development"（开发）或 "production"（生产）
 environment = "development"
@@ -90,6 +90,25 @@ thread_pool_enabled = true
 
 # 是否文件改动自动重启
 auto_reload = false
+
+[plugins.interceptor]
+# 拦截器执行模式: "serial"(串行), "parallel"(并行), "hybrid"(混合，推荐)
+# - serial: 拦截器按优先级依次执行（安全但慢）
+# - parallel: 所有拦截器同时并发执行（快但可能有冲突）
+# - hybrid: 按优先级分组，同组并发执行（推荐，平衡性能和一致性）
+execution_mode = "hybrid"
+
+# 熔断器配置：连续失败指定次数后自动隔离故障拦截器
+circuit_breaker_threshold = 3    # 连续失败次数阈值
+
+# 熔断器隔离时长（秒）：故障拦截器被隔离的时间，之后自动尝试恢复
+circuit_breaker_duration = 30.0
+
+# 拦截器基础超时时间（秒）
+base_timeout = 3.0
+
+# 拦截器最大自适应超时时间（秒）：系统会根据历史执行时间动态调整
+max_timeout = 10.0
 
 [web_ui]
 # 启用 Web 界面

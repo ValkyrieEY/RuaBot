@@ -31,7 +31,7 @@ python-multipart>=0.0.6
 # Configuration
 python-dotenv>=1.0.0
 pyyaml>=6.0.1
-tomli-w>=1.0.0
+tomlkit>=0.12.0  # Preserves comments and formatting in TOML files
 
 # System Monitoring
 psutil>=5.9.0

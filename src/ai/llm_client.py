@@ -3,6 +3,7 @@
 import httpx
 import json
 import re
+import asyncio
 from typing import Optional, List, Dict, Any, AsyncIterator
 from ..core.logger import get_logger
 
@@ -12,7 +13,7 @@ logger = get_logger(__name__)
 class LLMClient:
     """Client for calling LLM APIs (OpenAI-compatible)."""
     
-    def __init__(self, api_key: str, base_url: str, model_name: str, provider: str = "openai"):
+    def __init__(self, api_key: str, base_url: str, model_name: str, provider: str = "openai", api_format: Optional[str] = None):
         """
         Initialize LLM client.
         
@@ -21,6 +22,7 @@ class LLMClient:
             base_url: Base URL for the API (e.g., https://api.openai.com/v1)
             model_name: Model name (e.g., gpt-4, deepseek-chat)
             provider: Provider name (openai, deepseek, etc.)
+            api_format: API format ('openai' or 'gemini'), if None will auto-detect from provider/model_name
         """
         self.api_key = api_key
         # Normalize base_url - remove /chat/completions if present
@@ -30,6 +32,7 @@ class LLMClient:
         self.base_url = base_url
         self.model_name = model_name
         self.provider = provider
+        self.api_format = api_format  # Store api_format for explicit format selection
         self._client: Optional[httpx.AsyncClient] = None
     
     async def _get_client(self) -> httpx.AsyncClient:
@@ -365,6 +368,7 @@ class LLMClient:
         max_tokens: int = 2000,
         top_p: Optional[float] = None,
         top_k: Optional[int] = None,
+        repetition_penalty: Optional[float] = None,
         tools: Optional[List[Dict[str, Any]]] = None,
         stream: bool = False,
         thread_pool=None,
@@ -379,6 +383,7 @@ class LLMClient:
             max_tokens: Maximum tokens to generate
             top_p: Nucleus sampling parameter
             top_k: Top-k sampling parameter
+            repetition_penalty: Repetition penalty parameter
             tools: Optional list of tools
             stream: If True, returns an async generator. If False, returns a dict.
             thread_pool: Optional thread pool manager for blocking operations
@@ -391,12 +396,12 @@ class LLMClient:
         if stream:
             # Return the streaming generator directly
             return self._chat_completion_stream(
-                messages, temperature, max_tokens, top_p, top_k, tools, **kwargs
+                messages, temperature, max_tokens, top_p, top_k, repetition_penalty, tools, **kwargs
             )
         else:
             # Call and return the non-streaming result
             return await self._chat_completion_non_stream(
-                messages, temperature, max_tokens, top_p, top_k, tools, thread_pool=thread_pool, **kwargs
+                messages, temperature, max_tokens, top_p, top_k, repetition_penalty, tools, thread_pool=thread_pool, **kwargs
             )
     
     async def _chat_completion_stream(
@@ -406,14 +411,17 @@ class LLMClient:
         max_tokens: int,
         top_p: Optional[float],
         top_k: Optional[int],
+        repetition_penalty: Optional[float],
         tools: Optional[List[Dict[str, Any]]],
         **kwargs
     ) -> AsyncIterator[str]:
         """Handle streaming chat completion."""
         client = await self._get_client()
         
-        # Check if this is Gemini
-        is_gemini = self.provider.lower() == "gemini" or "gemini" in self.model_name.lower()
+        # Check if this is Gemini - use api_format only (no auto-detect)
+        # Default to 'openai' if api_format is not set
+        api_format = (self.api_format or 'openai').lower()
+        is_gemini = api_format == "gemini"
         
         # Prepare request payload
         if is_gemini:
@@ -450,6 +458,8 @@ class LLMClient:
                 payload["top_p"] = top_p
             if top_k is not None:
                 payload["top_k"] = top_k
+            if repetition_penalty is not None:
+                payload["repetition_penalty"] = repetition_penalty
         
         # Add tools if provided
         if tools:
@@ -520,11 +530,17 @@ class LLMClient:
     
     def _parse_response_sync(self, result: Dict[str, Any], tools: Optional[List[Dict[str, Any]]]) -> Dict[str, Any]:
         """Synchronously parse LLM response (can be run in thread pool)."""
+        # Validate input
+        if not isinstance(result, dict):
+            logger.error(f"API response is not a dictionary: {type(result).__name__}, value: {result}")
+            raise RuntimeError(f"API response is not a dictionary: {type(result).__name__}")
+        
         # Debug: log the raw response to understand what model returns
         logger.debug(f"LLM API raw response (first 500 chars): {str(result)[:500]}")
         
-        # Check if this is a Gemini response format
-        is_gemini = "candidates" in result
+        # Check if this is a Gemini response format - use api_format to determine
+        api_format = (self.api_format or 'openai').lower()
+        is_gemini = api_format == "gemini" or "candidates" in result
         
         if is_gemini:
             # Parse Gemini response format
@@ -584,17 +600,59 @@ class LLMClient:
                 logger.debug(f"Tools were provided but model returned text response. Message keys: {list(message.keys())}, finish_reason: {finish_reason}")
             
             # Regular text response
-            content = message.get("content", "").strip() if "content" in message else ""
-            if not content and "text" in choice:
-                content = choice["text"].strip()
+            # Handle case where content might be None
+            content = message.get("content") or ""
+            if isinstance(content, str):
+                content = content.strip()
+            else:
+                content = str(content).strip() if content else ""
             
-            return {
+            if not content and "text" in choice:
+                text_content = choice.get("text") or ""
+                content = text_content.strip() if isinstance(text_content, str) else str(text_content).strip()
+            
+            # Also extract reasoning_content if present (for models that support it)
+            reasoning_content = message.get("reasoning_content") or ""
+            if isinstance(reasoning_content, str):
+                reasoning_content = reasoning_content.strip()
+            else:
+                reasoning_content = str(reasoning_content).strip() if reasoning_content else ""
+            
+            result = {
                 "type": "text",
                 "content": content
             }
+            
+            # Include reasoning_content if present
+            if reasoning_content:
+                result["reasoning_content"] = reasoning_content
+            
+            return result
         
-        logger.error(f"Unexpected API response format: {result}")
-        raise RuntimeError("Unexpected API response format")
+        # Enhanced error handling: check for error responses
+        if "error" in result:
+            error_info = result.get("error", {})
+            error_msg = error_info.get("message", str(error_info)) if isinstance(error_info, dict) else str(error_info)
+            error_code = error_info.get("code", "unknown") if isinstance(error_info, dict) else "unknown"
+            logger.error(f"API returned error response: code={error_code}, message={error_msg}, full_response={result}")
+            raise RuntimeError(f"API error: {error_msg} (code: {error_code})")
+        
+        # Check for empty or invalid response
+        if not result:
+            logger.error("API returned empty response")
+            raise RuntimeError("API returned empty response")
+        
+        # Check if response has unexpected structure but might contain useful info
+        if "choices" in result and len(result["choices"]) == 0:
+            logger.error(f"API returned empty choices array: {result}")
+            raise RuntimeError("API returned empty choices array")
+        
+        # Log full response for debugging (truncated to avoid log spam)
+        response_str = str(result)
+        if len(response_str) > 1000:
+            response_str = response_str[:1000] + "... (truncated)"
+        logger.error(f"Unexpected API response format. Response keys: {list(result.keys()) if isinstance(result, dict) else 'not a dict'}, Response preview: {response_str}")
+        raise RuntimeError(f"Unexpected API response format. Expected 'choices' or 'candidates' field, but got: {list(result.keys()) if isinstance(result, dict) else type(result).__name__}")
     
     def _parse_gemini_response(self, result: Dict[str, Any], tools: Optional[List[Dict[str, Any]]]) -> Dict[str, Any]:
         """Parse Gemini API response format.
@@ -650,6 +708,7 @@ class LLMClient:
         max_tokens: int,
         top_p: Optional[float],
         top_k: Optional[int],
+        repetition_penalty: Optional[float],
         tools: Optional[List[Dict[str, Any]]],
         thread_pool=None,
         **kwargs
@@ -657,8 +716,10 @@ class LLMClient:
         """Handle non-streaming chat completion."""
         client = await self._get_client()
         
-        # Check if this is Gemini
-        is_gemini = self.provider.lower() == "gemini" or "gemini" in self.model_name.lower()
+        # Check if this is Gemini - use api_format only (no auto-detect)
+        # Default to 'openai' if api_format is not set
+        api_format = (self.api_format or 'openai').lower()
+        is_gemini = api_format == "gemini"
         
         # Prepare request payload
         if is_gemini:
@@ -694,6 +755,8 @@ class LLMClient:
                 payload["top_p"] = top_p
             if top_k is not None:
                 payload["top_k"] = top_k
+            if repetition_penalty is not None:
+                payload["repetition_penalty"] = repetition_penalty
         
         # Add tools if provided
         if tools:
@@ -712,42 +775,87 @@ class LLMClient:
         # Add any additional parameters
         payload.update(kwargs)
         
-        try:
-            # Gemini uses different endpoint
-            if is_gemini:
-                # Extract model name from full model name (e.g., "gemini-2.0-flash-exp" from "models/gemini-2.0-flash-exp")
-                model_name_clean = self.model_name.replace("models/", "")
-                endpoint = f"/v1/models/{model_name_clean}:generateContent"
-            else:
-                endpoint = "/chat/completions"
-            logger.debug(f"Calling LLM API (non-stream): {self.base_url}{endpoint}, model={self.model_name}")
-            
-            # Async HTTP request (stays in event loop)
-            response = await client.post(endpoint, json=payload)
-            response.raise_for_status()
-            
-            # Parse JSON response (can be blocking, run in thread pool if provided)
-            if thread_pool:
-                # Run JSON parsing in thread pool to avoid blocking event loop
-                result = await thread_pool.run_in_executor(
-                    lambda: response.json()
-                )
-                # Parse response structure in thread pool
-                return await thread_pool.run_in_executor(
-                    self._parse_response_sync,
-                    result,
-                    tools
-                )
-            else:
-                # Fallback: parse synchronously (may block event loop)
-                result = response.json()
-                return self._parse_response_sync(result, tools)
-            
-        except httpx.HTTPStatusError as e:
-            error_text = e.response.text if e.response else str(e)
-            logger.error(f"LLM API HTTP error: {e.response.status_code} - {error_text}")
-            raise RuntimeError(f"LLM API error: {e.response.status_code} - {error_text}")
-        except Exception as e:
-            logger.error(f"LLM API call failed: {e}", exc_info=True)
-            raise
+        # Retry logic for rate limiting (429 errors)
+        max_retries = 2
+        retry_delay = 2.0  # seconds
+        
+        for attempt in range(max_retries + 1):
+            try:
+                # Gemini uses different endpoint
+                if is_gemini:
+                    # Extract model name from full model name (e.g., "gemini-2.0-flash-exp" from "models/gemini-2.0-flash-exp")
+                    model_name_clean = self.model_name.replace("models/", "")
+                    endpoint = f"/v1/models/{model_name_clean}:generateContent"
+                else:
+                    endpoint = "/chat/completions"
+                logger.debug(f"Calling LLM API (non-stream): {self.base_url}{endpoint}, model={self.model_name} (attempt {attempt + 1}/{max_retries + 1})")
+                
+                # Async HTTP request (stays in event loop)
+                # Use longer timeout for LLM API calls (some models can be slow)
+                # But reduce timeout to 60s to avoid blocking too long
+                try:
+                    logger.debug(f"Starting LLM API request (timeout: 60s)")
+                    response = await asyncio.wait_for(
+                        client.post(endpoint, json=payload),
+                        timeout=60.0  # 60 seconds timeout (reduced from 120s)
+                    )
+                    logger.debug(f"LLM API response received, status: {response.status_code}")
+                    response.raise_for_status()
+                except asyncio.TimeoutError:
+                    logger.error(f"LLM API call timeout after 60s (attempt {attempt + 1}/{max_retries + 1})")
+                    if attempt < max_retries:
+                        logger.warning(f"Retrying LLM API call (attempt {attempt + 2}/{max_retries + 1})")
+                        await asyncio.sleep(retry_delay * (attempt + 1))
+                        continue
+                    raise RuntimeError("LLM API call timeout after 60s")
+                except httpx.TimeoutException as e:
+                    logger.error(f"LLM API HTTP timeout: {e} (attempt {attempt + 1}/{max_retries + 1})")
+                    if attempt < max_retries:
+                        logger.warning(f"Retrying LLM API call (attempt {attempt + 2}/{max_retries + 1})")
+                        await asyncio.sleep(retry_delay * (attempt + 1))
+                        continue
+                    raise RuntimeError(f"LLM API HTTP timeout: {e}")
+                
+                # Parse JSON response (can be blocking, run in thread pool if provided)
+                try:
+                    if thread_pool:
+                        # Run JSON parsing in thread pool to avoid blocking event loop
+                        result = await thread_pool.run_in_executor(
+                            lambda: response.json()
+                        )
+                        # Parse response structure in thread pool
+                        return await thread_pool.run_in_executor(
+                            self._parse_response_sync,
+                            result,
+                            tools
+                        )
+                    else:
+                        # Fallback: parse synchronously (may block event loop)
+                        result = response.json()
+                        return self._parse_response_sync(result, tools)
+                except json.JSONDecodeError as e:
+                    response_text = response.text[:500] if hasattr(response, 'text') else str(response)[:500]
+                    logger.error(f"Failed to parse JSON response: {e}, response preview: {response_text}")
+                    raise RuntimeError(f"Invalid JSON response from API: {e}")
+                except Exception as parse_error:
+                    # If parsing fails, log the raw response for debugging
+                    response_text = response.text[:1000] if hasattr(response, 'text') else str(response)[:1000]
+                    logger.error(f"Failed to parse API response: {parse_error}, response preview: {response_text}", exc_info=True)
+                    raise
+                
+            except httpx.HTTPStatusError as e:
+                error_text = e.response.text if e.response else str(e)
+                
+                # Handle 429 (rate limit) with retry
+                if e.response.status_code == 429 and attempt < max_retries:
+                    wait_time = retry_delay * (attempt + 1)  # Exponential backoff
+                    logger.warning(f"Rate limit (429) encountered, retrying in {wait_time}s (attempt {attempt + 1}/{max_retries + 1})")
+                    await asyncio.sleep(wait_time)
+                    continue
+                
+                logger.error(f"LLM API HTTP error: {e.response.status_code} - {error_text}")
+                raise RuntimeError(f"LLM API error: {e.response.status_code} - {error_text}")
+            except Exception as e:
+                logger.error(f"LLM API call failed: {e}", exc_info=True)
+                raise
 

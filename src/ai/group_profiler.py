@@ -182,22 +182,8 @@ class GroupProfiler:
     
     def _build_profile_prompt(self, chat_text: str, group_name: Optional[str]) -> str:
         """Build prompt for group profiling."""
-        name_info = f"群名称：{group_name}\n" if group_name else ""
-        
-        return f"""{name_info}请分析以下群聊记录，生成群组画像：
-
-{chat_text}
-
-要求：
-1. 描述这个群的整体氛围和印象（50-100字）
-2. 总结这个群的主要话题和基本信息（30-50字）
-
-请以 JSON 格式输出：
-{{
-  "impression": "群组氛围描述：这是一个...的群，成员之间...，大家经常讨论...",
-  "topic": "主要话题：技术交流、日常闲聊等"
-}}
-"""
+        from .prompts import build_group_profile_prompt
+        return build_group_profile_prompt(chat_text, group_name)
     
     def _parse_profile_response(self, response_text: str) -> Optional[Dict[str, Any]]:
         """Parse profile response from LLM."""

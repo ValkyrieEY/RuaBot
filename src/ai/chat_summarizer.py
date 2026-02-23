@@ -161,26 +161,8 @@ class ChatSummarizer:
     
     def _build_summary_prompt(self, chat_text: str) -> str:
         """Build prompt for chat summarization."""
-        return f"""请总结以下聊天记录：
-
-{chat_text}
-
-要求：
-1. 提取对话的主题（10字以内）
-2. 写一段简洁的摘要（50-100字）
-3. 提取3-5个关键词
-4. 列出3-5个重要信息点
-5. 列出参与者名单
-
-请以 JSON 格式输出：
-{{
-  "theme": "对话主题",
-  "summary": "对话摘要...",
-  "keywords": ["关键词1", "关键词2", "关键词3"],
-  "key_points": ["信息点1", "信息点2", "信息点3"],
-  "participants": ["用户1", "用户2"]
-}}
-"""
+        from .prompts import build_chat_summary_prompt
+        return build_chat_summary_prompt(chat_text)
     
     def _parse_summary_response(self, response_text: str) -> Optional[Dict[str, Any]]:
         """Parse summary response from LLM."""

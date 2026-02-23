@@ -13,6 +13,14 @@ import signal
 from pathlib import Path
 from typing import Dict, Any, List, Optional
 
+# 设置标准输出编码为UTF-8
+if hasattr(sys.stdout, 'reconfigure'):
+    sys.stdout.reconfigure(encoding='utf-8')
+else:
+    # 对于较老的Python版本
+    import io
+    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
+
 # Add parent directory to path (project root)
 project_root = Path(__file__).parent.parent.parent.parent
 sys.path.insert(0, str(project_root))
@@ -329,7 +337,7 @@ class PluginRuntime:
                     # Interceptors should return immediately, but some may need a bit more time
                     result = await asyncio.wait_for(
                         interceptor.intercept_message(action, params, source_plugin),
-                        timeout=1.0  # 1 second timeout for interceptor (increased to allow async tasks to start)
+                        timeout=3.0  # 3 seconds timeout for interceptor (increased for message relay processing)
                     )
                     
                     self.log("debug", f"Interceptor result: allow={result.allow}, request_id={request_id}")
@@ -771,22 +779,49 @@ class PluginRuntime:
                     if hasattr(plugin_instance, 'on_event_context'):
                         self.log("debug", f"Calling on_event_context for plugin {plugin_id}")
                         
-                        # For message.received events, use timeout to prevent blocking
-                        # Plugins should return quickly and handle API calls asynchronously
+                        # Determine timeout based on event type (reactive: timeout immediately skips to next)
                         if modified_context.event_name == 'message.received':
-                            try:
-                                # Use shorter timeout for message.received to prevent blocking
-                                result = await asyncio.wait_for(
-                                    plugin_instance.on_event_context(modified_context),
-                                    timeout=2.0  # 2 seconds timeout
-                                )
-                            except asyncio.TimeoutError:
-                                self.log("warning", f"Plugin {plugin_id} on_event_context timeout for {modified_context.event_name}, continuing...")
-                                # Continue with next plugin, don't block
-                                result = None
+                            plugin_timeout = 2.0  # 2 seconds for message.received
+                        elif modified_context.event_name == 'message.before_send':
+                            plugin_timeout = 2.0  # 2 seconds for message.before_send (must be fast)
                         else:
-                            # For other events, wait normally
-                            result = await plugin_instance.on_event_context(modified_context)
+                            plugin_timeout = 10.0  # 10 seconds for other events (reasonable timeout)
+                        
+                        # Create task (promise) for plugin execution
+                        # This allows us to cancel it if it times out
+                        task = asyncio.create_task(
+                            plugin_instance.on_event_context(modified_context)
+                        )
+                        
+                        try:
+                            # Wait for result with timeout (reactive: timeout immediately skips to next)
+                            result = await asyncio.wait_for(task, timeout=plugin_timeout)
+                        except asyncio.TimeoutError:
+                            # Plugin timed out - immediately skip to next (reactive behavior)
+                            self.log("warning", 
+                                f"Plugin {plugin_id} on_event_context timeout after {plugin_timeout}s "
+                                f"for {modified_context.event_name}, skipping to next plugin"
+                            )
+                            # Cancel the task to free resources
+                            if not task.done():
+                                task.cancel()
+                                try:
+                                    await task
+                                except asyncio.CancelledError:
+                                    pass
+                            # Continue with next plugin, don't block
+                            result = None
+                        except Exception as e:
+                            # Plugin raised an exception - log and continue
+                            self.log("error", f"Plugin {plugin_id} on_event_context error: {e}", exc_info=True)
+                            # Cancel task if still running
+                            if not task.done():
+                                task.cancel()
+                                try:
+                                    await task
+                                except asyncio.CancelledError:
+                                    pass
+                            result = None
                         
                         if result is not None:
                             # Plugin returned modified context
@@ -850,7 +885,10 @@ class PluginRuntime:
             message: Message dict to send
         """
         try:
-            print(json.dumps(message), flush=True)
+            # 使用 ensure_ascii=False 来正确处理中文字符
+            json_str = json.dumps(message, ensure_ascii=False)
+            # 在Windows上确保使用正确的编码输出
+            print(json_str, flush=True)
         except Exception as e:
             sys.stderr.write(f"Error sending message: {e}\n")
     

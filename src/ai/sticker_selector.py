@@ -257,23 +257,14 @@ class StickerSelector:
             if emotion:
                 emotion_block = f"你想要表达的情感是：{emotion}\n\n"
             
-            prompt = f"""{context_block}{emotion_block}以下是可用的表情/贴图选项：
-{candidates_str}
-
-请从上述选项中选择最适合当前情境的表情，最多选择 {max_count} 个。
-
-选择标准：
-1. 情感匹配度：表情的情感应该与回复内容或目标情感一致
-2. 情境适配度：表情应该适合当前的对话情境
-3. 自然度：使用表情应该感觉自然，不突兀
-
-请以JSON格式输出选中的表情编号：
-{{
-    "selected_stickers": [1, 3, 5]
-}}
-
-请只输出JSON：
-"""
+            from .prompts import build_sticker_selection_prompt
+            prompt = build_sticker_selection_prompt(
+                reply_content=reply_content,
+                chat_context=chat_context,
+                emotion=emotion,
+                candidates_str=candidates_str,
+                max_count=max_count
+            )
             
             # Call LLM
             response = await llm_client.chat_completion(
@@ -440,12 +431,8 @@ class StickerSelector:
             # If LLM available, use it for more accurate detection
             if llm_client:
                 try:
-                    prompt = f"""分析以下文本的情感倾向，用一个词概括（如：开心、无语、赞同、难过、惊讶等）：
-
-{text}
-
-只输出一个情感词，不要其他内容：
-"""
+                    from .prompts import build_emotion_analysis_prompt
+                    prompt = build_emotion_analysis_prompt(text)
                     response = await llm_client.chat_completion(
                         messages=[{"role": "user", "content": prompt}],
                         temperature=0.3,

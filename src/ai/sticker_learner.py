@@ -334,20 +334,8 @@ class StickerLearner:
     ) -> Tuple[str, Optional[str]]:
         """Use LLM to infer sticker usage."""
         try:
-            prompt = f"""以下是聊天对话，其中使用了一个{sticker_info['type']}类型的表情：
-
-{context}
-
-请分析在这个对话中，发送表情的人想要表达什么情境和情感。
-
-输出格式（JSON）：
-{{
-    "situation": "简短描述使用该表情的情境，不超过20字",
-    "emotion": "一个词描述情感，如：开心、无语、赞同、惊讶等"
-}}
-
-请只输出JSON，不要其他内容：
-"""
+            from .prompts import build_sticker_analysis_prompt
+            prompt = build_sticker_analysis_prompt(context, sticker_info['type'])
             
             response = await llm_client.chat_completion(
                 messages=[{"role": "user", "content": prompt}],

@@ -17,14 +17,14 @@ export default function AIPage() {
   const [activeTab, setActiveTab] = useState<TabType>('config')
 
   const tabs = [
-    { id: 'config' as TabType, label: t('ai.tabs.config'), icon: Settings },
-    { id: 'models' as TabType, label: t('ai.tabs.models'), icon: Cpu },
-    { id: 'memory' as TabType, label: t('ai.tabs.memory'), icon: Brain },
-    { id: 'permissions' as TabType, label: t('ai.tabs.permissions'), icon: Shield },
-    { id: 'mcp' as TabType, label: t('ai.tabs.mcp'), icon: Network },
-    { id: 'presets' as TabType, label: t('ai.tabs.presets'), icon: FileText },
-    { id: 'tools' as TabType, label: t('ai.tabs.tools'), icon: Wrench },
-    { id: 'learning' as TabType, label: t('ai.tabs.learning'), icon: Database },
+    { id: 'config' as TabType, label: t('ai.tabs.config') || '配置', icon: Settings },
+    { id: 'models' as TabType, label: t('ai.tabs.models') || '模型', icon: Cpu },
+    { id: 'presets' as TabType, label: t('ai.tabs.presets') || '预设', icon: FileText },
+    { id: 'memory' as TabType, label: t('ai.tabs.memory') || '记忆', icon: Brain },
+    { id: 'learning' as TabType, label: t('ai.tabs.learning') || '学习', icon: Database },
+    { id: 'tools' as TabType, label: t('ai.tabs.tools') || '工具', icon: Wrench },
+    { id: 'permissions' as TabType, label: t('ai.tabs.permissions') || '权限', icon: Shield },
+    { id: 'mcp' as TabType, label: t('ai.tabs.mcp') || 'MCP', icon: Network },
   ]
 
   const renderContent = () => {
@@ -51,41 +51,40 @@ export default function AIPage() {
   }
 
   return (
-    <div className="flex flex-col h-full">
-      {/* 横向导航栏 */}
-      <div className="border-b border-gray-200 bg-white flex-shrink-0">
-        <div className="overflow-x-auto overflow-y-hidden scrollbar-thin scrollbar-thumb-gray-300 scrollbar-track-transparent -mx-4 sm:mx-0">
-          <div className="flex space-x-1 px-4 min-w-max sm:min-w-0">
-            {tabs.map((tab) => {
-              const Icon = tab.icon
-              return (
-                <button
-                  key={tab.id}
-                  onClick={() => setActiveTab(tab.id)}
-                  className={`
-                    flex items-center gap-1 sm:gap-2 px-2 sm:px-4 py-3 text-xs sm:text-sm font-medium transition-colors whitespace-nowrap
-                    border-b-2 -mb-px rounded-t-lg flex-shrink-0
-                    ${
-                      activeTab === tab.id
-                        ? 'border-blue-500 text-blue-600 bg-blue-50'
-                        : 'border-transparent text-gray-600 hover:text-gray-900 hover:border-gray-300 hover:bg-gray-50'
-                    }
-                  `}
-                >
-                  <Icon className="w-3 h-3 sm:w-4 sm:h-4 flex-shrink-0" />
-                  <span>{tab.label}</span>
-                </button>
-              )
-            })}
-          </div>
-        </div>
+    <div className="space-y-6">
+      <div className="min-w-0">
+        <h1 className="text-xl sm:text-2xl font-bold text-gray-900 truncate">AI 智能管理</h1>
+        <p className="text-gray-500 text-sm mt-1">统一管理 AI 配置、模型、记忆和权限</p>
       </div>
 
-      {/* 内容区域 */}
-      <div className="flex-1 overflow-auto p-6 bg-white">
+      <div className="border-b border-gray-200">
+        <nav className="flex -mb-px space-x-6 overflow-x-auto no-scrollbar" aria-label="Tabs">
+          {tabs.map((tab) => {
+            const Icon = tab.icon
+            const isActive = activeTab === tab.id
+            return (
+              <button
+                key={tab.id}
+                onClick={() => setActiveTab(tab.id)}
+                className={`
+                  group inline-flex items-center py-4 px-1 border-b-2 font-medium text-sm whitespace-nowrap transition-colors
+                  ${isActive
+                    ? 'border-blue-500 text-blue-600'
+                    : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
+                  }
+                `}
+              >
+                <Icon className={`-ml-0.5 mr-2 h-5 w-5 ${isActive ? 'text-blue-500' : 'text-gray-400 group-hover:text-gray-500'}`} />
+                <span>{tab.label}</span>
+              </button>
+            )
+          })}
+        </nav>
+      </div>
+
+      <div className="min-h-[400px] animate-fadeIn">
         {renderContent()}
       </div>
     </div>
   )
 }
-

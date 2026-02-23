@@ -9,7 +9,8 @@ import {
   Users,
   ExternalLink,
   Sparkles,
-  Box
+  Box,
+  MessageCircle
 } from 'lucide-react'
 
 interface SystemStatus {
@@ -182,7 +183,7 @@ export default function AboutPage() {
       </div>
 
       {/* GitHub Link */}
-      <div className="bg-gradient-to-r from-gray-900 to-gray-800 rounded-xl p-8 mb-12 shadow-lg">
+      <div className="bg-gradient-to-r from-gray-900 to-gray-800 rounded-xl p-8 mb-6 shadow-lg">
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-4">
             <Github className="w-12 h-12 text-white" />
@@ -198,6 +199,30 @@ export default function AboutPage() {
             className="flex items-center gap-2 px-6 py-3 bg-white text-gray-900 rounded-lg font-medium hover:bg-gray-100 transition-colors"
           >
             {t('about.visitGithub')}
+            <ExternalLink className="w-4 h-4" />
+          </a>
+        </div>
+      </div>
+
+      {/* QQ Group Link */}
+      <div className="bg-gradient-to-r from-blue-600 to-cyan-600 rounded-xl p-8 mb-12 shadow-lg">
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-4">
+            <MessageCircle className="w-12 h-12 text-white" />
+            <div>
+              <h3 className="text-xl font-bold text-white mb-1">
+                {t('about.qqGroup')} <span className="font-mono">615122348</span>
+              </h3>
+              <p className="text-blue-100 text-sm">{t('about.qqGroupDesc')}</p>
+            </div>
+          </div>
+          <a
+            href="https://qm.qq.com/q/9hOh1RoB9Y"
+            target="_blank"
+            rel="noopener noreferrer"
+            className="flex items-center gap-2 px-6 py-3 bg-white text-blue-600 rounded-lg font-medium hover:bg-blue-50 transition-colors whitespace-nowrap"
+          >
+            {t('about.joinGroup')}
             <ExternalLink className="w-4 h-4" />
           </a>
         </div>
@@ -236,15 +261,13 @@ export default function AboutPage() {
             <Code className="w-5 h-5 text-primary-600" />
             {t('about.license')}
           </h3>
-          <p className="text-gray-600 text-sm mb-3">
+          <p className="text-gray-600 text-sm mb-2">
             {t('about.licenseDesc')}
           </p>
-          <p className="text-gray-500 text-xs">
-            {t('about.licenseNote1')}
-          </p>
-          <p className="text-gray-500 text-xs">
-            {t('about.licenseNote2')}
-          </p>
+          <ul className="text-gray-600 text-sm space-y-1">
+            <li>{t('about.licenseNote1')}</li>
+            <li>{t('about.licenseNote2')}</li>
+          </ul>
         </div>
 
         <div className="bg-white rounded-xl p-6 shadow-sm border border-gray-200">

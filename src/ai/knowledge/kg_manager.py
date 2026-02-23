@@ -158,16 +158,8 @@ class KGManager:
         """
         try:
             # Use LLM to parse query into keywords
-            prompt = f"""请从以下查询中提取关键词，用于搜索知识图谱。
-
-查询：{query}
-
-输出关键词列表（JSON格式）：
-{{
-    "keywords": ["关键词1", "关键词2", ...]
-}}
-
-只输出JSON。"""
+            from ..prompts import build_keyword_extraction_prompt
+            prompt = build_keyword_extraction_prompt(query)
             
             response = await llm_client.chat_completion(
                 messages=[{"role": "user", "content": prompt}],

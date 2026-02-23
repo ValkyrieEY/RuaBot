@@ -1,4 +1,4 @@
-import { useState, FormEvent, useEffect } from 'react'
+import { useState, FormEvent, useEffect, useRef } from 'react'
 import { useTranslation } from 'react-i18next'
 import { api } from '@/utils/api'
 import { Settings as SettingsIcon, Lock, Save, AlertCircle, CheckCircle } from 'lucide-react'
@@ -36,23 +36,53 @@ export default function SystemPage() {
   
   // Plugin Thread Pool config
   const [pluginThreadPoolEnabled, setPluginThreadPoolEnabled] = useState(true)
+  
+  // 用于防止竞态条件
+  const loadingRequestRef = useRef(0)
 
   useEffect(() => {
     loadConfig()
   }, [])
 
   const loadConfig = async () => {
+    const currentRequest = ++loadingRequestRef.current
+    setLoading(true)
+    setError('') // 清除之前的错误
+    
     try {
       const data = await api.getSystemConfig()
+      
+      // 只有最新的请求才更新状态
+      if (currentRequest !== loadingRequestRef.current) {
+        return
+      }
+      
+      // 验证数据完整性
+      if (!data || typeof data !== 'object') {
+        throw new Error('Invalid configuration data received')
+      }
+      
       setConfig(data)
       // Load AI Thread Pool config
       setAiThreadPoolEnabled(data.ai_thread_pool_enabled !== undefined ? data.ai_thread_pool_enabled : true)
       // Load Plugin Thread Pool config
       setPluginThreadPoolEnabled(data.plugin_thread_pool_enabled !== undefined ? data.plugin_thread_pool_enabled : true)
-    } catch (error) {
-      console.error('Failed to load system config:', error)
+    } catch (err: any) {
+      // 只有最新的请求才更新错误状态
+      if (currentRequest !== loadingRequestRef.current) {
+        return
+      }
+      
+      console.error('Failed to load system config:', err)
+      const errorMessage = err.response?.data?.detail || 
+                          err.message || 
+                          t('system.loadConfigFailed')
+      setError(errorMessage)
     } finally {
-      setLoading(false)
+      // 只有最新的请求才更新加载状态
+      if (currentRequest === loadingRequestRef.current) {
+        setLoading(false)
+      }
     }
   }
 
@@ -129,6 +159,15 @@ export default function SystemPage() {
       <div className="card text-center py-12">
         <AlertCircle className="w-12 h-12 text-red-500 mx-auto mb-4" />
         <h3 className="text-lg font-medium text-gray-900 mb-2">{t('system.loadConfigFailed')}</h3>
+        {error && (
+          <p className="text-sm text-gray-600 mb-4">{error}</p>
+        )}
+        <button
+          onClick={loadConfig}
+          className="px-4 py-2 bg-primary-600 text-white rounded-lg hover:bg-primary-700 transition-colors"
+        >
+          {t('common.retry') || '重试'}
+        </button>
       </div>
     )
   }

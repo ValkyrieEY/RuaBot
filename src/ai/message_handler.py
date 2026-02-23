@@ -147,6 +147,7 @@ class AIMessageHandler:
         self.event_bus = get_event_bus()
         self.ai_manager: Optional[AIManager] = None
         self.model_manager: Optional[ModelManager] = None
+    
         self.mcp_manager: Optional[MCPManager] = None
         self._initialized = False
         
@@ -270,18 +271,44 @@ class AIMessageHandler:
                     chat_id = str(context['user_id'])
             user_nickname = context.get('user_nickname') if context else None
             
-            # Get LLM client for AI approval (try to get from context or create one)
+            # Get LLM client for AI approval (use decision model if configured)
             llm_client = None
-            if context and context.get('model_uuid'):
+            if context:
                 try:
-                    model = await self.model_manager.get_model_with_secret(context['model_uuid'])
-                    if model:
-                        from .llm_client import LLMClient
-                        llm_client = LLMClient(
-                            base_url=model.get('base_url', 'https://api.openai.com/v1'),
-                            api_key=model.get('api_key', ''),
-                            model=model.get('model_name', 'gpt-3.5-turbo')
-                        )
+                    # Try to get decision model from AI config
+                    decision_model_uuid = None
+                    config_type = context.get('config_type', 'group')
+                    target_id = context.get('target_id')
+                    
+                    if config_type and target_id:
+                        # Get AI config to check for decision model
+                        from ..core.database import get_database_manager
+                        db_manager = get_database_manager()
+                        ai_config = await db_manager.get_ai_config(config_type, target_id)
+                        
+                        if ai_config and ai_config.config:
+                            decision_model_uuid = ai_config.config.get('decision_model_uuid')
+                            if decision_model_uuid:
+                                logger.info(f"Using decision model for tool permission check: {decision_model_uuid}")
+                    
+                    # Fallback to main model if no decision model configured
+                    if not decision_model_uuid and context.get('model_uuid'):
+                        decision_model_uuid = context['model_uuid']
+                        logger.info(f"Using main model for tool permission check: {decision_model_uuid}")
+                    
+                    # Create LLM client with the selected model
+                    if decision_model_uuid:
+                        model = await self.model_manager.get_model_with_secret(decision_model_uuid)
+                        if model:
+                            from .llm_client import LLMClient
+                            api_format = model.get('config', {}).get('api_format')
+                            llm_client = LLMClient(
+                                base_url=model.get('base_url', 'https://api.openai.com/v1'),
+                                api_key=model.get('api_key', ''),
+                                model_name=model.get('model_name', 'gpt-3.5-turbo'),
+                                provider=model.get('provider', 'openai'),
+                                api_format=api_format
+                            )
                 except Exception as e:
                     logger.debug(f"Failed to get LLM client for AI approval: {e}")
             
@@ -336,6 +363,29 @@ class AIMessageHandler:
         
         self._initialized = True
         logger.info("AIMessageHandler initialized")
+    
+    def _split_by_double_newline(self, text: str) -> list[str]:
+        """
+        Split response text by double newline (\n\n) only.
+        This is used for maxtoken and ruabot modes to split messages naturally.
+        
+        Args:
+            text: Full response text
+            
+        Returns:
+            List of text parts (split by \n\n)
+        """
+        if not text or not text.strip():
+            return [text] if text else []
+        
+        # Split by double newline or more
+        parts = re.split(r'\n\n+', text)
+        
+        # Filter out empty parts and strip each part
+        parts = [part.strip() for part in parts if part.strip()]
+        
+        # If no parts after splitting, return original text
+        return parts if parts else [text.strip()]
     
     def _split_response(self, text: str, max_length: int = 500) -> list[str]:
         """
@@ -441,6 +491,32 @@ class AIMessageHandler:
             user_id = data.get('user_id')
             group_id = data.get('group_id')
             
+            # Check if this is a tool approval response (群消息审核回复)
+            if message_type == 'group' and raw_message and raw_message.startswith('通过_'):
+                from .tool_permission_manager import get_tool_permission_manager
+                tool_perm_mgr = get_tool_permission_manager()
+                
+                result = await tool_perm_mgr.handle_approval_response(
+                    admin_qq=str(user_id),
+                    message=raw_message,
+                    chat_id=str(group_id)
+                )
+                
+                if result:
+                    # This was an approval response, send feedback to group
+                    # Only send message if it's a success message or an error that should be shown
+                    # Don't send "无效的审核码" if the approval actually succeeded (might be a race condition)
+                    if result.get('success', False) or result.get('message'):
+                        app = get_app()
+                        if app and hasattr(app, 'onebot_adapter'):
+                            onebot = app.onebot_adapter
+                            # Only send if it's a success message or a meaningful error
+                            # Skip "无效的审核码" if we're not sure it's actually invalid
+                            message = result.get('message', '')
+                            if result.get('success', False) or (message and '无效的审核码' not in message):
+                                await onebot.send_message(str(group_id), message, "group")
+                    return  # Don't process as AI message
+            
             # Check if message contains image
             has_image = False
             if isinstance(message, list):
@@ -501,23 +577,40 @@ class AIMessageHandler:
                     logger.info(f"[RuaBot] Using RuaBot handler for {chat_id}")
                     try:
                         # Use RuaBot handler for advanced AI processing
-                        # Get LLM model configuration
+                        # Get LLM model configuration (main model)
                         model_uuid = config.get('model_uuid')
                         if not model_uuid:
                             logger.warning("No model configured for RuaBot, skipping")
                             return
                         
-                        # Get model with API key (use get_model_with_secret for internal use)
+                        # Get RuaBot decision model (fallback to main model if not configured)
+                        ruabot_decision_model_uuid = config.get('config', {}).get('ruabot_decision_model_uuid')
+                        if not ruabot_decision_model_uuid:
+                            ruabot_decision_model_uuid = model_uuid
+                            logger.info(f"[RuaBot] No decision model configured, using main model: {model_uuid}")
+                        else:
+                            logger.info(f"[RuaBot] Using decision model: {ruabot_decision_model_uuid}")
+                        
+                        # Get main model with API key
                         model = await self.model_manager.get_model_with_secret(model_uuid)
                         if not model:
                             logger.warning(f"Model {model_uuid} not found")
                             return
                         
-                        # Create LLM client
+                        # Get decision model with API key
+                        decision_model = await self.model_manager.get_model_with_secret(ruabot_decision_model_uuid)
+                        if not decision_model:
+                            logger.warning(f"RuaBot decision model {ruabot_decision_model_uuid} not found, falling back to main model")
+                            decision_model = model
+                        
+                        # Create LLM client for main responses
+                        api_format = model.get('config', {}).get('api_format')
                         llm_client = LLMClient(
                             api_key=model.get('api_key'),
                             base_url=model.get('base_url'),
-                            model_name=model.get('model_name')
+                            model_name=model.get('model_name'),
+                            provider=model.get('provider', 'openai'),
+                            api_format=api_format
                         )
                         
                         # Get bot name from config or default
@@ -576,6 +669,12 @@ class AIMessageHandler:
                         tts_mode_enabled = config.get('config', {}).get('tts_mode_enabled', False)
                         tts_mode_type = config.get('config', {}).get('tts_mode_type', 'auto')
                         
+                        # Get RuaBot configuration from config
+                        config_obj = config.get('config', {})
+                        enable_brain_mode = config_obj.get('enable_brain_mode', True)  # Default to True
+                        enable_learning = config_obj.get('enable_learning', True)  # Default to True
+                        think_level = config_obj.get('think_level', 1)  # Default to 1
+                        
                         # Check if model supports vision
                         supports_vision = model.get('supports_vision', False)
                         
@@ -586,9 +685,9 @@ class AIMessageHandler:
                             llm_client=llm_client,
                             bot_name=bot_name,
                             system_prompt=system_prompt,
-                            enable_brain_mode=True,   # Enable ReAct planning
-                            enable_learning=True,      # Enable learning
-                            think_level=1,             # Advanced mode
+                            enable_brain_mode=enable_brain_mode,  # Read from config
+                            enable_learning=enable_learning,      # Read from config
+                            think_level=think_level,              # Read from config
                             tools=tools,               # Pass tools
                             stream=False,              # RuaBot uses non-streaming for now (can enhance later)
                             supports_vision=supports_vision  # Vision support
@@ -634,16 +733,36 @@ class AIMessageHandler:
                                     logger.error(f"TTS conversion error: {e}", exc_info=True)
                             
                             # Send text message (if TTS didn't handle it)
-                            app = get_app()
-                            if app and hasattr(app, 'onebot_adapter'):
-                                onebot = app.onebot_adapter
-                                if message_type == 'group' and group_id:
-                                    await onebot.send_message(str(group_id), reply_text, "group")
-                                elif message_type == 'private' and user_id:
-                                    await onebot.send_message(str(user_id), reply_text, "private")
-                                logger.info("[RuaBot] Reply sent successfully")
-                            else:
-                                logger.error("[RuaBot] Failed to send: OneBot adapter not available")
+                            # Split message by \n\n for RuaBot mode
+                            if reply_text and isinstance(reply_text, str):
+                                message_parts = self._split_by_double_newline(reply_text)
+                                logger.info(f"[RuaBot] Split message into {len(message_parts)} parts by \\n\\n")
+                                
+                                app = get_app()
+                                if app and hasattr(app, 'onebot_adapter'):
+                                    onebot = app.onebot_adapter
+                                    last_result = None
+                                    for i, part in enumerate(message_parts):
+                                        if part.strip():
+                                            try:
+                                                if message_type == 'group' and group_id:
+                                                    result = await onebot.send_message(str(group_id), part, "group")
+                                                    logger.debug(f"[RuaBot] Sent part {i+1}/{len(message_parts)} to group {group_id}")
+                                                    last_result = result
+                                                elif message_type == 'private' and user_id:
+                                                    result = await onebot.send_message(str(user_id), part, "private")
+                                                    logger.debug(f"[RuaBot] Sent part {i+1}/{len(message_parts)} to user {user_id}")
+                                                    last_result = result
+                                                
+                                                # Add delay between messages (0.5-2 seconds)
+                                                if i < len(message_parts) - 1:
+                                                    await asyncio.sleep(random.uniform(0.5, 2.0))
+                                            except Exception as e:
+                                                logger.error(f"[RuaBot] Failed to send part {i+1}: {e}", exc_info=True)
+                                    
+                                    logger.info(f"[RuaBot] Sent all {len(message_parts)} parts successfully")
+                                else:
+                                    logger.error("[RuaBot] Failed to send: OneBot adapter not available")
                         else:
                             logger.info("RuaBot chose not to reply (returned empty/None)")
                         
@@ -684,13 +803,44 @@ class AIMessageHandler:
                 frequency_control = frequency_control_manager.get_or_create_frequency_control(chat_id)
                 frequency_adjust = frequency_control.get_talk_frequency_adjust()
                 
-                # Check if message mentions bot (simplified check)
+                # Check if message mentions bot (simplified check, not @全体成员)
                 is_mentioned = False
                 if group_id:
-                    # Check for @ mentions in raw_message
+                    # First check if message contains @全体成员 - if so, skip processing
+                    has_at_all = False
+                    if isinstance(message, list):
+                        for seg in message:
+                            if isinstance(seg, dict) and seg.get('type') == 'at':
+                                at_qq = seg.get('data', {}).get('qq', '')
+                                # Check for @全体成员: qq can be "all", "0", 0, or empty
+                                if at_qq in ("all", "0", 0) or at_qq == "":
+                                    has_at_all = True  # @全体成员 detected
+                                    break
+                    # Check raw_message for @全体成员
+                    if raw_message:
+                        if "[CQ:at,qq=all]" in raw_message or "[CQ:at,qq=0]" in raw_message:
+                            has_at_all = True  # @全体成员 detected
+                        elif "@全体成员" in raw_message:
+                            has_at_all = True  # @全体成员 text detected
+                    # If @全体成员 is detected, skip processing
+                    if has_at_all:
+                        logger.debug("MaxToken mode: message contains @全体成员, skipping")
+                        return
+                    # Now check for @ mentions in raw_message (only @ bot itself, not @全体成员)
                     bot_qq = config.get('bot_qq', '')
-                    if bot_qq and (f"@{bot_qq}" in raw_message or f"@全体成员" in raw_message):
-                        is_mentioned = True
+                    if bot_qq:
+                        # Check CQ code format
+                        cq_at_pattern = f"[CQ:at,qq={bot_qq}]"
+                        if cq_at_pattern in raw_message:
+                            is_mentioned = True
+                        # Also check message segments
+                        elif isinstance(message, list):
+                            for seg in message:
+                                if isinstance(seg, dict) and seg.get('type') == 'at':
+                                    at_qq = str(seg.get('data', {}).get('qq', ''))
+                                    if at_qq == str(bot_qq):
+                                        is_mentioned = True
+                                        break
                 
                 # Probability check (unless mentioned)
                 if is_mentioned:
@@ -707,7 +857,54 @@ class AIMessageHandler:
                     return  # Skip processing
             # Command mode: only messages with trigger command are processed
             elif trigger_mode == 'command':
-                # Handle image messages: require trigger prefix if set, or skip if no prefix
+                # Helper function to check if message mentions bot
+                def is_bot_mentioned(msg_segments, bot_qq_str):
+                    """Check if message contains @ mention of bot (not @全体成员)."""
+                    if not bot_qq_str:
+                        return False
+                    # First check if message contains @全体成员 - if so, don't trigger
+                    if isinstance(msg_segments, list):
+                        for seg in msg_segments:
+                            if isinstance(seg, dict) and seg.get('type') == 'at':
+                                at_qq = seg.get('data', {}).get('qq', '')
+                                # Check for @全体成员: qq can be "all", "0", 0, or empty
+                                if at_qq in ("all", "0", 0) or at_qq == "":
+                                    return False  # @全体成员, don't trigger
+                    # Check raw_message for @全体成员
+                    if raw_message:
+                        if "[CQ:at,qq=all]" in raw_message or "[CQ:at,qq=0]" in raw_message:
+                            return False  # @全体成员, don't trigger
+                        if "@全体成员" in raw_message:
+                            return False  # @全体成员 text, don't trigger
+                    # Now check if @ is the bot itself
+                    if isinstance(msg_segments, list):
+                        for seg in msg_segments:
+                            if isinstance(seg, dict) and seg.get('type') == 'at':
+                                at_qq = str(seg.get('data', {}).get('qq', ''))
+                                # Only check if @ is the bot itself
+                                if at_qq == str(bot_qq_str):
+                                    return True
+                    # Also check raw_message for CQ code format
+                    if raw_message and bot_qq_str:
+                        cq_at_pattern = f"[CQ:at,qq={bot_qq_str}]"
+                        if cq_at_pattern in raw_message:
+                            return True
+                    return False
+                
+                # Get bot QQ for @ mention check
+                bot_qq = config.get('bot_qq', '')
+                if not bot_qq and group_id:
+                    # Try to get bot QQ from OneBot adapter
+                    try:
+                        app = get_app()
+                        if app and hasattr(app, 'onebot_adapter') and app.onebot_adapter:
+                            login_info = await app.onebot_adapter.call_api("get_login_info", {})
+                            if login_info and isinstance(login_info, dict):
+                                bot_qq = str(login_info.get('user_id', ''))
+                    except Exception as e:
+                        logger.debug(f"Failed to get bot QQ: {e}")
+                
+                # Handle image messages: require trigger prefix if set, or @ mention if empty
                 if has_image:
                     if trigger_command:
                         # Image message requires trigger prefix
@@ -717,10 +914,16 @@ class AIMessageHandler:
                         # Remove trigger command from message
                         message_content = raw_message[len(trigger_command):].strip()
                     else:
-                        # No trigger command set, skip image messages
-                        # (since model might not support images, or user wants prefix for images)
-                        logger.debug("Image message received but no trigger command set, skipping")
-                        return
+                        # No trigger command set, require @ mention
+                        if not is_bot_mentioned(message, bot_qq):
+                            logger.debug("Image message received but no trigger command set and not @ mentioned, skipping")
+                            return
+                        # Extract message content (remove @ mention if present)
+                        message_content = raw_message
+                        if bot_qq:
+                            # Remove CQ at code from message
+                            cq_at_pattern = f"[CQ:at,qq={bot_qq}]"
+                            message_content = message_content.replace(cq_at_pattern, '').strip()
                 elif trigger_command:
                     # Text message with trigger command requirement
                     if not raw_message.startswith(trigger_command):
@@ -729,9 +932,33 @@ class AIMessageHandler:
                     # Remove trigger command from message
                     message_content = raw_message[len(trigger_command):].strip()
                 else:
-                    # No trigger command set in command mode, skip message
-                    logger.debug("Command mode but no trigger command set, skipping message")
-                    return
+                    # No trigger command set, require @ mention (default to @ bot)
+                    if not is_bot_mentioned(message, bot_qq):
+                        logger.debug(f"Command mode but no trigger command set and not @ mentioned (bot_qq={bot_qq}), skipping message")
+                        return
+                    # Extract message content (remove @ mention if present)
+                    message_content = raw_message
+                    if bot_qq:
+                        # Remove CQ at code from message
+                        cq_at_pattern = f"[CQ:at,qq={bot_qq}]"
+                        message_content = message_content.replace(cq_at_pattern, '').strip()
+                    # Also remove @ mention from message segments if present
+                    if isinstance(message, list) and bot_qq:
+                        filtered_segments = []
+                        for seg in message:
+                            if isinstance(seg, dict):
+                                if seg.get('type') == 'at':
+                                    at_qq = str(seg.get('data', {}).get('qq', ''))
+                                    if at_qq != str(bot_qq):
+                                        # Keep other @ mentions
+                                        filtered_segments.append(seg)
+                                    # Skip @ bot mention
+                                else:
+                                    filtered_segments.append(seg)
+                            else:
+                                filtered_segments.append(seg)
+                        # Reconstruct message from filtered segments if needed
+                        # (This is mainly for logging/debugging, message_content is what's used)
             else:
                 # Unknown trigger mode, default to command mode behavior
                 logger.warning(f"Unknown trigger_mode '{trigger_mode}', defaulting to command mode")
@@ -834,24 +1061,62 @@ class AIMessageHandler:
                     logger.error(f"Failed to send error message: {e}", exc_info=True)
                 return
             
-            # Try to get group name from API if group_id exists
+            # Try to get group name and user role from API if group_id exists
+            user_role = None
+            is_admin = False
             if group_id:
                 try:
                     app = get_app()
                     if app and hasattr(app, 'onebot_adapter'):
                         onebot = app.onebot_adapter
+                        # Get group info
                         group_info = await onebot.call_api('get_group_info', {'group_id': int(group_id)})
                         if group_info and isinstance(group_info, dict):
                             group_name = group_info.get('group_name', '')
+                        
+                        # Get user role in group (owner, admin, member)
+                        if user_id:
+                            try:
+                                member_info = await onebot.call_api('get_group_member_info', {
+                                    'group_id': int(group_id),
+                                    'user_id': int(user_id)
+                                })
+                                if member_info and isinstance(member_info, dict):
+                                    user_role = member_info.get('role', 'member')  # 'owner', 'admin', or 'member'
+                                    is_admin = user_role in ['owner', 'admin']
+                            except Exception as e:
+                                logger.debug(f"Failed to get group member info: {e}")
                 except Exception as e:
-                    logger.debug(f"Failed to get group name: {e}")
+                    logger.debug(f"Failed to get group info: {e}")
             
             # Prepare messages for LLM
             messages: List[Dict[str, Any]] = []
             
-            # Add system prompt if preset exists (without variable replacements)
+            # Get current time (used for both variable replacement and context info)
+            now = datetime.now()
+            
+            # Add system prompt if preset exists (with variable replacements)
             if preset_data and preset_data.get('system_prompt'):
                 system_prompt = preset_data['system_prompt']
+                
+                # Replace variables in system prompt
+                variable_replacements = {
+                    '{user_id}': str(user_id) if user_id else '',
+                    '{user_name}': user_name if user_name else '',
+                    '{user_nickname}': user_nickname if user_nickname else '',
+                    '{group_id}': str(group_id) if group_id else '',
+                    '{group_name}': group_name if group_name else '',
+                    '{current_time}': now.strftime('%Y-%m-%d %H:%M:%S'),
+                    '{current_date}': now.strftime('%Y-%m-%d'),
+                    '{current_time_iso}': now.isoformat(),
+                    '{user_role}': user_role if user_role else '',
+                    '{is_admin}': '是' if is_admin else '否'
+                }
+                
+                # Replace all variables
+                for var, value in variable_replacements.items():
+                    system_prompt = system_prompt.replace(var, value)
+                
                 messages.append({
                     'role': 'system',
                     'content': system_prompt
@@ -859,7 +1124,6 @@ class AIMessageHandler:
             
             # Add context information as a system message (always add, not in preset)
             context_info = []
-            now = datetime.now()
             context_info.append(f"当前时间: {now.strftime('%Y-%m-%d %H:%M:%S')}")
             context_info.append(f"用户QQ号: {user_id}")
             if user_name:
@@ -870,6 +1134,11 @@ class AIMessageHandler:
                 context_info.append(f"群号: {group_id}")
             if group_name:
                 context_info.append(f"群名称: {group_name}")
+            if group_id and user_role:
+                role_name = {'owner': '群主', 'admin': '管理员', 'member': '普通成员'}.get(user_role, user_role)
+                context_info.append(f"用户在群中的身份: {role_name}")
+                if is_admin:
+                    context_info.append(f"用户是群管理员: 是")
             
             # Add information about recent messages from memory (including message_ids)
             if memory_messages:
@@ -1147,6 +1416,7 @@ class AIMessageHandler:
             max_tokens = preset_data.get('max_tokens', 2000) if preset_data else 2000
             top_p = preset_data.get('top_p') if preset_data else None
             top_k = preset_data.get('top_k') if preset_data else None
+            repetition_penalty = preset_data.get('repetition_penalty') if preset_data else None
             
             # Create LLM client and generate response
             api_key = model_data.get('api_key', '')
@@ -1184,7 +1454,10 @@ class AIMessageHandler:
             
             logger.info(f"Calling LLM: {provider}/{model_name} for {config_type}:{target_id}")
             
-            llm_client = LLMClient(api_key, base_url, model_name, provider)
+            # Get api_format from model config (if set in UI)
+            api_format = model_data.get('config', {}).get('api_format')
+            
+            llm_client = LLMClient(api_key, base_url, model_name, provider, api_format=api_format)
             try:
                 # Get enabled tools from config
                 enabled_tools = config.get('config', {}).get('enabled_tools', {})
@@ -1216,35 +1489,8 @@ class AIMessageHandler:
                     # Add instruction about using tools (if tools are available)
                     tool_names = [tool.get("function", {}).get("name", "") for tool in tools]
                     if tool_names:
-                        tool_instruction = (
-                            "\n重要工具使用规则："
-                            "\n1. 当用户要求执行操作（如搜索、TTS、群管理等）时，你必须使用工具调用（tool_calls）来执行，而不是在文本中描述你要做什么。"
-                            "\n2. 你应该主动使用工具来提升交互体验，例如："
-                            "   - 当需要查询信息时，主动使用搜索工具"
-                            "   - 当对话需要语音时，主动使用text_to_speech工具"
-                            "   - 当需要执行群管理操作时，使用相应的群管理工具"
-                            "\n3. 工具调用后，如果工具已经完成了操作，你不需要再发送确认消息。工具已经完成了任务，直接结束对话即可。"
-                            "\n4. 只有在工具调用失败或需要补充说明时，才需要发送文本回复。"
-                            f"\n可用工具：{', '.join(tool_names[:10])}{'...' if len(tool_names) > 10 else ''}"
-                            "\n\n[重要] 关于消息发送工具的特殊说明："
-                            "\n1. send_group_message 和 send_private_message 是特殊用途工具，仅用于："
-                            "   - 需要@（艾特）用户时（使用send_group_message的at_user_ids参数）"
-                            "   - 需要引用/回复某条消息时（使用reply_to_message_id参数）"
-                            "   - 给其他群或用户发送消息时（跨群/跨用户发送）"
-                            "   - 用户明确要求分段发送、多次发送、发送多条消息时（例如：'分段发送三条喜欢你'、'发送3条消息'等）"
-                            "\n2. [重要] 正常对话回复不要使用这些工具！直接返回文本内容即可，系统会自动将你的文本回复发送到当前群或私聊。"
-                            "\n3. 如果你只是要回复用户的问题或进行正常对话，直接返回文本，不要调用send_group_message或send_private_message工具。"
-                            "\n4. [关键] 当用户要求分段发送或多次发送消息时，你必须多次调用send_group_message工具："
-                            "   - 例如：用户说'分段发送三条喜欢你'，你需要调用3次send_group_message工具，每次发送一条'喜欢你'的消息"
-                            "   - 例如：用户说'发送5条消息'，你需要调用5次send_group_message工具"
-                            "   - 每次工具调用只发送一条消息，不要在一次调用中发送多条消息"
-                            "   - 你可以在一次响应中返回多个tool_calls，系统会依次执行"
-                            "   - 或者多次循环调用工具，每次调用后系统会继续让你判断是否需要发送更多消息"
-                            "   - 当你完成所有要求的消息发送后，返回纯文本响应（不包含工具调用），系统会自动退出循环"
-                            "\n5. 使用send_group_message工具时，不要在message参数中包含@符号，系统会根据at_user_ids参数自动添加@。"
-                            "\n6. 在正常文本回复中，不要包含@符号或@用户，因为系统会自动处理@功能。"
-                            "\n7. 如果工具已经发送了消息，不要再次发送文本消息，避免重复。"
-                        )
+                        from .prompts import build_detailed_tool_usage_instructions
+                        tool_instruction = build_detailed_tool_usage_instructions(tool_names)
                         messages.append({
                             'role': 'system',
                             'content': tool_instruction
@@ -1274,9 +1520,10 @@ class AIMessageHandler:
                     
                     # On the last round, add a system message to force final response
                     if current_round == max_tool_rounds:
+                        from .prompts import FINAL_ROUND_MESSAGE
                         messages.append({
                             'role': 'system',
-                            'content': '请根据以上工具调用结果，总结并回复用户。不要再调用工具，直接给出最终回复。'
+                            'content': FINAL_ROUND_MESSAGE
                         })
                     
                     # Call LLM
@@ -1285,24 +1532,57 @@ class AIMessageHandler:
                         logger.debug(f"[Round {current_round}] Sending {len(tools_to_use)} tools to LLM")
                     
                     # Call LLM with thread pool support for blocking operations
-                    response = await llm_client.chat_completion(
-                        messages=messages,
-                        temperature=temperature,
-                        max_tokens=max_tokens,
-                        top_p=top_p,
-                        top_k=top_k,
-                        tools=tools_to_use,  # Disable tools on last round
-                        stream=False,
-                        thread_pool=self.thread_pool  # Pass thread pool for blocking operations
-                    )
+                    try:
+                        logger.info(f"[Round {current_round}] Calling LLM API...")
+                        response = await llm_client.chat_completion(
+                            messages=messages,
+                            temperature=temperature,
+                            max_tokens=max_tokens,
+                            top_p=top_p,
+                            top_k=top_k,
+                            repetition_penalty=repetition_penalty,
+                            tools=tools_to_use,  # Disable tools on last round
+                            stream=False,
+                            thread_pool=self.thread_pool  # Pass thread pool for blocking operations
+                        )
+                        logger.info(f"[Round {current_round}] LLM API call completed successfully")
+                    except Exception as e:
+                        logger.error(f"[Round {current_round}] LLM API call failed: {e}", exc_info=True)
+                        # If LLM call fails, try to send error message to user
+                        try:
+                            error_msg = f"抱歉，AI服务暂时不可用：{str(e)}"
+                            app = get_app()
+                            if app and hasattr(app, 'onebot_adapter') and app.onebot_adapter:
+                                if group_id:
+                                    await app.onebot_adapter.send_message(str(group_id), error_msg, "group")
+                                elif message_type == "private":
+                                    await app.onebot_adapter.send_message(str(user_id), error_msg, "private")
+                        except Exception as send_error:
+                            logger.error(f"Failed to send error message: {send_error}", exc_info=True)
+                        return
                     
                     # Log response type for debugging
                     logger.debug(f"[Round {current_round}] LLM response type: {response.get('type') if isinstance(response, dict) else type(response)}")
+                    if isinstance(response, dict):
+                        logger.debug(f"[Round {current_round}] Response keys: {list(response.keys())}")
+                        logger.debug(f"[Round {current_round}] Response content preview: {str(response.get('content', ''))[:200]}")
+                        logger.debug(f"[Round {current_round}] Response has tool_calls: {'tool_calls' in response}")
+                        if 'tool_calls' in response:
+                            logger.debug(f"[Round {current_round}] Tool calls: {response.get('tool_calls')}")
                     
                     # Handle tool calls (for non-streaming)
-                    if isinstance(response, dict) and response.get("type") == "tool_calls":
+                    # Check for tool_calls in response (either type="tool_calls" or tool_calls field exists)
+                    tool_calls = None
+                    if isinstance(response, dict):
+                        if response.get("type") == "tool_calls":
+                            tool_calls = response.get("tool_calls", [])
+                        elif "tool_calls" in response and response.get("tool_calls"):
+                            # Some models return tool_calls but type is not "tool_calls"
+                            tool_calls = response.get("tool_calls", [])
+                            logger.debug(f"[Round {current_round}] Found tool_calls in response but type is '{response.get('type')}', processing anyway")
+                    
+                    if tool_calls:
                         # Model wants to call tools
-                        tool_calls = response.get("tool_calls", [])
                         logger.info(f"[Round {current_round}] Model requested {len(tool_calls)} tool calls")
                         
                         # Execute tool calls
@@ -1355,7 +1635,8 @@ class AIMessageHandler:
                                 "user_id": user_id,
                                 "message_type": message_type,
                                 "config_type": config_type,
-                                "target_id": target_id
+                                "target_id": target_id,
+                                "model_uuid": model_uuid  # Add model_uuid for decision model lookup
                             }
                             
                             # Call tool with context
@@ -1373,6 +1654,31 @@ class AIMessageHandler:
                                 "name": tool_name,
                                 "content": json.dumps(tool_result, ensure_ascii=False)
                             })
+                            
+                            # Check if tool was rejected due to permission check (needs admin approval)
+                            # In this case, we should stop the loop to prevent infinite retries
+                            if not tool_result.get("success", False):
+                                error_message = tool_result.get("message", "") or tool_result.get("error", "")
+                                if error_message and any(keyword in error_message for keyword in [
+                                    "需要管理员审核", "需要管理员审批", "等待管理员审核", 
+                                    "权限检查失败", "工具.*被拒绝", "审核"
+                                ]):
+                                    logger.info(f"Tool {tool_name} requires admin approval, stopping tool calling loop to prevent infinite retries")
+                                    # Add a system message to tell AI to stop
+                                    messages.append({
+                                        "role": "assistant",
+                                        "content": response.get("content", ""),
+                                        "tool_calls": tool_calls
+                                    })
+                                    messages.extend(tool_results)
+                                    from .prompts import TOOL_REJECTION_MESSAGE
+                                    messages.append({
+                                        "role": "system",
+                                        "content": TOOL_REJECTION_MESSAGE
+                                    })
+                                    # Force AI to return a text response
+                                    logger.info("Forcing AI to return text response after permission rejection")
+                                    break
                         
                         # Add tool calls and results to messages
                         messages.append({
@@ -1381,6 +1687,11 @@ class AIMessageHandler:
                             "tool_calls": tool_calls
                         })
                         messages.extend(tool_results)
+                        
+                        # Check if we should break (permission rejection handled above)
+                        if current_round >= max_tool_rounds:
+                            logger.info("Reached max tool rounds, forcing exit")
+                            break
                         
                         # Continue to next round to let model process tool results and decide if more actions are needed
                         # Don't break here - let AI decide if it needs to send more messages (e.g., "分段发送三条")
@@ -1591,57 +1902,80 @@ class AIMessageHandler:
                     #   - If TTS failed, send text as fallback
                     should_send_text = not (tts_mode_enabled and tts_mode_type == 'voice_only' and tts_success)
                     
-                    if enable_streaming and response_text and should_send_text:
-                        # Split response into multiple messages for simulated streaming
-                        parts = self._split_response(response_text)
-                        logger.info(f"Split response into {len(parts)} parts for simulated streaming")
-                        
-                        last_result = None
-                        for i, part in enumerate(parts):
-                            if part.strip():
-                                try:
-                                    if message_type == 'group' and group_id:
-                                        result = await onebot.send_message(str(group_id), part, "group")
-                                        logger.debug(f"Sent part {i+1}/{len(parts)} to group {group_id}")
-                                        last_result = result  # Keep track of the last result
-                                    elif message_type == 'private' and user_id:
-                                        result = await onebot.send_message(str(user_id), part, "private")
-                                        logger.debug(f"Sent part {i+1}/{len(parts)} to user {user_id}")
-                                        last_result = result  # Keep track of the last result
-                                    
-                                    # Add delay between messages (0.5-2 seconds)
-                                    if i < len(parts) - 1:
-                                        await asyncio.sleep(random.uniform(0.5, 2.0))
-                                except Exception as e:
-                                    logger.error(f"Failed to send part {i+1}: {e}", exc_info=True)
-                        
-                        # Update last sent message's message_id if available
-                        if last_result and last_result.get("message_id"):
-                            # Update the last assistant message in memory with message_id
-                            if new_messages and new_messages[-1].get('role') == 'assistant':
-                                new_messages[-1]['message_id'] = str(last_result.get("message_id"))
-                                await self.ai_manager.create_or_update_memory(
-                                    config_type, target_id, new_messages, preset_uuid
-                                )
-                        
-                        logger.info(f"Sent all {len(parts)} parts to {'group ' + str(group_id) if message_type == 'group' else 'user ' + str(user_id)}")
-                    elif should_send_text:
-                        # Send as single message (only if not voice_only mode or TTS failed)
-                        result = None
-                        if message_type == 'group' and group_id:
-                            result = await onebot.send_message(str(group_id), response_text, "group")
-                            logger.info(f"Sent AI response to group {group_id}: {result}")
-                        elif message_type == 'private' and user_id:
-                            result = await onebot.send_message(str(user_id), response_text, "private")
-                            logger.info(f"Sent AI response to user {user_id}: {result}")
-                        
-                        # Update assistant message with message_id if available
-                        if result and result.get("message_id"):
-                            if new_messages and new_messages[-1].get('role') == 'assistant':
-                                new_messages[-1]['message_id'] = str(result.get("message_id"))
-                                await self.ai_manager.create_or_update_memory(
-                                    config_type, target_id, new_messages, preset_uuid
-                                )
+                    if should_send_text:
+                        # 流式发送开关控制是否分割：
+                        # - 开启（enable_streaming = True）：使用 \n\n 分割，并加入随机延迟
+                        # - 关闭（enable_streaming = False）：永远不分割，直接发送完整消息
+                        if enable_streaming and response_text and isinstance(response_text, str):
+                            # 流式发送开启：按 \n\n 分割消息
+                            message_parts = self._split_by_double_newline(response_text)
+                            
+                            # 如果分割后只有一条消息，直接发送（不需要延迟）
+                            if len(message_parts) == 1:
+                                result = None
+                                if message_type == 'group' and group_id:
+                                    result = await onebot.send_message(str(group_id), message_parts[0], "group")
+                                    logger.info(f"Sent AI response to group {group_id} (single message)")
+                                elif message_type == 'private' and user_id:
+                                    result = await onebot.send_message(str(user_id), message_parts[0], "private")
+                                    logger.info(f"Sent AI response to user {user_id} (single message)")
+                                
+                                # Update assistant message with message_id if available
+                                if result and result.get("message_id"):
+                                    if new_messages and new_messages[-1].get('role') == 'assistant':
+                                        new_messages[-1]['message_id'] = str(result.get("message_id"))
+                                        await self.ai_manager.create_or_update_memory(
+                                            config_type, target_id, new_messages, preset_uuid
+                                        )
+                            else:
+                                # 多条消息：逐条发送，每条之间加入随机延迟
+                                logger.info(f"Split message into {len(message_parts)} parts by \\n\\n (streaming enabled)")
+                                
+                                last_result = None
+                                for i, part in enumerate(message_parts):
+                                    if part.strip():
+                                        try:
+                                            if message_type == 'group' and group_id:
+                                                result = await onebot.send_message(str(group_id), part, "group")
+                                                logger.debug(f"Sent part {i+1}/{len(message_parts)} to group {group_id}")
+                                                last_result = result
+                                            elif message_type == 'private' and user_id:
+                                                result = await onebot.send_message(str(user_id), part, "private")
+                                                logger.debug(f"Sent part {i+1}/{len(message_parts)} to user {user_id}")
+                                                last_result = result
+                                            
+                                            # 添加随机延迟（0.5-2秒），最后一条消息不需要延迟
+                                            if i < len(message_parts) - 1:
+                                                await asyncio.sleep(random.uniform(0.5, 2.0))
+                                        except Exception as e:
+                                            logger.error(f"Failed to send part {i+1}: {e}", exc_info=True)
+                                
+                                # Update last sent message's message_id if available
+                                if last_result and last_result.get("message_id"):
+                                    if new_messages and new_messages[-1].get('role') == 'assistant':
+                                        new_messages[-1]['message_id'] = str(last_result.get("message_id"))
+                                        await self.ai_manager.create_or_update_memory(
+                                            config_type, target_id, new_messages, preset_uuid
+                                        )
+                                
+                                logger.info(f"Sent all {len(message_parts)} parts successfully")
+                        else:
+                            # 流式发送关闭：永远不分割，直接发送完整消息
+                            result = None
+                            if message_type == 'group' and group_id:
+                                result = await onebot.send_message(str(group_id), response_text, "group")
+                                logger.info(f"Sent AI response to group {group_id} (streaming disabled, single message)")
+                            elif message_type == 'private' and user_id:
+                                result = await onebot.send_message(str(user_id), response_text, "private")
+                                logger.info(f"Sent AI response to user {user_id} (streaming disabled, single message)")
+                            
+                            # Update assistant message with message_id if available
+                            if result and result.get("message_id"):
+                                if new_messages and new_messages[-1].get('role') == 'assistant':
+                                    new_messages[-1]['message_id'] = str(result.get("message_id"))
+                                    await self.ai_manager.create_or_update_memory(
+                                        config_type, target_id, new_messages, preset_uuid
+                                    )
                 else:
                     logger.warning("OneBot adapter not available for sending response")
             except Exception as e:

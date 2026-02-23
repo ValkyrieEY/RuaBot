@@ -125,18 +125,18 @@ export default function MessageLogPage() {
             {t('messages.description')} {isConnected ? ` (${t('messages.realtimePush')})` : ` (${t('messages.pollingRefresh')})`}
           </p>
         </div>
-        <div className="flex items-center gap-2 sm:gap-4 flex-wrap min-w-0">
-          <label className="flex items-center gap-2 text-sm text-gray-600 cursor-pointer whitespace-nowrap flex-shrink-0">
-            <span>{t('common.autoRefresh')}</span>
+        <div className="flex items-center gap-2 flex-shrink-0">
+          <label className="flex items-center gap-1 text-xs text-gray-600 cursor-pointer whitespace-nowrap">
+            <span className="hidden md:inline">{t('common.auto')}</span>
             <button
               type="button"
               onClick={() => setAutoRefresh(!autoRefresh)}
-              className="relative inline-flex h-6 w-11 items-center rounded-full transition-colors focus:outline-none focus:ring-2 focus:ring-primary-500 focus:ring-offset-2 flex-shrink-0"
+              className="relative inline-flex h-5 w-9 items-center rounded-full transition-colors focus:outline-none focus:ring-2 focus:ring-primary-500 focus:ring-offset-2"
               style={{ backgroundColor: autoRefresh ? '#3b82f6' : '#d1d5db' }}
             >
               <span
-                className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${
-                  autoRefresh ? 'translate-x-6' : 'translate-x-1'
+                className={`inline-block h-3 w-3 transform rounded-full bg-white transition-transform ${
+                  autoRefresh ? 'translate-x-5' : 'translate-x-1'
                 }`}
               />
             </button>
@@ -144,20 +144,20 @@ export default function MessageLogPage() {
           <select
             value={limit}
             onChange={(e) => setLimit(Number(e.target.value))}
-            className="input py-2 text-sm w-[120px] sm:min-w-[120px] flex-shrink-0"
+            className="input py-1.5 text-xs w-[80px]"
           >
-            <option value={50}>{t('common.recentEntries', { count: 50 })}</option>
-            <option value={100}>{t('common.recentEntries', { count: 100 })}</option>
-            <option value={200}>{t('common.recentEntries', { count: 200 })}</option>
-            <option value={500}>{t('common.recentEntries', { count: 500 })}</option>
+            <option value={50}>50条</option>
+            <option value={100}>100条</option>
+            <option value={200}>200条</option>
+            <option value={500}>500条</option>
           </select>
           <button
             onClick={() => loadMessages(true)}
             disabled={refreshing}
-            className="btn btn-secondary flex items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed whitespace-nowrap flex-shrink-0"
+            className="btn btn-secondary flex items-center justify-center gap-1 disabled:opacity-50 disabled:cursor-not-allowed whitespace-nowrap text-xs px-2 py-1.5"
           >
-            <RefreshCw className={`w-4 h-4 ${refreshing ? 'animate-spin' : ''}`} />
-            <span>{t('common.refresh')}</span>
+            <RefreshCw className={`w-3.5 h-3.5 ${refreshing ? 'animate-spin' : ''}`} />
+            <span className="hidden sm:inline">{t('common.refresh')}</span>
           </button>
         </div>
       </div>

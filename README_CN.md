@@ -22,6 +22,18 @@
 
 ---
 
+## 快速安装
+
+一键安装脚本（Linux/macOS）：
+
+```bash
+curl -# -fSL https://raw.githubusercontent.com/ValkyrieEY/RuaBot/main/install.sh -o /tmp/ruabot_install.sh && bash /tmp/ruabot_install.sh
+```
+
+详细安装说明请查看 [安装配置文档](docs/installation_CN.md)。
+
+---
+
 > [!Important]
 > 
 > **RuaBot 是一个功能强大、多线程、低耦合性、易于扩展的 QQ 机器人框架，基于 OneBot v11 协议构建。框架提供了完整的插件系统、强大的 AI 集成能力、现代化的 Web 管理界面，以及完善的权限管理和事件驱动架构**

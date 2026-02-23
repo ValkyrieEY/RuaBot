@@ -1468,7 +1468,12 @@ def create_app() -> FastAPI:
                 raise
     
     async def _install_plugin_from_zip(zip_path: Path, config, db_manager, plugin_connector, user):
-        """Helper function to install plugin from ZIP file."""
+        """Helper function to install plugin from ZIP file.
+        
+        Supports both nested and non-nested folder structures:
+        - Non-nested: plugin_name/plugin.json
+        - Nested: repo-main/plugin_name/plugin.json (GitHub format)
+        """
         extract_dir = zip_path.parent / "extracted"
         extract_dir.mkdir(exist_ok=True)
         
@@ -1478,19 +1483,49 @@ def create_app() -> FastAPI:
         except zipfile.BadZipFile:
             raise HTTPException(status_code=400, detail="Invalid ZIP file")
         
-        # Find plugin directory
-        plugin_dirs = [d for d in extract_dir.iterdir() if d.is_dir() and not d.name.startswith("_")]
+        # Find plugin directory - support both nested and non-nested structures
+        plugin_dir = None
+        plugin_json_path = None
         
-        if not plugin_dirs:
-            raise HTTPException(status_code=400, detail="No plugin directory found in ZIP")
+        # Strategy 1: Check if plugin.json exists directly in extract_dir (non-nested)
+        direct_plugin_json = extract_dir / "plugin.json"
+        if direct_plugin_json.exists():
+            plugin_dir = extract_dir
+            plugin_json_path = direct_plugin_json
+            logger.info("Found plugin.json directly in root (non-nested structure)")
+        else:
+            # Strategy 2: Look for plugin.json in first-level directories
+            first_level_dirs = [d for d in extract_dir.iterdir() if d.is_dir() and not d.name.startswith("_")]
+            
+            for first_dir in first_level_dirs:
+                # Check if plugin.json is directly in this directory
+                plugin_json = first_dir / "plugin.json"
+                if plugin_json.exists():
+                    plugin_dir = first_dir
+                    plugin_json_path = plugin_json
+                    logger.info(f"Found plugin.json in first-level directory: {first_dir.name}")
+                    break
+                
+                # Strategy 3: Check nested structure (e.g., repo-main/plugin_name/plugin.json)
+                nested_dirs = [d for d in first_dir.iterdir() if d.is_dir() and not d.name.startswith("_")]
+                for nested_dir in nested_dirs:
+                    nested_plugin_json = nested_dir / "plugin.json"
+                    if nested_plugin_json.exists():
+                        plugin_dir = nested_dir
+                        plugin_json_path = nested_plugin_json
+                        logger.info(f"Found plugin.json in nested directory: {first_dir.name}/{nested_dir.name}")
+                        break
+                
+                if plugin_dir:
+                    break
         
-        plugin_dir = plugin_dirs[0]
+        if not plugin_dir or not plugin_json_path:
+            raise HTTPException(
+                status_code=400, 
+                detail="No plugin.json found in ZIP. Please ensure the ZIP contains a plugin.json file either in the root or in a subdirectory."
+            )
+        
         plugin_folder_name = plugin_dir.name
-        
-        # Validate plugin structure
-        plugin_json = plugin_dir / "plugin.json"
-        if not plugin_json.exists():
-            raise HTTPException(status_code=400, detail="Plugin must contain plugin.json file")
         
         # Validate and parse plugin.json using thread pool
         try:
@@ -1499,11 +1534,11 @@ def create_app() -> FastAPI:
             
             if thread_pool:
                 def read_plugin_json():
-                    with open(plugin_json, 'r', encoding='utf-8') as f:
+                    with open(plugin_json_path, 'r', encoding='utf-8') as f:
                         return json.load(f)
                 plugin_metadata = await thread_pool.run_in_executor(read_plugin_json)
             else:
-                with open(plugin_json, 'r', encoding='utf-8') as f:
+                with open(plugin_json_path, 'r', encoding='utf-8') as f:
                     plugin_metadata = json.load(f)
                 
             # Check required fields
@@ -1536,7 +1571,7 @@ def create_app() -> FastAPI:
         shutil.copytree(plugin_dir, target_dir)
         
         # Auto-install dependencies
-        from ...plugins.runtime.connector import install_plugin_dependencies
+        from src.plugins.runtime.connector import install_plugin_dependencies
         logger.info(f"Checking dependencies for plugin: {plugin_author}/{plugin_name}")
         await install_plugin_dependencies(target_dir, plugin_metadata)
         
@@ -1908,18 +1943,14 @@ def create_app() -> FastAPI:
         toml_file = project_root / "config.toml"
         
         # Read existing TOML file
+        # Use tomlkit to preserve comments and formatting
         try:
-            import tomllib  # Python 3.11+
+            import tomlkit
         except ImportError:
-            import tomli as tomllib  # Fallback for older Python versions
-        
-        try:
-            import tomli_w
-        except ImportError:
-            logger.error("tomli-w is not installed. Please install it: pip install tomli-w")
+            logger.error("tomlkit is not installed. Please install it: pip install tomlkit")
             raise HTTPException(
                 status_code=500,
-                detail="TOML write support not available. Please install tomli-w."
+                detail="TOML support not available. Please install tomlkit to preserve comments."
             )
         
         # Use thread pool for synchronous file IO
@@ -1930,13 +1961,13 @@ def create_app() -> FastAPI:
         if toml_file.exists():
             if thread_pool:
                 def read_toml_file():
-                    with open(toml_file, "rb") as f:
-                        return tomllib.load(f)
+                    with open(toml_file, "r", encoding="utf-8") as f:
+                        return tomlkit.load(f)
                 config_data = await thread_pool.run_in_executor(read_toml_file)
             else:
                 # Fallback to sync operation if thread pool not available
-                with open(toml_file, "rb") as f:
-                    config_data = tomllib.load(f)
+                with open(toml_file, "r", encoding="utf-8") as f:
+                    config_data = tomlkit.load(f)
         
         # Ensure [onebot] section exists
         if "onebot" not in config_data:
@@ -1966,16 +1997,16 @@ def create_app() -> FastAPI:
                 env_key = key.upper()
                 os.environ[env_key] = str(value)
         
-        # Write back to TOML file using thread pool
+        # Write back to TOML file using thread pool (tomlkit preserves comments)
         if thread_pool:
             def write_toml_file():
-                with open(toml_file, "wb") as f:
-                    tomli_w.dump(config_data, f)
+                with open(toml_file, "w", encoding="utf-8") as f:
+                    tomlkit.dump(config_data, f)
             await thread_pool.run_in_executor(write_toml_file)
         else:
             # Fallback to sync operation if thread pool not available
-            with open(toml_file, "wb") as f:
-                tomli_w.dump(config_data, f)
+            with open(toml_file, "w", encoding="utf-8") as f:
+                tomlkit.dump(config_data, f)
         
         logger.info("Configuration saved to config.toml", file=str(toml_file))
         
@@ -3172,16 +3203,11 @@ def create_app() -> FastAPI:
         toml_file = project_root / "config.toml"
         
         try:
-            import tomllib
-        except ImportError:
-            import tomli as tomllib
-        
-        try:
-            import tomli_w
+            import tomlkit
         except ImportError:
             raise HTTPException(
                 status_code=500,
-                detail="TOML write support not available. Please install tomli-w."
+                detail="TOML support not available. Please install tomlkit to preserve comments."
             )
         
         # Use thread pool for synchronous file IO
@@ -3191,15 +3217,15 @@ def create_app() -> FastAPI:
         if toml_file.exists():
             if thread_pool:
                 def read_toml_file():
-                    with open(toml_file, "rb") as f:
-                        return tomllib.load(f)
+                    with open(toml_file, "r", encoding="utf-8") as f:
+                        return tomlkit.load(f)
                 toml_data = await thread_pool.run_in_executor(read_toml_file)
             else:
                 # Fallback to sync operation if thread pool not available
-                with open(toml_file, "rb") as f:
-                    toml_data = tomllib.load(f)
+                with open(toml_file, "r", encoding="utf-8") as f:
+                    toml_data = tomlkit.load(f)
         else:
-            toml_data = {}
+            toml_data = tomlkit.document()  # Create empty tomlkit document
         
         # Update TOML data according to config.toml structure
         # Note: _flatten_toml converts TOML to env vars:
@@ -3333,17 +3359,17 @@ def create_app() -> FastAPI:
                     if "TENCENT_CLOUD_SECRET_KEY" in os.environ:
                         del os.environ["TENCENT_CLOUD_SECRET_KEY"]
         
-        # Write back to TOML using thread pool
+        # Write back to TOML using thread pool (tomlkit preserves comments)
         try:
             if thread_pool:
                 def write_toml_file():
-                    with open(toml_file, "wb") as f:
-                        tomli_w.dump(toml_data, f)
+                    with open(toml_file, "w", encoding="utf-8") as f:
+                        tomlkit.dump(toml_data, f)
                 await thread_pool.run_in_executor(write_toml_file)
             else:
                 # Fallback to sync operation if thread pool not available
-                with open(toml_file, "wb") as f:
-                    tomli_w.dump(toml_data, f)
+                with open(toml_file, "w", encoding="utf-8") as f:
+                    tomlkit.dump(toml_data, f)
         except Exception as e:
             logger.error(f"Failed to write TOML config: {e}", exc_info=True)
             raise HTTPException(
@@ -3506,17 +3532,14 @@ def create_app() -> FastAPI:
             if not config.web_ui_enabled:
                 return {"should_show": False, "reason": "webui_disabled"}
             
-            # 检查开屏动画文件夹是否存在（在webui目录下）
-            # 使用项目根目录作为基准路径
+            # 使用项目根目录下的 data 目录存储标记文件（支持分离部署）
+            # 这样即使删除了 webui 源码目录，标记文件也不会丢失
             project_root = Path(__file__).parent.parent.parent
-            splash_dir = project_root / "webui" / "splash_screen"
-            
-            # 如果 webui 文件夹不存在，返回不显示
-            if not splash_dir.exists():
-                return {"should_show": False, "reason": "splash_dir_not_exists"}
+            data_dir = project_root / "data"
+            data_dir.mkdir(parents=True, exist_ok=True)
             
             # 检查标记文件是否存在
-            marker_file = splash_dir / ".splash_shown"
+            marker_file = data_dir / ".splash_shown"
             if marker_file.exists():
                 return {"should_show": False, "reason": "already_shown"}
             
@@ -3535,26 +3558,26 @@ def create_app() -> FastAPI:
             if not config.web_ui_enabled:
                 return {"success": True, "message": "WebUI disabled, splash screen skipped"}
             
-            # 使用项目根目录作为基准路径
+            # 使用项目根目录下的 data 目录存储标记文件（支持分离部署）
             project_root = Path(__file__).parent.parent.parent
-            splash_dir = project_root / "webui" / "splash_screen"
+            data_dir = project_root / "data"
             
-            # 如果 webui 文件夹不存在，尝试创建（但可能失败，这是正常的）
+            # 创建 data 目录（如果不存在）
             try:
-                splash_dir.mkdir(parents=True, exist_ok=True)
+                data_dir.mkdir(parents=True, exist_ok=True)
             except Exception as mkdir_error:
-                # 如果无法创建目录（例如 webui 文件夹被删除），静默处理
-                logger.debug(f"Cannot create splash screen directory: {mkdir_error}")
-                return {"success": True, "message": "WebUI directory not available, splash screen skipped"}
+                # 如果无法创建目录，记录错误但返回成功（避免影响用户体验）
+                logger.debug(f"Cannot create data directory: {mkdir_error}")
+                return {"success": True, "message": "Cannot create data directory, splash screen skipped"}
             
             # 创建标记文件
             try:
-                marker_file = splash_dir / ".splash_shown"
+                marker_file = data_dir / ".splash_shown"
                 marker_file.touch()
                 logger.info(f"Splash screen marked as shown. Marker file: {marker_file}")
                 return {"success": True, "message": "Splash screen marked as shown"}
             except Exception as touch_error:
-                # 如果无法创建标记文件，静默处理
+                # 如果无法创建标记文件，记录错误但返回成功
                 logger.debug(f"Cannot create splash screen marker file: {touch_error}")
                 return {"success": True, "message": "Cannot create marker file, but operation completed"}
         except Exception as e:
@@ -4053,6 +4076,7 @@ def create_app() -> FastAPI:
         description: Optional[str] = None
         top_p: Optional[float] = None
         top_k: Optional[int] = None
+        repetition_penalty: Optional[float] = None
         config: Optional[Dict[str, Any]] = None
     
     @app.post("/api/ai/presets")
@@ -4074,6 +4098,7 @@ def create_app() -> FastAPI:
             description=preset.description,
             top_p=preset.top_p,
             top_k=preset.top_k,
+            repetition_penalty=preset.repetition_penalty,
             config=preset.config or {}
         )
         return created_preset.to_dict()
@@ -4086,6 +4111,7 @@ def create_app() -> FastAPI:
         description: Optional[str] = None
         top_p: Optional[float] = None
         top_k: Optional[int] = None
+        repetition_penalty: Optional[float] = None
         config: Optional[Dict[str, Any]] = None
     
     @app.put("/api/ai/presets/{preset_uuid}")
@@ -4798,11 +4824,13 @@ def create_app() -> FastAPI:
                 raise HTTPException(status_code=404, detail="默认模型不存在")
             
             # Initialize LLM client with model configuration
+            api_format = model_with_secret.get('config', {}).get('api_format', 'openai')
             llm_client = LLMClient(
                 api_key=model_with_secret.get('api_key', ''),
                 base_url=model_with_secret.get('base_url', ''),
                 model_name=model_with_secret.get('model_name', ''),
-                provider=model_with_secret.get('provider', 'openai')
+                provider=model_with_secret.get('provider', 'openai'),
+                api_format=api_format
             )
             
             checker = get_expression_auto_checker()
@@ -4887,11 +4915,13 @@ def create_app() -> FastAPI:
                 raise HTTPException(status_code=404, detail="默认模型不存在")
             
             # Initialize LLM client with model configuration
+            api_format = model_with_secret.get('config', {}).get('api_format', 'openai')
             llm_client = LLMClient(
                 api_key=model_with_secret.get('api_key', ''),
                 base_url=model_with_secret.get('base_url', ''),
                 model_name=model_with_secret.get('model_name', ''),
-                provider=model_with_secret.get('provider', 'openai')
+                provider=model_with_secret.get('provider', 'openai'),
+                api_format=api_format
             )
             
             checker = get_expression_auto_checker()
@@ -5073,11 +5103,13 @@ def create_app() -> FastAPI:
                 raise HTTPException(status_code=404, detail="默认模型不存在")
             
             # Initialize LLM client with model configuration
+            api_format = model_with_secret.get('config', {}).get('api_format', 'openai')
             llm_client = LLMClient(
                 api_key=model_with_secret.get('api_key', ''),
                 base_url=model_with_secret.get('base_url', ''),
                 model_name=model_with_secret.get('model_name', ''),
-                provider=model_with_secret.get('provider', 'openai')
+                provider=model_with_secret.get('provider', 'openai'),
+                api_format=api_format
             )
             
             manager = get_kg_manager()
@@ -5179,6 +5211,11 @@ def create_app() -> FastAPI:
         from ..core.models.tool_permission import ToolPermission
         from sqlalchemy import select
         
+        app_instance = get_app()
+        db_manager = app_instance.db_manager if hasattr(app_instance, 'db_manager') and app_instance.db_manager else None
+        if not db_manager:
+            raise HTTPException(status_code=500, detail="Database manager not available")
+        
         async with db_manager.session() as session:
             result = await session.execute(select(ToolPermission))
             permissions = result.scalars().all()
@@ -5186,16 +5223,39 @@ def create_app() -> FastAPI:
     
     @app.post("/api/ai/tool-permissions")
     async def create_or_update_tool_permission(
-        permission_data: Dict[str, Any],
+        permission_data: Dict[str, Any] = Body(...),
         user: Dict[str, Any] = Depends(require_permission(Permission.SYSTEM_CONFIG_EDIT))
     ):
         """Create or update a tool permission configuration."""
         from ..core.models.tool_permission import ToolPermission
         from sqlalchemy import select
         
+        app_instance = get_app()
+        db_manager = app_instance.db_manager if hasattr(app_instance, 'db_manager') and app_instance.db_manager else None
+        if not db_manager:
+            raise HTTPException(status_code=500, detail="Database manager not available")
+        
         tool_name = permission_data.get('tool_name')
         if not tool_name:
             raise HTTPException(status_code=400, detail="tool_name is required")
+        
+        # Validate and normalize data
+        requires_permission = bool(permission_data.get('requires_permission', False))
+        requires_admin_approval = bool(permission_data.get('requires_admin_approval', False))
+        requires_ai_approval = bool(permission_data.get('requires_ai_approval', True))
+        
+        # Ensure allowed_users is a list
+        allowed_users = permission_data.get('allowed_users', [])
+        if not isinstance(allowed_users, list):
+            if isinstance(allowed_users, str):
+                # Handle comma-separated string
+                allowed_users = [q.strip() for q in allowed_users.split(',') if q.strip()]
+            else:
+                allowed_users = []
+        
+        tool_category = permission_data.get('tool_category') or None
+        tool_description = permission_data.get('tool_description') or None
+        danger_level = int(permission_data.get('danger_level', 0))
         
         try:
             async with db_manager.session() as session:
@@ -5207,21 +5267,25 @@ def create_app() -> FastAPI:
                 
                 if existing:
                     # Update existing
-                    for key, value in permission_data.items():
-                        if key != 'tool_name' and hasattr(existing, key):
-                            setattr(existing, key, value)
+                    existing.requires_permission = requires_permission
+                    existing.requires_admin_approval = requires_admin_approval
+                    existing.requires_ai_approval = requires_ai_approval
+                    existing.allowed_users = allowed_users
+                    existing.tool_category = tool_category
+                    existing.tool_description = tool_description
+                    existing.danger_level = danger_level
                     existing.updated_at = datetime.utcnow()
                 else:
                     # Create new
                     perm = ToolPermission(
                         tool_name=tool_name,
-                        requires_permission=permission_data.get('requires_permission', False),
-                        requires_admin_approval=permission_data.get('requires_admin_approval', False),
-                        requires_ai_approval=permission_data.get('requires_ai_approval', True),
-                        allowed_users=permission_data.get('allowed_users', []),
-                        tool_category=permission_data.get('tool_category'),
-                        tool_description=permission_data.get('tool_description'),
-                        danger_level=permission_data.get('danger_level', 0)
+                        requires_permission=requires_permission,
+                        requires_admin_approval=requires_admin_approval,
+                        requires_ai_approval=requires_ai_approval,
+                        allowed_users=allowed_users,
+                        tool_category=tool_category,
+                        tool_description=tool_description,
+                        danger_level=danger_level
                     )
                     session.add(perm)
                 
@@ -5246,6 +5310,11 @@ def create_app() -> FastAPI:
         from ..core.models.tool_permission import ToolPermission
         from sqlalchemy import delete
         
+        app_instance = get_app()
+        db_manager = app_instance.db_manager if hasattr(app_instance, 'db_manager') and app_instance.db_manager else None
+        if not db_manager:
+            raise HTTPException(status_code=500, detail="Database manager not available")
+        
         try:
             async with db_manager.session() as session:
                 await session.execute(
@@ -5265,6 +5334,11 @@ def create_app() -> FastAPI:
         from ..core.models.tool_permission import AdminUser
         from sqlalchemy import select
         
+        app_instance = get_app()
+        db_manager = app_instance.db_manager if hasattr(app_instance, 'db_manager') and app_instance.db_manager else None
+        if not db_manager:
+            raise HTTPException(status_code=500, detail="Database manager not available")
+        
         async with db_manager.session() as session:
             result = await session.execute(select(AdminUser))
             admins = result.scalars().all()
@@ -5272,12 +5346,17 @@ def create_app() -> FastAPI:
     
     @app.post("/api/ai/admin-users")
     async def create_or_update_admin_user(
-        admin_data: Dict[str, Any],
+        admin_data: Dict[str, Any] = Body(...),
         user: Dict[str, Any] = Depends(require_permission(Permission.SYSTEM_CONFIG_EDIT))
     ):
         """Create or update an admin user."""
         from ..core.models.tool_permission import AdminUser
         from sqlalchemy import select
+        
+        app_instance = get_app()
+        db_manager = app_instance.db_manager if hasattr(app_instance, 'db_manager') and app_instance.db_manager else None
+        if not db_manager:
+            raise HTTPException(status_code=500, detail="Database manager not available")
         
         qq_number = admin_data.get('qq_number')
         if not qq_number:
@@ -5292,20 +5371,43 @@ def create_app() -> FastAPI:
                 existing = result.scalar_one_or_none()
                 
                 if existing:
-                    # Update existing
+                    # Update existing - only update allowed fields
+                    # Fields that should NOT be updated: qq_number, created_at, total_approvals, total_rejections, last_active_at
+                    allowed_update_fields = ['nickname', 'permission_level', 'is_active', 'can_approve_all_tools', 'approved_tools']
+                    
                     for key, value in admin_data.items():
-                        if key != 'qq_number' and hasattr(existing, key):
+                        if key in allowed_update_fields:
+                            # Handle special cases
+                            if key == 'approved_tools':
+                                # Ensure approved_tools is a list
+                                if not isinstance(value, list):
+                                    value = []
+                            elif key == 'permission_level':
+                                # Ensure permission_level is int
+                                value = int(value) if value is not None else 1
+                            elif key in ['is_active', 'can_approve_all_tools']:
+                                # Ensure boolean fields are bool
+                                value = bool(value) if value is not None else False
+                            
                             setattr(existing, key, value)
-                    existing.updated_at = datetime.utcnow()
+                    
+                    # Use datetime.now(timezone.utc) for Python 3.12+ compatibility
+                    from datetime import timezone
+                    existing.updated_at = datetime.now(timezone.utc)
                 else:
                     # Create new
+                    # Ensure approved_tools is a list
+                    approved_tools = admin_data.get('approved_tools', [])
+                    if not isinstance(approved_tools, list):
+                        approved_tools = []
+                    
                     admin = AdminUser(
                         qq_number=qq_number,
                         nickname=admin_data.get('nickname'),
-                        permission_level=admin_data.get('permission_level', 1),
-                        is_active=admin_data.get('is_active', True),
-                        can_approve_all_tools=admin_data.get('can_approve_all_tools', False),
-                        approved_tools=admin_data.get('approved_tools', [])
+                        permission_level=int(admin_data.get('permission_level', 1)),
+                        is_active=bool(admin_data.get('is_active', True)),
+                        can_approve_all_tools=bool(admin_data.get('can_approve_all_tools', False)),
+                        approved_tools=approved_tools
                     )
                     session.add(admin)
                 
@@ -5330,6 +5432,11 @@ def create_app() -> FastAPI:
         from ..core.models.tool_permission import AdminUser
         from sqlalchemy import delete
         
+        app_instance = get_app()
+        db_manager = app_instance.db_manager if hasattr(app_instance, 'db_manager') and app_instance.db_manager else None
+        if not db_manager:
+            raise HTTPException(status_code=500, detail="Database manager not available")
+        
         try:
             async with db_manager.session() as session:
                 await session.execute(
@@ -5343,7 +5450,7 @@ def create_app() -> FastAPI:
     
     @app.get("/api/ai/approval-logs")
     async def get_approval_logs(
-        limit: int = 100,
+        limit: int = 10,
         tool_name: Optional[str] = None,
         user_qq: Optional[str] = None,
         user: Dict[str, Any] = Depends(require_permission(Permission.AUDIT_VIEW))
@@ -5351,6 +5458,11 @@ def create_app() -> FastAPI:
         """Get tool approval audit logs."""
         from ..core.models.tool_permission import ToolApprovalLog
         from sqlalchemy import select, desc
+        
+        app_instance = get_app()
+        db_manager = app_instance.db_manager if hasattr(app_instance, 'db_manager') and app_instance.db_manager else None
+        if not db_manager:
+            raise HTTPException(status_code=500, detail="Database manager not available")
         
         try:
             async with db_manager.session() as session:
@@ -5443,10 +5555,10 @@ def create_app() -> FastAPI:
         # Read file content dynamically on each request to avoid caching issues
         index_file = static_dir_path / "index.html"
         
-        # Check if webui source directory exists
-        project_root = Path(__file__).parent.parent.parent
-        webui_source_dir = project_root / "webui"
-        webui_exists = webui_source_dir.exists() and webui_source_dir.is_dir()
+        # Check if webui static files (build output) exist
+        # Note: We check for the built files, not the source directory
+        static_assets_dir = static_dir_path / "assets"
+        webui_built = static_assets_dir.exists() and static_assets_dir.is_dir()
         
         if index_file.exists():
             # Read file content on each request to ensure latest version
@@ -5459,31 +5571,32 @@ def create_app() -> FastAPI:
             return response
         else:
             # Fallback HTML if index.html doesn't exist
-            # Different messages based on whether webui source directory exists
-            if not webui_exists:
-                # WebUI folder doesn't exist
-                title = "WebUI 文件夹不存在"
+            # Different messages based on whether webui build output exists
+            if not webui_built:
+                # WebUI build output doesn't exist
+                title = "WebUI 未构建"
                 message = """
-                        <h1>WebUI 文件夹不存在</h1>
-                        <p>配置文件中已启用 WebUI，但 <code>webui</code> 文件夹不存在。</p>
+                        <h1>WebUI 未构建</h1>
+                        <p>配置文件中已启用 WebUI，但构建产物不存在（<code>src/ui/static</code>）。</p>
                         <p style="margin-top: 1.5rem;"><strong>解决方案：</strong></p>
                         <ul style="text-align: left; display: inline-block; margin: 1rem 0;">
                             <li>如果您不需要 WebUI，请在 <code>config.toml</code> 中设置 <code>[web_ui].enabled = false</code></li>
-                            <li>如果需要 WebUI，请恢复 <code>webui</code> 文件夹并构建前端</li>
+                            <li>如果需要 WebUI，请构建前端：<code>cd webui && npm run build</code></li>
                         </ul>
                         <p style="margin-top: 1.5rem; font-size: 0.9rem; opacity: 0.8;">
-                            构建命令：<code>cd webui && npm run build</code>
+                            构建命令：<code>cd webui && npm install && npm run build</code>
                         </p>
                         <p style="font-size: 0.9rem; opacity: 0.8;">
                             或使用 <code>build.bat</code> (Windows) / <code>build.sh</code> (Linux/Mac)
                         </p>
                 """
             else:
-                # WebUI folder exists but not built
-                title = "WebUI 正在构建中"
+                # WebUI build output exists but index.html is missing
+                title = "WebUI 构建不完整"
                 message = """
-                        <h1>WebUI 未构建/错误</h1>
-                        <p>请运行以下命令构建前端：</p>
+                        <h1>WebUI 构建不完整</h1>
+                        <p>WebUI 构建产物存在，但 <code>index.html</code> 文件缺失。</p>
+                        <p>请重新构建前端：</p>
                         <p><code>cd webui && npm run build</code></p>
                         <p style="font-size: 0.9rem; opacity: 0.8;">或使用 <code>build.bat</code> (Windows) / <code>build.sh</code> (Linux/Mac)</p>
                 """

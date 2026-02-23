@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { api } from '@/utils/api'
-import { Save, Wrench } from 'lucide-react'
+import { Save, Wrench, AlertTriangle, CheckCircle2, XCircle } from 'lucide-react'
 
 export default function ToolsManagementPage() {
   const [tools, setTools] = useState<any[]>([])
@@ -25,7 +25,6 @@ export default function ToolsManagementPage() {
       setTools(toolsList)
       setToolsEnabled(globalConfig.config?.tools_enabled !== undefined ? globalConfig.config.tools_enabled : false)
       
-      // 初始化工具开关：如果配置中没有，默认全部开启
       const toolsEnabledMap: Record<string, boolean> = {}
       toolsList.forEach((tool: any) => {
         const toolName = tool.name as string
@@ -44,7 +43,6 @@ export default function ToolsManagementPage() {
     try {
       setSaving(true)
       
-      // 更新全局配置中的工具启用状态
       const currentConfig = (await api.getAIConfig('global')).config || {}
       await api.updateAIConfig('global', undefined, {
         config: {
@@ -54,7 +52,6 @@ export default function ToolsManagementPage() {
         }
       })
       
-      // 同时更新工具开关
       await api.updateEnabledTools('global', undefined, enabledTools)
       
       alert('保存成功')
@@ -67,10 +64,13 @@ export default function ToolsManagementPage() {
   }
 
   if (loading) {
-    return <div className="text-center py-8">加载中...</div>
+    return (
+      <div className="flex items-center justify-center min-h-[400px]">
+        <div className="w-10 h-10 border-4 border-blue-600 border-t-transparent rounded-full animate-spin"></div>
+      </div>
+    )
   }
 
-  // 按分类分组工具
   const toolsByCategory = tools.reduce((acc: Record<string, any[]>, tool: any) => {
     const category = tool.category || '其他'
     if (!acc[category]) acc[category] = []
@@ -79,120 +79,132 @@ export default function ToolsManagementPage() {
   }, {})
 
   return (
-    <div className="space-y-6">
-      <div className="bg-white rounded-xl shadow p-6">
-        <div className="flex items-center gap-3 mb-4">
-          <Wrench className="w-6 h-6 text-blue-500" />
-          <h2 className="text-xl font-semibold">工具调用总开关</h2>
+    <div>
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 py-6 mb-4">
+        <div>
+          <h1 className="text-2xl font-bold text-gray-900 tracking-tight">工具管理</h1>
+          <p className="text-sm text-gray-500 mt-1">配置 AI 可调用的功能</p>
         </div>
-        <div className="flex items-center gap-4">
-          <label className="flex items-center gap-2 cursor-pointer">
-            <input
-              type="checkbox"
-              checked={toolsEnabled}
-              onChange={(e) => setToolsEnabled(e.target.checked)}
-              className="w-4 h-4"
-            />
-            <span className="text-sm font-medium">启用工具调用</span>
-          </label>
-          <p className="text-sm text-gray-500">
-            允许AI调用工具（如群管理、发送消息、网页访问等）。如果不启用，AI将只返回文本回复
-          </p>
-        </div>
-      </div>
-
-      <div className="bg-white rounded-xl shadow p-6">
-        <div className="flex items-center justify-between mb-4">
-          <h2 className="text-xl font-semibold">工具管理</h2>
+        <div className="flex items-center gap-3">
           <button
             onClick={handleSave}
             disabled={saving}
-            className="flex items-center gap-2 px-4 py-2 bg-blue-500 text-white rounded hover:bg-blue-600 disabled:opacity-50"
+            className="flex items-center gap-2 px-6 py-2.5 bg-blue-600 text-white font-medium rounded-xl hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed transition-all shadow-sm hover:shadow-md"
           >
             <Save className="w-4 h-4" />
-            {saving ? '保存中...' : '保存'}
+            {saving ? '保存中...' : '保存更改'}
           </button>
         </div>
-        
-        <p className="text-sm text-gray-600 mb-6">
-          控制AI可以使用的工具功能。关闭的工具将无法被AI调用。只有在"工具调用总开关"开启时，这些工具才会生效。
-        </p>
-        
-        {/* 按分类分组显示工具 */}
-        {Object.entries(toolsByCategory).map(([category, categoryTools]) => (
-          <div key={category} className="mb-6">
-            <h3 className="text-lg font-medium mb-3 text-gray-700 border-b pb-2">{category}</h3>
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
-              {categoryTools.map((tool: any) => (
-                <div
-                  key={tool.name}
-                  className={`flex items-start gap-3 p-4 border rounded-lg transition-colors ${
-                    tool.dangerous 
-                      ? 'border-red-200 bg-red-50 hover:bg-red-100' 
-                      : 'border-gray-200 bg-gray-50 hover:bg-gray-100'
-                  } ${!toolsEnabled ? 'opacity-50' : ''}`}
-                >
-                  <input
-                    type="checkbox"
-                    id={`tool-${tool.name}`}
-                    checked={enabledTools[tool.name] !== false}
-                    onChange={(e) => {
-                      setEnabledTools({
-                        ...enabledTools,
-                        [tool.name]: e.target.checked
-                      })
-                    }}
-                    disabled={!toolsEnabled}
-                    className="w-4 h-4 mt-1 flex-shrink-0"
-                  />
-                  <label
-                    htmlFor={`tool-${tool.name}`}
-                    className="flex-1 cursor-pointer"
-                  >
-                    <div className="font-medium text-gray-900">{tool.name}</div>
-                    <div className="text-sm text-gray-600 mt-1">{tool.description}</div>
-                    {tool.dangerous && (
-                      <span className="inline-block mt-2 text-xs text-red-600 bg-red-100 px-2 py-0.5 rounded">
-                        危险操作
-                      </span>
-                    )}
-                  </label>
-                </div>
-              ))}
-            </div>
+      </div>
+
+      <div className="bg-white border border-blue-100 rounded-xl p-6 mb-8 shadow-sm flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
+        <div className="flex items-start gap-4">
+          <div className="p-3 bg-blue-50 text-blue-600 rounded-xl">
+            <Wrench className="w-6 h-6" />
           </div>
-        ))}
-        
-        <div className="mt-6 pt-4 border-t flex gap-2">
+          <div>
+            <h3 className="text-lg font-bold text-gray-900 mb-1">工具调用总开关</h3>
+            <p className="text-sm text-gray-500 max-w-xl">
+              控制是否允许 AI 调用外部工具（如群管理、发送消息、网页访问等）。如果不启用，AI 将只返回纯文本回复，无法执行任何操作。
+            </p>
+          </div>
+        </div>
+        <label className="relative inline-flex items-center cursor-pointer ml-auto sm:ml-0">
+          <input
+            type="checkbox"
+            checked={toolsEnabled}
+            onChange={(e) => setToolsEnabled(e.target.checked)}
+            className="sr-only peer"
+          />
+          <div className="w-14 h-7 bg-gray-200 peer-focus:outline-none peer-focus:ring-4 peer-focus:ring-blue-100 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-0.5 after:left-[4px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-6 after:w-6 after:transition-all peer-checked:bg-blue-600"></div>
+        </label>
+      </div>
+
+      <div className={`transition-all duration-300 ${!toolsEnabled ? 'opacity-50 grayscale-[0.5]' : ''}`}>
+        <div className={`flex justify-end gap-3 mb-6 ${!toolsEnabled ? 'pointer-events-none' : ''}`}>
           <button
             onClick={() => {
               const allEnabled: Record<string, boolean> = {}
-              tools.forEach((tool: any) => {
-                allEnabled[tool.name] = true
-              })
+              tools.forEach((tool: any) => { allEnabled[tool.name] = true })
               setEnabledTools(allEnabled)
             }}
             disabled={!toolsEnabled}
-            className="px-4 py-2 bg-green-500 text-white rounded hover:bg-green-600 disabled:opacity-50 disabled:cursor-not-allowed"
+            className="flex items-center gap-1.5 text-sm text-gray-600 hover:text-blue-600 font-medium px-4 py-2 bg-white border border-gray-200 hover:border-blue-200 hover:bg-blue-50 rounded-lg transition-all shadow-sm disabled:opacity-50 disabled:cursor-not-allowed"
           >
+            <CheckCircle2 className="w-4 h-4" />
             全部开启
           </button>
           <button
             onClick={() => {
               const allDisabled: Record<string, boolean> = {}
-              tools.forEach((tool: any) => {
-                allDisabled[tool.name] = false
-              })
+              tools.forEach((tool: any) => { allDisabled[tool.name] = false })
               setEnabledTools(allDisabled)
             }}
             disabled={!toolsEnabled}
-            className="px-4 py-2 bg-red-500 text-white rounded hover:bg-red-600 disabled:opacity-50 disabled:cursor-not-allowed"
+            className="flex items-center gap-1.5 text-sm text-gray-600 hover:text-red-600 font-medium px-4 py-2 bg-white border border-gray-200 hover:border-red-200 hover:bg-red-50 rounded-lg transition-all shadow-sm disabled:opacity-50 disabled:cursor-not-allowed"
           >
+            <XCircle className="w-4 h-4" />
             全部关闭
           </button>
+        </div>
+
+        <div className={`space-y-10 ${!toolsEnabled ? 'pointer-events-none' : ''}`}>
+          {Object.entries(toolsByCategory).map(([category, categoryTools]) => (
+            <div key={category}>
+              <h3 className="text-lg font-bold text-gray-900 mb-4 flex items-center gap-2 px-1">
+                <div className="w-1 h-6 bg-blue-600 rounded-full"></div>
+                {category}
+              </h3>
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                {categoryTools.map((tool: any) => (
+                  <label
+                    key={tool.name}
+                    className={`
+                      relative flex items-start gap-4 p-5 border rounded-xl cursor-pointer transition-all hover:shadow-md
+                      ${enabledTools[tool.name] !== false
+                        ? 'bg-white border-blue-200 shadow-sm ring-1 ring-blue-50'
+                        : 'bg-gray-50 border-gray-200 opacity-70 hover:opacity-100'
+                      }
+                      ${!toolsEnabled ? 'cursor-not-allowed' : ''}
+                    `}
+                  >
+                    <div className="flex h-6 items-center pt-0.5">
+                      <input
+                        type="checkbox"
+                        checked={enabledTools[tool.name] !== false}
+                        onChange={(e) => {
+                          setEnabledTools({
+                            ...enabledTools,
+                            [tool.name]: e.target.checked
+                          })
+                        }}
+                        disabled={!toolsEnabled}
+                        className="h-5 w-5 rounded border-gray-300 text-blue-600 focus:ring-blue-600 transition-all disabled:opacity-50 disabled:cursor-not-allowed"
+                      />
+                    </div>
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center gap-2 mb-1.5">
+                        <span className={`font-bold text-base ${enabledTools[tool.name] !== false ? 'text-gray-900' : 'text-gray-500'}`}>
+                          {tool.name}
+                        </span>
+                        {tool.dangerous && (
+                          <span className="inline-flex items-center px-2 py-0.5 rounded text-[10px] font-bold bg-red-50 text-red-600 border border-red-100 uppercase tracking-wide" title="此工具包含危险操作">
+                            <AlertTriangle className="w-3 h-3 mr-1" />
+                            Dangerous
+                          </span>
+                        )}
+                      </div>
+                      <p className="text-sm text-gray-500 line-clamp-2 leading-relaxed">
+                        {tool.description || '暂无描述'}
+                      </p>
+                    </div>
+                  </label>
+                ))}
+              </div>
+            </div>
+          ))}
         </div>
       </div>
     </div>
   )
 }
-

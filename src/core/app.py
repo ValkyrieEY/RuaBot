@@ -257,13 +257,48 @@ class Application:
         # Initialize plugin system
         try:
             from ..plugins.runtime import PluginRuntimeConnector
+            from ..plugins.interceptor import ExecutionMode
+            
+            # Read interceptor configuration from config
+            interceptor_config = self.config.get('plugins', {}).get('interceptor', {})
+            execution_mode_str = interceptor_config.get('execution_mode', 'hybrid')
+            
+            # Convert string to ExecutionMode enum
+            execution_mode_map = {
+                'serial': ExecutionMode.SERIAL,
+                'parallel': ExecutionMode.PARALLEL,
+                'hybrid': ExecutionMode.HYBRID
+            }
+            execution_mode = execution_mode_map.get(
+                execution_mode_str.lower(),
+                ExecutionMode.HYBRID
+            )
+            
             self.plugin_connector = PluginRuntimeConnector(
                 event_bus=self.event_bus,
                 db_manager=self.db_manager,
-                app=self  # Pass app instance for OneBot access
+                app=self,  # Pass app instance for OneBot access
+                interceptor_mode=execution_mode
             )
+            
+            # Configure circuit breaker and timeouts if specified
+            if 'circuit_breaker_threshold' in interceptor_config:
+                self.plugin_connector.interceptor_registry.configure_circuit_breaker(
+                    threshold=interceptor_config.get('circuit_breaker_threshold', 3),
+                    duration=interceptor_config.get('circuit_breaker_duration', 30.0)
+                )
+            
+            if 'base_timeout' in interceptor_config:
+                self.plugin_connector.interceptor_registry.configure_timeouts(
+                    base_timeout=interceptor_config.get('base_timeout', 3.0),
+                    max_timeout=interceptor_config.get('max_timeout', 10.0)
+                )
+            
             await self.plugin_connector.initialize()
-            logger.info("Plugin system initialized successfully")
+            logger.info(
+                f"Plugin system initialized successfully "
+                f"(interceptor mode: {execution_mode.value})"
+            )
         except Exception as e:
             logger.error(f"Failed to initialize plugin system: {e}", exc_info=True)
             logger.info("Plugin system disabled due to initialization error")
@@ -284,11 +319,13 @@ class Application:
                     model_with_secret = await model_manager.get_model_with_secret(default_model['uuid'])
                     if model_with_secret:
                         from ..ai.llm_client import LLMClient
+                        api_format = model_with_secret.get('config', {}).get('api_format', 'openai')
                         llm_client = LLMClient(
                             api_key=model_with_secret.get('api_key', ''),
                             base_url=model_with_secret.get('base_url', ''),
                             model_name=model_with_secret.get('model_name', ''),
-                            provider=model_with_secret.get('provider', 'openai')
+                            provider=model_with_secret.get('provider', 'openai'),
+                            api_format=api_format
                         )
                         
                         # Start Dream Scheduler

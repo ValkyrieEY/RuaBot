@@ -292,18 +292,39 @@ class OneBotAdapter(ProtocolAdapter):
                         logger.warning("WebSocket connection closed normally")
                         
                 except websockets.exceptions.InvalidURI as e:
-                    logger.error("Invalid WebSocket URL", url=self.ws_url, error=str(e))
+                    logger.error(f"Invalid WebSocket URL: {self.ws_url}")
                     if self._running:
                         logger.info("Reconnecting in 5 seconds...")
                         await asyncio.sleep(5)
                 except ConnectionRefusedError as e:
-                    logger.error("Connection refused", url=self.ws_url, error=str(e))
-                    logger.info("Please check if the OneBot implementation is running and accessible")
+                    logger.error(f"Connection refused: {self.ws_url} - Please check if the OneBot implementation is running")
+                    if self._running:
+                        logger.info("Reconnecting in 5 seconds...")
+                        await asyncio.sleep(5)
+                except websockets.exceptions.InvalidMessage as e:
+                    error_msg = str(e)
+                    # Extract key information from error message
+                    if "did not receive a valid HTTP response" in error_msg:
+                        logger.error(f"WebSocket connection failed: Server did not respond correctly (URL: {self.ws_url})")
+                    elif "connection closed" in error_msg.lower():
+                        logger.error(f"WebSocket connection closed unexpectedly: {self.ws_url}")
+                    else:
+                        logger.error(f"WebSocket connection error: {error_msg}")
+                    # Cancel all pending API response futures on connection error
+                    self._cancel_all_pending_responses()
                     if self._running:
                         logger.info("Reconnecting in 5 seconds...")
                         await asyncio.sleep(5)
                 except Exception as e:
-                    logger.error("Forward WebSocket connection error", error=str(e), error_type=type(e).__name__, exc_info=True)
+                    error_type = type(e).__name__
+                    error_msg = str(e)
+                    # Provide friendly error message based on error type
+                    if "InvalidMessage" in error_type or "did not receive" in error_msg:
+                        logger.error(f"WebSocket connection failed: Invalid response from server ({self.ws_url})")
+                    elif "Connection" in error_type:
+                        logger.error(f"WebSocket connection error: {error_msg} (URL: {self.ws_url})")
+                    else:
+                        logger.error(f"WebSocket connection error: {error_msg}")
                     # Cancel all pending API response futures on connection error
                     self._cancel_all_pending_responses()
                     if self._running:
@@ -311,7 +332,8 @@ class OneBotAdapter(ProtocolAdapter):
                         await asyncio.sleep(5)
             except Exception as e:
                 # Catch any unexpected errors in the outer try block
-                logger.error("Unexpected error in WebSocket handler", error=str(e), exc_info=True)
+                error_msg = str(e)
+                logger.error(f"Unexpected WebSocket handler error: {error_msg}")
                 if self._running:
                     logger.info("Reconnecting in 5 seconds...")
                     await asyncio.sleep(5)
@@ -1145,6 +1167,13 @@ class OneBotAdapter(ProtocolAdapter):
                 expired = []
                 for echo, future in current_responses.items():
                     if future.done():
+                        # Check if future has exception set before accessing it
+                        try:
+                            if future.exception() is not None:
+                                logger.debug(f"Future has exception for echo: {echo}")
+                        except asyncio.InvalidStateError:
+                            # Future is done but no result or exception set yet
+                            pass
                         expired.append(echo)
                 
                 for echo in expired:

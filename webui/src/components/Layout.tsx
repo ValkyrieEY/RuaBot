@@ -84,7 +84,7 @@ export default function Layout({ children }: LayoutProps) {
             <div className="flex items-center gap-4">
               <button
                 onClick={() => setSidebarOpen(!sidebarOpen)}
-                className="lg:hidden p-2 rounded-lg hover:bg-gray-100"
+                className="md:hidden p-2 rounded-lg hover:bg-gray-100"
               >
                 {sidebarOpen ? <X className="w-5 h-5" /> : <Menu className="w-5 h-5" />}
               </button>
@@ -118,13 +118,11 @@ export default function Layout({ children }: LayoutProps) {
 
       <div className="flex relative pt-16">
         {/* Sidebar */}
-        <aside
-          className={cn(
-            'fixed lg:fixed inset-y-0 left-0 z-40 w-64 bg-white border-r border-gray-200 transition-transform duration-300 ease-in-out',
-            'top-16 lg:top-16 h-[calc(100vh-4rem)] lg:h-[calc(100vh-4rem)] overflow-y-auto',
-            sidebarOpen ? 'translate-x-0' : '-translate-x-full lg:translate-x-0'
-          )}
-        >
+        <aside className={`fixed inset-y-0 left-0 z-40 w-64 bg-white border-r border-gray-200 transition-transform duration-300 ease-in-out top-16 h-[calc(100vh-4rem)] overflow-y-auto ${
+          sidebarOpen 
+            ? 'translate-x-0' 
+            : 'md:translate-x-0 -translate-x-full'
+        }`}>
           <nav className="p-4 space-y-1">
             {navItems.map((item) => {
               const Icon = item.icon
@@ -170,14 +168,14 @@ export default function Layout({ children }: LayoutProps) {
         {/* Overlay for mobile */}
         {sidebarOpen && (
           <div
-            className="fixed inset-0 bg-black bg-opacity-50 z-30 lg:hidden"
+            className="fixed inset-0 bg-black bg-opacity-50 z-30 md:hidden"
             onClick={() => setSidebarOpen(false)}
             style={{ top: '4rem' }} // Start below the top navigation bar
           />
         )}
 
         {/* Main Content */}
-        <main className="flex-1 lg:ml-64 max-w-full w-full">
+        <main className="flex-1 md:ml-64 max-w-full w-full">
           {/* Check if this is ChatPage (full height, no padding) or regular page (with padding) */}
           {location.pathname === '/chat' ? (
             children

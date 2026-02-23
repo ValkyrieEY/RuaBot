@@ -1,0 +1,96 @@
+# Git
+.git
+.gitignore
+.gitattributes
+
+# Python
+__pycache__
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+dist/
+build/
+*.egg
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+.mypy_cache/
+.dmypy.json
+dmypy.json
+
+# Virtual environments
+venv/
+env/
+ENV/
+.venv
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Node.js (保留 package.json 和 package-lock.json，但忽略其他)
+webui/node_modules/
+webui/dist/
+webui/.next/
+webui/out/
+webui/build/
+webui/.turbo/
+webui/tsconfig.tsbuildinfo
+
+# WebUI 构建产物（会在 Docker 中重新构建）
+src/ui/static/
+
+# 数据文件（运行时数据，不应打包到镜像中）
+data/
+logs/
+*.db
+*.db-journal
+*.log
+*.log.*
+
+# 文档（可选，如果想减小镜像大小）
+docs/
+*.md
+!README.md
+!docker/README.md
+!docker/DEPLOYMENT_GUIDE.md
+
+# 测试文件
+tests/
+pytest.ini
+.pytest_cache/
+
+# Docker 相关（避免嵌套）
+Dockerfile*
+docker-compose*.yml
+.dockerignore
+
+# CI/CD
+.github/
+.gitlab-ci.yml
+.travis.yml
+
+# 临时文件
+*.tmp
+*.temp
+*.bak
+*.swp
+temp/
+tmp/
+
+# OS
+Thumbs.db
+.DS_Store
+
+# 其他
+*.zip
+*.tar.gz
+*.rar
+

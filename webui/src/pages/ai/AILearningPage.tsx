@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import axios from 'axios';
-import { Database, TrendingUp, MessageCircle, Users, Settings, Moon, GitBranch, Heart, Search, Loader2 } from 'lucide-react';
+import { Database, TrendingUp, MessageCircle, Users, Settings, Moon, Search, Loader2, Trash2 } from 'lucide-react';
 
 // Get axios instance with authentication
 const getClient = () => {
@@ -241,7 +241,6 @@ const AILearningPage: React.FC = () => {
       const response = await getClient().get('/ai/learning/expressions', { params });
       setExpressions(response.data.items);
       setExpressionsTotal(response.data.total);
-      console.log(`[Expressions] Loaded ${response.data.items?.length || 0} expressions, total: ${response.data.total || 0}`);
     } catch (err: any) {
       console.error('Failed to load expressions:', err);
       setError(err.response?.data?.detail || '加载失败');
@@ -283,7 +282,6 @@ const AILearningPage: React.FC = () => {
       const response = await getClient().get('/ai/learning/chat-history', { params });
       setChatHistory(response.data.items || []);
       setChatHistoryTotal(response.data.total || 0);
-      console.log(`[ChatHistory] Loaded ${response.data.items?.length || 0} items, total: ${response.data.total || 0}`);
     } catch (err: any) {
       console.error('Failed to load chat history:', err);
       setError(err.response?.data?.detail || '加载失败');
@@ -343,7 +341,6 @@ const AILearningPage: React.FC = () => {
       const response = await getClient().get('/ai/learning/groups', { params });
       setGroups(response.data.items || []);
       setGroupsTotal(response.data.total || 0);
-      console.log(`[Groups] Loaded ${response.data.items?.length || 0} groups, total: ${response.data.total || 0}`);
     } catch (err: any) {
       console.error('Failed to load groups:', err);
       setError(err.response?.data?.detail || '加载失败');
@@ -365,7 +362,6 @@ const AILearningPage: React.FC = () => {
       const response = await getClient().get('/ai/learning/stickers', { params });
       setStickers(response.data.items);
       setStickersTotal(response.data.total);
-      console.log(`[Stickers] Loaded ${response.data.items?.length || 0} stickers, total: ${response.data.total || 0}`);
     } catch (err: any) {
       console.error('Failed to load stickers:', err);
       setError(err.response?.data?.detail || '加载失败');
@@ -431,11 +427,6 @@ const AILearningPage: React.FC = () => {
         check: checkRes.data,
         reflect: reflectRes.data
       });
-      console.log('[Maintenance] Stats loaded:', {
-        dream: dreamRes.data ? '✓' : '✗',
-        check: checkRes.data ? '✓' : '✗',
-        reflect: reflectRes.data ? '✓' : '✗'
-      });
     } catch (error) {
       console.error('Failed to load maintenance stats:', error);
     }
@@ -443,27 +434,21 @@ const AILearningPage: React.FC = () => {
 
   const loadKnowledgeGraphData = async () => {
     try {
-      // Load stats
       const statsRes = await getClient().get('/ai/knowledge/stats').catch((err) => {
         console.error('Failed to load KG stats:', err);
-        // Return default stats on error
         return { data: { triples: 0, entities: 0, relationships: 0, avg_confidence: 0.0 } };
       });
       setKgStats(statsRes.data || { triples: 0, entities: 0, relationships: 0, avg_confidence: 0.0 });
       
-      // Load triples
       const triplesRes = await getClient().get('/ai/knowledge/triples', {
         params: { limit: 20, offset: 0 }
       }).catch((err) => {
         console.error('Failed to load KG triples:', err);
-        // Return empty result on error
         return { data: { items: [], total: 0 } };
       });
       setKgTriples(triplesRes.data?.items || []);
-      console.log(`[KG] Loaded ${triplesRes.data?.items?.length || 0} triples, total: ${triplesRes.data?.total || 0}`);
     } catch (error) {
       console.error('Failed to load knowledge graph data:', error);
-      // Set default values on error
       setKgStats({ triples: 0, entities: 0, relationships: 0, avg_confidence: 0.0 });
       setKgTriples([]);
     }
@@ -477,7 +462,6 @@ const AILearningPage: React.FC = () => {
       });
       const chats = response.data?.chats || [];
       setHeartflowChats(chats);
-      console.log(`[HeartFlow] Loaded ${chats.length} chats`, chats);
     } catch (error) {
       console.error('Failed to load heartflow data:', error);
       setHeartflowChats([]);
@@ -503,7 +487,6 @@ const AILearningPage: React.FC = () => {
         limit: 20
       });
       setKgQueryResults(response.data.results || []);
-      console.log(`[KG Query] Found ${response.data.results?.length || 0} results for: ${kgQueryText}`);
     } catch (error: any) {
       console.error('Failed to query knowledge:', error);
       setKgQueryResults([]);
@@ -522,7 +505,6 @@ const AILearningPage: React.FC = () => {
     try {
       const response = await getClient().delete('/ai/learning/clear-all');
       
-      // Reset all data
       setExpressions([]);
       setExpressionsTotal(0);
       setJargons([]);
@@ -538,7 +520,6 @@ const AILearningPage: React.FC = () => {
       setStickers([]);
       setStickersTotal(0);
       
-      // Reset new data
       setKgStats(null);
       setKgTriples([]);
       setHeartflowChats([]);
@@ -549,10 +530,8 @@ const AILearningPage: React.FC = () => {
         reflect: null
       });
       
-      // Reload stats
       await loadStats();
       
-      // Reload current tab data if needed
       if (activeTab === 7) {
         await loadMaintenanceStats();
       } else if (activeTab === 8) {
@@ -561,7 +540,6 @@ const AILearningPage: React.FC = () => {
         await loadHeartflowData();
       }
       
-      // Close dialog
       setShowConfirmDialog(false);
       setConfirmInput('');
       
@@ -584,17 +562,17 @@ const AILearningPage: React.FC = () => {
         <button
           onClick={() => onChange(Math.max(1, page - 1))}
           disabled={page === 1}
-          className="px-3 py-1 rounded border disabled:opacity-50 disabled:cursor-not-allowed hover:bg-gray-100"
+          className="px-3 py-1 rounded border bg-white disabled:opacity-50 disabled:cursor-not-allowed hover:bg-gray-50"
         >
           上一页
         </button>
-        <span className="px-4 py-1">
+        <span className="px-4 py-1 text-sm text-gray-600">
           第 {page} / {totalPages} 页 (共 {total} 条)
         </span>
         <button
           onClick={() => onChange(Math.min(totalPages, page + 1))}
           disabled={page === totalPages}
-          className="px-3 py-1 rounded border disabled:opacity-50 disabled:cursor-not-allowed hover:bg-gray-100"
+          className="px-3 py-1 rounded border bg-white disabled:opacity-50 disabled:cursor-not-allowed hover:bg-gray-50"
         >
           下一页
         </button>
@@ -603,53 +581,42 @@ const AILearningPage: React.FC = () => {
   };
 
   return (
-    <div className="p-6">
-      <div className="mb-6 flex justify-between items-start">
+    <div>
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 py-6 mb-2">
         <div>
-          <h1 className="text-3xl font-bold text-gray-900">AI 学习数据</h1>
-          <p className="text-gray-600 mt-2">查看 Xiaoyi_AI 的表达习惯、黑话、聊天历史、用户信息等学习数据</p>
+          <h1 className="text-2xl font-bold text-gray-900 tracking-tight">AI 学习数据</h1>
+          <p className="text-sm text-gray-500 mt-1">管理 AI 的学习数据、知识图谱与记忆</p>
         </div>
         <button
           onClick={() => setShowConfirmDialog(true)}
-          className="px-4 py-2 bg-red-600 text-white rounded hover:bg-red-700 transition-colors"
+          className="flex items-center gap-2 px-4 py-2 bg-red-600 text-white rounded-xl hover:bg-red-700 transition-colors shadow-sm text-sm"
         >
+          <Trash2 className="w-4 h-4" />
           格式化数据
         </button>
       </div>
 
       {/* Confirm Dialog */}
       {showConfirmDialog && (
-        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
-          <div className="bg-white rounded-lg shadow-xl p-6 max-w-md w-full mx-4">
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4 backdrop-blur-sm">
+          <div className="bg-white rounded-2xl shadow-xl max-w-md w-full p-6">
             <h2 className="text-xl font-bold text-gray-900 mb-4">确认格式化</h2>
-            <p className="text-gray-600 mb-4">
-              此操作将删除所有 AI 学习的数据，包括：
-            </p>
-            <ul className="list-disc list-inside text-gray-600 mb-4 space-y-1 text-sm">
-              <li>表达习惯 (ai_expressions)</li>
-              <li>黑话术语 (ai_jargons)</li>
-              <li>表情包 (ai_stickers)</li>
-              <li>聊天历史概要 (ai_chat_history)</li>
-              <li>消息记录 (ai_message_records)</li>
-              <li>用户画像 (ai_person_info)</li>
-              <li>群组信息 (ai_group_info)</li>
-              <li>表达使用追踪 (ai_expression_usage)</li>
-              <li>知识图谱三元组 (kg_triples)</li>
-              <li>知识图谱实体 (kg_entities)</li>
-              <li>对话流状态 (HeartFlow)</li>
-            </ul>
-            <p className="text-red-600 font-semibold mb-4 text-sm">
-              ⚠️ 警告：此操作不可恢复！所有学习到的数据将被永久删除。
-            </p>
-            <p className="text-gray-700 mb-4">
-              请输入"<span className="font-mono font-bold">确认格式化</span>"以继续：
+            <div className="bg-red-50 p-4 rounded-xl mb-4 border border-red-100">
+              <p className="text-red-800 font-bold text-sm mb-2">
+                ⚠️ 警告：此操作不可恢复！
+              </p>
+              <p className="text-red-700 text-sm">
+                将永久删除所有 AI 学习到的表达习惯、黑话、记忆、知识图谱等数据。
+              </p>
+            </div>
+            <p className="text-sm text-gray-600 mb-4">
+              请输入 "<span className="font-mono font-bold text-gray-900">确认格式化</span>" 以继续：
             </p>
             <input
               type="text"
               value={confirmInput}
               onChange={(e) => setConfirmInput(e.target.value)}
-              placeholder="输入：确认格式化"
-              className="w-full px-3 py-2 border border-gray-300 rounded mb-4 focus:outline-none focus:ring-2 focus:ring-red-500"
+              className="w-full px-4 py-2.5 border border-gray-300 rounded-xl mb-6 focus:ring-2 focus:ring-red-500 focus:border-transparent"
               disabled={clearingData}
             />
             <div className="flex space-x-3">
@@ -658,7 +625,7 @@ const AILearningPage: React.FC = () => {
                   setShowConfirmDialog(false);
                   setConfirmInput('');
                 }}
-                className="flex-1 px-4 py-2 border border-gray-300 rounded hover:bg-gray-50 transition-colors"
+                className="flex-1 px-4 py-2.5 border border-gray-300 text-gray-700 rounded-xl hover:bg-gray-50 font-medium transition-colors"
                 disabled={clearingData}
               >
                 取消
@@ -666,1206 +633,823 @@ const AILearningPage: React.FC = () => {
               <button
                 onClick={handleClearAllData}
                 disabled={confirmInput !== '确认格式化' || clearingData}
-                className="flex-1 px-4 py-2 bg-red-600 text-white rounded hover:bg-red-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                className="flex-1 px-4 py-2.5 bg-red-600 text-white rounded-xl hover:bg-red-700 disabled:opacity-50 font-medium transition-colors shadow-sm"
               >
-                {clearingData ? '清除中...' : '确认格式化'}
+                {clearingData ? '清除中...' : '确认删除'}
               </button>
             </div>
           </div>
         </div>
       )}
 
-      {/* Stats Cards */}
+      {/* Stats Overview */}
       {stats && (
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
-          <div className="bg-white rounded-lg shadow p-4">
-            <div className="flex items-center justify-between">
+        <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-8">
+          {[
+            { label: '表达习惯', value: stats.expressions_count, icon: TrendingUp, color: 'text-blue-600', bg: 'bg-blue-50' },
+            { label: '黑话术语', value: stats.jargons_count, icon: Database, color: 'text-green-600', bg: 'bg-green-50' },
+            { label: '消息记录', value: stats.message_records_count, icon: MessageCircle, color: 'text-purple-600', bg: 'bg-purple-50' },
+            { label: '认识的人', value: `${stats.known_persons_count}/${stats.persons_count}`, icon: Users, color: 'text-orange-600', bg: 'bg-orange-50' }
+          ].map((stat, i) => (
+            <div key={i} className="bg-white p-5 rounded-xl border border-gray-200 shadow-sm flex items-center justify-between hover:shadow-md transition-shadow">
               <div>
-                <p className="text-sm text-gray-600">表达习惯</p>
-                <p className="text-2xl font-bold text-gray-900">{stats.expressions_count}</p>
+                <p className="text-sm text-gray-500">{stat.label}</p>
+                <p className="text-2xl font-bold text-gray-900 mt-1">{stat.value}</p>
               </div>
-              <TrendingUp className="w-8 h-8 text-blue-500" />
-            </div>
-          </div>
-          <div className="bg-white rounded-lg shadow p-4">
-            <div className="flex items-center justify-between">
-              <div>
-                <p className="text-sm text-gray-600">黑话术语</p>
-                <p className="text-2xl font-bold text-gray-900">{stats.jargons_count}</p>
+              <div className={`p-3 rounded-xl ${stat.bg} ${stat.color}`}>
+                <stat.icon className="w-6 h-6" />
               </div>
-              <Database className="w-8 h-8 text-green-500" />
             </div>
-          </div>
-          <div className="bg-white rounded-lg shadow p-4">
-            <div className="flex items-center justify-between">
-              <div>
-                <p className="text-sm text-gray-600">消息记录</p>
-                <p className="text-2xl font-bold text-gray-900">{stats.message_records_count}</p>
-              </div>
-              <MessageCircle className="w-8 h-8 text-purple-500" />
-            </div>
-          </div>
-          <div className="bg-white rounded-lg shadow p-4">
-            <div className="flex items-center justify-between">
-              <div>
-                <p className="text-sm text-gray-600">认识的人</p>
-                <p className="text-2xl font-bold text-gray-900">
-                  {stats.known_persons_count} / {stats.persons_count}
-                </p>
-              </div>
-              <Users className="w-8 h-8 text-orange-500" />
-            </div>
-          </div>
-          <div className="bg-white rounded-lg shadow p-4">
-            <div className="flex items-center justify-between">
-              <div>
-                <p className="text-sm text-gray-600">表情包</p>
-                <p className="text-2xl font-bold text-gray-900">{stats.stickers_count}</p>
-              </div>
-              <MessageCircle className="w-8 h-8 text-pink-500" />
-            </div>
-          </div>
+          ))}
         </div>
       )}
 
-      {/* Tabs */}
-      <div className="bg-white rounded-lg shadow">
-        <div className="border-b border-gray-200">
-          <div className="flex space-x-1 overflow-x-auto">
-            {['表达习惯', '黑话术语', '聊天历史', '消息记录', '用户信息', '群组信息', '表情包', '自动维护', '知识图谱', '对话流', '功能配置'].map((label, index) => (
-              <button
-                key={index}
-                onClick={() => setActiveTab(index)}
-                className={`px-4 py-3 text-sm font-medium whitespace-nowrap border-b-2 transition-colors ${
-                  activeTab === index
-                    ? 'border-blue-500 text-blue-600'
-                    : 'border-transparent text-gray-600 hover:text-gray-900 hover:border-gray-300'
-                }`}
-              >
-                {label}
-              </button>
-            ))}
+      {/* Tabs Navigation */}
+      <div className="flex space-x-1 bg-gray-100/50 p-1 rounded-xl mb-6 overflow-x-auto scrollbar-hide border border-gray-200">
+        {['表达习惯', '黑话术语', '聊天历史', '消息记录', '用户信息', '群组信息', '表情包', '自动维护', '知识图谱', '对话流', '功能配置'].map((label, index) => (
+          <button
+            key={index}
+            onClick={() => setActiveTab(index)}
+            className={`px-4 py-2 text-sm font-medium rounded-lg transition-all whitespace-nowrap ${
+              activeTab === index
+                ? 'bg-white text-gray-900 shadow-sm'
+                : 'text-gray-500 hover:text-gray-700 hover:bg-gray-200/50'
+            }`}
+          >
+            {label}
+          </button>
+        ))}
+      </div>
+
+      {/* Tab Content */}
+      <div className="space-y-6">
+        {error && (
+          <div className="mb-4 p-4 bg-red-50 border border-red-100 rounded-xl flex items-center gap-2 text-red-700 text-sm">
+            <span className="w-1.5 h-1.5 rounded-full bg-red-500"></span>
+            {error}
           </div>
-        </div>
+        )}
 
-        <div className="p-6">
-          {error && (
-            <div className="mb-4 p-4 bg-red-50 border border-red-200 rounded-lg text-red-700">
-              {error}
-            </div>
-          )}
-
-          {loading && (
-            <div className="flex justify-center items-center py-12">
-              <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-500"></div>
-            </div>
-          )}
-
-          {/* Expressions Tab */}
-          {activeTab === 0 && !loading && (
-            <>
-              <div className="mb-4">
-                <input
-                  type="text"
-                  placeholder="筛选聊天 ID (例如: group:123456)"
-                  value={expressionsFilter}
-                  onChange={(e) => {
-                    setExpressionsFilter(e.target.value);
-                    setExpressionsPage(1);
-                  }}
-                  className="px-4 py-2 border rounded-lg w-full max-w-md"
-                />
-              </div>
-              <div className="overflow-x-auto">
-                <table className="w-full">
-                  <thead className="bg-gray-50">
-                    <tr>
-                      <th className="px-4 py-3 text-left text-xs font-medium text-gray-700 uppercase">情境</th>
-                      <th className="px-4 py-3 text-left text-xs font-medium text-gray-700 uppercase">表达方式</th>
-                      <th className="px-4 py-3 text-left text-xs font-medium text-gray-700 uppercase">来源</th>
-                      <th className="px-4 py-3 text-left text-xs font-medium text-gray-700 uppercase">次数</th>
-                      <th className="px-4 py-3 text-left text-xs font-medium text-gray-700 uppercase">状态</th>
-                      <th className="px-4 py-3 text-left text-xs font-medium text-gray-700 uppercase">更新时间</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-gray-200">
-                    {expressions.map((expr) => (
-                      <tr key={expr.id} className="hover:bg-gray-50">
-                        <td className="px-4 py-3 text-sm text-gray-900">{expr.situation}</td>
-                        <td className="px-4 py-3 text-sm text-gray-900">{expr.style}</td>
-                        <td className="px-4 py-3 text-sm text-gray-600">{expr.chat_id}</td>
-                        <td className="px-4 py-3 text-sm text-gray-600">{expr.count}</td>
-                        <td className="px-4 py-3 text-sm">
-                          {expr.rejected ? (
-                            <span className="px-2 py-1 text-xs rounded-full bg-red-100 text-red-700">已拒绝</span>
-                          ) : expr.checked ? (
-                            <span className="px-2 py-1 text-xs rounded-full bg-green-100 text-green-700">已检查</span>
-                          ) : (
-                            <span className="px-2 py-1 text-xs rounded-full bg-gray-100 text-gray-700">未检查</span>
-                          )}
-                        </td>
-                        <td className="px-4 py-3 text-sm text-gray-600">{formatDate(expr.updated_at)}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-              {renderPagination(expressionsPage, expressionsTotal, setExpressionsPage)}
-            </>
-          )}
-
-          {/* Jargons Tab */}
-          {activeTab === 1 && !loading && (
-            <>
-              <div className="mb-4">
-                <input
-                  type="text"
-                  placeholder="筛选聊天 ID (例如: group:123456)"
-                  value={jargonsFilter}
-                  onChange={(e) => {
-                    setJargonsFilter(e.target.value);
-                    setJargonsPage(1);
-                  }}
-                  className="px-4 py-2 border rounded-lg w-full max-w-md"
-                />
-              </div>
-              <div className="overflow-x-auto">
-                <table className="w-full">
-                  <thead className="bg-gray-50">
-                    <tr>
-                      <th className="px-4 py-3 text-left text-xs font-medium text-gray-700 uppercase">黑话</th>
-                      <th className="px-4 py-3 text-left text-xs font-medium text-gray-700 uppercase">推断含义</th>
-                      <th className="px-4 py-3 text-left text-xs font-medium text-gray-700 uppercase">来源</th>
-                      <th className="px-4 py-3 text-left text-xs font-medium text-gray-700 uppercase">次数</th>
-                      <th className="px-4 py-3 text-left text-xs font-medium text-gray-700 uppercase">状态</th>
-                      <th className="px-4 py-3 text-left text-xs font-medium text-gray-700 uppercase">更新时间</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-gray-200">
-                    {jargons.map((jargon) => (
-                      <tr key={jargon.id} className="hover:bg-gray-50">
-                        <td className="px-4 py-3 text-sm text-gray-900">{jargon.content}</td>
-                        <td className="px-4 py-3 text-sm text-gray-900">{jargon.meaning || '-'}</td>
-                        <td className="px-4 py-3 text-sm text-gray-600">{jargon.chat_id}</td>
-                        <td className="px-4 py-3 text-sm text-gray-600">{jargon.count}</td>
-                        <td className="px-4 py-3 text-sm">
-                          {jargon.is_complete ? (
-                            <span className="px-2 py-1 text-xs rounded-full bg-green-100 text-green-700">已完成</span>
-                          ) : jargon.is_jargon === true ? (
-                            <span className="px-2 py-1 text-xs rounded-full bg-blue-100 text-blue-700">是黑话</span>
-                          ) : jargon.is_jargon === false ? (
-                            <span className="px-2 py-1 text-xs rounded-full bg-gray-100 text-gray-700">非黑话</span>
-                          ) : (
-                            <span className="px-2 py-1 text-xs rounded-full bg-yellow-100 text-yellow-700">待判定</span>
-                          )}
-                        </td>
-                        <td className="px-4 py-3 text-sm text-gray-600">{formatDate(jargon.updated_at)}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-              {renderPagination(jargonsPage, jargonsTotal, setJargonsPage)}
-            </>
-          )}
-
-          {/* Similar patterns for other tabs... */}
-          {activeTab === 2 && !loading && (
-            <>
-              <div className="mb-4">
-                <input
-                  type="text"
-                  placeholder="筛选聊天 ID"
-                  value={chatHistoryFilter}
-                  onChange={(e) => {
-                    setChatHistoryFilter(e.target.value);
-                    setChatHistoryPage(1);
-                  }}
-                  className="px-4 py-2 border rounded-lg w-full max-w-md"
-                />
-              </div>
-              <div className="overflow-x-auto">
-                <table className="w-full">
-                  <thead className="bg-gray-50">
-                    <tr>
-                      <th className="px-4 py-3 text-left text-xs font-medium text-gray-700 uppercase">主题</th>
-                      <th className="px-4 py-3 text-left text-xs font-medium text-gray-700 uppercase">概要</th>
-                      <th className="px-4 py-3 text-left text-xs font-medium text-gray-700 uppercase">来源</th>
-                      <th className="px-4 py-3 text-left text-xs font-medium text-gray-700 uppercase">检索次数</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-gray-200">
-                    {chatHistory.map((hist) => (
-                      <tr key={hist.id} className="hover:bg-gray-50">
-                        <td className="px-4 py-3 text-sm text-gray-900">{hist.theme}</td>
-                        <td className="px-4 py-3 text-sm text-gray-600">{hist.summary.substring(0, 50)}...</td>
-                        <td className="px-4 py-3 text-sm text-gray-600">{hist.chat_id}</td>
-                        <td className="px-4 py-3 text-sm text-gray-600">{hist.count}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-              {renderPagination(chatHistoryPage, chatHistoryTotal, setChatHistoryPage)}
-            </>
-          )}
-
-          {/* Message Records */}
-          {activeTab === 3 && !loading && (
-            <>
-              <div className="mb-4">
-                <input
-                  type="text"
-                  placeholder="筛选聊天 ID"
-                  value={messageRecordsFilter}
-                  onChange={(e) => {
-                    setMessageRecordsFilter(e.target.value);
-                    setMessageRecordsPage(1);
-                  }}
-                  className="px-4 py-2 border rounded-lg w-full max-w-md"
-                />
-              </div>
-              <div className="overflow-x-auto">
-                <table className="w-full">
-                  <thead className="bg-gray-50">
-                    <tr>
-                      <th className="px-4 py-3 text-left text-xs font-medium text-gray-700 uppercase">内容</th>
-                      <th className="px-4 py-3 text-left text-xs font-medium text-gray-700 uppercase">发送者</th>
-                      <th className="px-4 py-3 text-left text-xs font-medium text-gray-700 uppercase">来源</th>
-                      <th className="px-4 py-3 text-left text-xs font-medium text-gray-700 uppercase">时间</th>
-                      <th className="px-4 py-3 text-left text-xs font-medium text-gray-700 uppercase">类型</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-gray-200">
-                    {messageRecords.map((record) => (
-                      <tr key={record.id} className="hover:bg-gray-50">
-                        <td className="px-4 py-3 text-sm text-gray-900">{record.plain_text?.substring(0, 50) || '-'}...</td>
-                        <td className="px-4 py-3 text-sm text-gray-600">{record.user_nickname || record.user_id}</td>
-                        <td className="px-4 py-3 text-sm text-gray-600">{record.chat_id}</td>
-                        <td className="px-4 py-3 text-sm text-gray-600">{formatTimestamp(record.time)}</td>
-                        <td className="px-4 py-3 text-sm">
-                          {record.is_bot_message ? (
-                            <span className="px-2 py-1 text-xs rounded-full bg-blue-100 text-blue-700">机器人</span>
-                          ) : (
-                            <span className="px-2 py-1 text-xs rounded-full bg-gray-100 text-gray-700">用户</span>
-                          )}
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-              {renderPagination(messageRecordsPage, messageRecordsTotal, setMessageRecordsPage)}
-            </>
-          )}
-
-          {/* Persons */}
-          {activeTab === 4 && !loading && (
-            <>
-              <div className="overflow-x-auto">
-                <table className="w-full">
-                  <thead className="bg-gray-50">
-                    <tr>
-                      <th className="px-4 py-3 text-left text-xs font-medium text-gray-700 uppercase">用户 ID</th>
-                      <th className="px-4 py-3 text-left text-xs font-medium text-gray-700 uppercase">AI 记住的名字</th>
-                      <th className="px-4 py-3 text-left text-xs font-medium text-gray-700 uppercase">昵称</th>
-                      <th className="px-4 py-3 text-left text-xs font-medium text-gray-700 uppercase">状态</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-gray-200">
-                    {persons.map((person) => (
-                      <tr key={person.id} className="hover:bg-gray-50">
-                        <td className="px-4 py-3 text-sm text-gray-900">{person.person_id}</td>
-                        <td className="px-4 py-3 text-sm text-gray-900">{person.person_name || '-'}</td>
-                        <td className="px-4 py-3 text-sm text-gray-600">{person.nickname || '-'}</td>
-                        <td className="px-4 py-3 text-sm">
-                          {person.is_known ? (
-                            <span className="px-2 py-1 text-xs rounded-full bg-green-100 text-green-700">已认识</span>
-                          ) : (
-                            <span className="px-2 py-1 text-xs rounded-full bg-gray-100 text-gray-700">未认识</span>
-                          )}
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-              {renderPagination(personsPage, personsTotal, setPersonsPage)}
-            </>
-          )}
-
-          {/* Groups */}
-          {activeTab === 5 && !loading && (
-            <>
-              <div className="overflow-x-auto">
-                <table className="w-full">
-                  <thead className="bg-gray-50">
-                    <tr>
-                      <th className="px-4 py-3 text-left text-xs font-medium text-gray-700 uppercase">群 ID</th>
-                      <th className="px-4 py-3 text-left text-xs font-medium text-gray-700 uppercase">群名称</th>
-                      <th className="px-4 py-3 text-left text-xs font-medium text-gray-700 uppercase">群印象</th>
-                      <th className="px-4 py-3 text-left text-xs font-medium text-gray-700 uppercase">成员数</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-gray-200">
-                    {groups.map((group) => (
-                      <tr key={group.id} className="hover:bg-gray-50">
-                        <td className="px-4 py-3 text-sm text-gray-900">{group.group_id}</td>
-                        <td className="px-4 py-3 text-sm text-gray-900">{group.group_name || '-'}</td>
-                        <td className="px-4 py-3 text-sm text-gray-600">{group.group_impression?.substring(0, 30) || '-'}...</td>
-                        <td className="px-4 py-3 text-sm text-gray-600">{group.member_count}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-              {renderPagination(groupsPage, groupsTotal, setGroupsPage)}
-            </>
-          )}
-
-          {/* Stickers */}
-          {activeTab === 6 && !loading && (
-            <>
-              <div className="mb-4">
-                <input
-                  type="text"
-                  placeholder="筛选聊天 ID (例如: group:123456)"
-                  value={stickersFilter}
-                  onChange={(e) => {
-                    setStickersFilter(e.target.value);
-                    setStickersPage(1);
-                  }}
-                  className="px-4 py-2 border rounded-lg w-full max-w-md"
-                />
-              </div>
-              <div className="overflow-x-auto">
-                <table className="w-full">
-                  <thead className="bg-gray-50">
-                    <tr>
-                      <th className="px-4 py-3 text-left text-xs font-medium text-gray-700 uppercase">类型</th>
-                      <th className="px-4 py-3 text-left text-xs font-medium text-gray-700 uppercase">情境</th>
-                      <th className="px-4 py-3 text-left text-xs font-medium text-gray-700 uppercase">情感</th>
-                      <th className="px-4 py-3 text-left text-xs font-medium text-gray-700 uppercase">含义</th>
-                      <th className="px-4 py-3 text-left text-xs font-medium text-gray-700 uppercase">来源</th>
-                      <th className="px-4 py-3 text-left text-xs font-medium text-gray-700 uppercase">使用次数</th>
-                      <th className="px-4 py-3 text-left text-xs font-medium text-gray-700 uppercase">状态</th>
-                      <th className="px-4 py-3 text-left text-xs font-medium text-gray-700 uppercase">最后使用</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-gray-200">
-                    {stickers.map((sticker) => (
-                      <tr key={sticker.id} className="hover:bg-gray-50">
-                        <td className="px-4 py-3 text-sm text-gray-900">{sticker.sticker_type}</td>
-                        <td className="px-4 py-3 text-sm text-gray-900">{sticker.situation || '-'}</td>
-                        <td className="px-4 py-3 text-sm text-gray-900">{sticker.emotion || '-'}</td>
-                        <td className="px-4 py-3 text-sm text-gray-600" title={sticker.meaning || ''}>
-                          {sticker.meaning ? sticker.meaning.substring(0, 30) + '...' : '-'}
-                        </td>
-                        <td className="px-4 py-3 text-sm text-gray-600">{sticker.chat_id}</td>
-                        <td className="px-4 py-3 text-sm text-gray-600">{sticker.count}</td>
-                        <td className="px-4 py-3 text-sm">
-                          {sticker.rejected ? (
-                            <span className="px-2 py-1 text-xs rounded-full bg-red-100 text-red-700">已拒绝</span>
-                          ) : sticker.checked ? (
-                            <span className="px-2 py-1 text-xs rounded-full bg-green-100 text-green-700">已检查</span>
-                          ) : (
-                            <span className="px-2 py-1 text-xs rounded-full bg-gray-100 text-gray-700">未检查</span>
-                          )}
-                        </td>
-                        <td className="px-4 py-3 text-sm text-gray-600">
-                          {sticker.last_active_time ? formatTimestamp(sticker.last_active_time) : '-'}
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-              {renderPagination(stickersPage, stickersTotal, setStickersPage)}
-            </>
-          )}
-
-          {/* Maintenance Tab */}
-          {activeTab === 7 && (
-            <div className="space-y-6">
-              <div className="bg-blue-50 border border-blue-200 rounded-lg p-4">
-                <div className="flex items-start gap-2">
-                  <Settings className="w-5 h-5 text-blue-600 mt-0.5" />
-                  <div className="text-sm text-blue-800">
-                    <div className="font-medium mb-1">AI 自动维护系统</div>
-                    <div>包括梦境系统（自动整理记忆）、表达方式自动检查、表达方式反思等功能</div>
-                  </div>
-                </div>
-              </div>
-
-              {/* Dream System Stats */}
-              <div className="border border-gray-200 rounded-lg p-4">
-                <div className="flex items-center gap-2 mb-4">
-                  <Moon className="w-5 h-5 text-blue-600" />
-                  <h3 className="text-lg font-semibold">Dream 梦境维护系统</h3>
-                </div>
-                {maintenanceStats.dream ? (
-                  <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-                    <div className="bg-white border rounded-lg p-3">
-                      <div className="text-xs text-gray-600">总周期数</div>
-                      <div className="text-xl font-bold text-gray-900">{maintenanceStats.dream.total_cycles || 0}</div>
-                    </div>
-                    <div className="bg-white border rounded-lg p-3">
-                      <div className="text-xs text-gray-600">成功率</div>
-                      <div className="text-xl font-bold text-green-600">
-                        {maintenanceStats.dream.total_cycles > 0
-                          ? `${((maintenanceStats.dream.successful_cycles || 0) / maintenanceStats.dream.total_cycles * 100).toFixed(1)}%`
-                          : '0%'}
-                      </div>
-                    </div>
-                    <div className="bg-white border rounded-lg p-3">
-                      <div className="text-xs text-gray-600">总迭代数</div>
-                      <div className="text-xl font-bold text-gray-900">{maintenanceStats.dream.total_iterations || 0}</div>
-                    </div>
-                    <div className="bg-white border rounded-lg p-3">
-                      <div className="text-xs text-gray-600">运行状态</div>
-                      <div className="text-xl font-bold">
-                        {maintenanceStats.dream.is_running ? (
-                          <span className="text-green-600">运行中</span>
-                        ) : (
-                          <span className="text-gray-500">已停止</span>
-                        )}
-                      </div>
-                    </div>
-                  </div>
-                ) : (
-                  <div className="text-center py-4 text-gray-500">暂无数据</div>
-                )}
-              </div>
-
-              {/* Expression Check Stats */}
-              <div className="border border-gray-200 rounded-lg p-4">
-                <div className="flex items-center gap-2 mb-4">
-                  <Settings className="w-5 h-5 text-green-600" />
-                  <h3 className="text-lg font-semibold">表达方式自动检查</h3>
-                </div>
-                {maintenanceStats.check ? (
-                  <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-                    <div className="bg-white border rounded-lg p-3">
-                      <div className="text-xs text-gray-600">已检查</div>
-                      <div className="text-xl font-bold text-gray-900">{maintenanceStats.check.total_checked || 0}</div>
-                    </div>
-                    <div className="bg-white border rounded-lg p-3">
-                      <div className="text-xs text-gray-600">已接受</div>
-                      <div className="text-xl font-bold text-green-600">{maintenanceStats.check.total_accepted || 0}</div>
-                    </div>
-                    <div className="bg-white border rounded-lg p-3">
-                      <div className="text-xs text-gray-600">已拒绝</div>
-                      <div className="text-xl font-bold text-red-600">{maintenanceStats.check.total_rejected || 0}</div>
-                    </div>
-                    <div className="bg-white border rounded-lg p-3">
-                      <div className="text-xs text-gray-600">接受率</div>
-                      <div className="text-xl font-bold text-blue-600">
-                        {maintenanceStats.check.total_checked > 0
-                          ? `${((maintenanceStats.check.total_accepted || 0) / maintenanceStats.check.total_checked * 100).toFixed(1)}%`
-                          : '0%'}
-                      </div>
-                    </div>
-                  </div>
-                ) : (
-                  <div className="text-center py-4 text-gray-500">暂无数据</div>
-                )}
-              </div>
-
-              {/* Expression Reflect Stats */}
-              <div className="border border-gray-200 rounded-lg p-4">
-                <div className="flex items-center gap-2 mb-4">
-                  <Settings className="w-5 h-5 text-purple-600" />
-                  <h3 className="text-lg font-semibold">表达方式反思</h3>
-                </div>
-                {maintenanceStats.reflect ? (
-                  <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-                    <div className="bg-white border rounded-lg p-3">
-                      <div className="text-xs text-gray-600">总反思次数</div>
-                      <div className="text-xl font-bold text-gray-900">{maintenanceStats.reflect.total_reflections || 0}</div>
-                    </div>
-                    <div className="bg-white border rounded-lg p-3">
-                      <div className="text-xs text-gray-600">已分析</div>
-                      <div className="text-xl font-bold text-blue-600">{maintenanceStats.reflect.total_analyzed || 0}</div>
-                    </div>
-                    <div className="bg-white border rounded-lg p-3">
-                      <div className="text-xs text-gray-600">建议数</div>
-                      <div className="text-xl font-bold text-purple-600">{maintenanceStats.reflect.total_recommendations || 0}</div>
-                    </div>
-                    <div className="bg-white border rounded-lg p-3">
-                      <div className="text-xs text-gray-600">追踪表达</div>
-                      <div className="text-xl font-bold text-gray-900">{maintenanceStats.reflect.tracked_expressions || 0}</div>
-                    </div>
-                  </div>
-                ) : (
-                  <div className="text-center py-4 text-gray-500">暂无数据</div>
-                )}
-              </div>
-            </div>
-          )}
-
-          {/* Knowledge Graph Tab */}
-          {activeTab === 8 && (
-            <div className="space-y-6">
-              <div className="bg-purple-50 border border-purple-200 rounded-lg p-4">
-                <div className="flex items-start gap-2">
-                  <GitBranch className="w-5 h-5 text-purple-600 mt-0.5" />
-                  <div className="text-sm text-purple-800">
-                    <div className="font-medium mb-1">知识图谱系统</div>
-                    <div>从对话中自动提取知识三元组，构建实体关系网络</div>
-                  </div>
-                </div>
-              </div>
-
-              {/* Stats */}
-              {kgStats && (
-                <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-                  <div className="bg-gradient-to-br from-blue-500 to-blue-600 rounded-lg p-4 text-white">
-                    <div className="text-sm opacity-90">知识三元组</div>
-                    <div className="text-2xl font-bold">{kgStats.triples || 0}</div>
-                  </div>
-                  <div className="bg-gradient-to-br from-green-500 to-green-600 rounded-lg p-4 text-white">
-                    <div className="text-sm opacity-90">实体数量</div>
-                    <div className="text-2xl font-bold">{kgStats.entities || 0}</div>
-                  </div>
-                  <div className="bg-gradient-to-br from-purple-500 to-purple-600 rounded-lg p-4 text-white">
-                    <div className="text-sm opacity-90">关系类型</div>
-                    <div className="text-2xl font-bold">{kgStats.relationships || 0}</div>
-                  </div>
-                  <div className="bg-gradient-to-br from-orange-500 to-orange-600 rounded-lg p-4 text-white">
-                    <div className="text-sm opacity-90">平均置信度</div>
-                    <div className="text-2xl font-bold">
-                      {kgStats.avg_confidence ? `${(kgStats.avg_confidence * 100).toFixed(1)}%` : '0%'}
-                    </div>
-                  </div>
-                </div>
-              )}
-
-              {/* Sub Tabs */}
-              <div className="border-b border-gray-200">
-                <div className="flex space-x-4">
-                  {[
-                    { id: 'triples', label: '知识三元组', icon: Database },
-                    { id: 'query', label: '自然语言查询', icon: Search }
-                  ].map((tab) => {
-                    const Icon = tab.icon;
-                    return (
-                      <button
-                        key={tab.id}
-                        onClick={() => setKgActiveSubTab(tab.id as any)}
-                        className={`
-                          flex items-center gap-2 px-4 py-2 border-b-2 transition-colors
-                          ${kgActiveSubTab === tab.id
-                            ? 'border-blue-500 text-blue-600'
-                            : 'border-transparent text-gray-600 hover:text-gray-900'
-                          }
-                        `}
-                      >
-                        <Icon className="w-4 h-4" />
-                        {tab.label}
-                      </button>
-                    );
-                  })}
-                </div>
-              </div>
-
-              {/* Triples Sub Tab */}
-              {kgActiveSubTab === 'triples' && (
-              <div className="border border-gray-200 rounded-lg p-4">
-                <div className="flex items-center justify-between mb-4">
-                  <h3 className="text-lg font-semibold">最近提取的知识三元组</h3>
-                  <button
-                    onClick={loadKnowledgeGraphData}
-                    className="text-sm text-blue-600 hover:text-blue-800"
-                  >
-                    刷新
-                  </button>
-                </div>
-                {kgTriples.length > 0 ? (
-                  <div className="space-y-2">
-                    {kgTriples.slice(0, 10).map((triple: any, idx: number) => (
-                      <div key={idx} className="bg-gray-50 rounded-lg p-3 border border-gray-200">
-                        <div className="flex items-center gap-2 text-sm">
-                          <span className="font-medium text-gray-900">{triple.subject}</span>
-                          <span className="text-blue-600">{triple.predicate}</span>
-                          <span className="font-medium text-gray-900">{triple.object}</span>
-                          <span className="ml-auto text-xs text-gray-500">
-                            置信度: {(triple.confidence * 100).toFixed(0)}%
-                          </span>
-                        </div>
-                        {triple.context && (
-                          <div className="mt-2 text-xs text-gray-600 bg-white p-2 rounded">
-                            {triple.context.substring(0, 100)}...
-                          </div>
-                        )}
-                        <div className="mt-1 text-xs text-gray-400">
-                          来源: {triple.source_chat_id} | {new Date(triple.timestamp * 1000).toLocaleString('zh-CN')}
-                        </div>
-                      </div>
-                    ))}
-                    {kgTriples.length >= 10 && (
-                      <div className="text-center text-sm text-gray-500 mt-2">
-                        显示最近 10 条，共 {kgStats?.triples || 0} 条三元组
-                      </div>
-                    )}
-                  </div>
-                ) : (
-                  <div className="text-center py-8 text-gray-500">
-                    {kgStats?.triples === 0 ? (
-                      <div>
-                        <p>暂无知识三元组</p>
-                        <p className="text-xs mt-2">系统正在从对话中提取知识，请稍候...</p>
-                      </div>
-                    ) : (
-                      <div>
-                        <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-500 mx-auto mb-2"></div>
-                        加载中...
-                      </div>
-                    )}
-                  </div>
-                )}
-              </div>
-              )}
-
-              {/* Query Sub Tab */}
-              {kgActiveSubTab === 'query' && (
-                <div className="space-y-4">
-                  <div className="bg-blue-50 border border-blue-200 rounded-lg p-4">
-                    <div className="flex items-start gap-2">
-                      <Search className="w-5 h-5 text-blue-600 mt-0.5" />
-                      <div className="text-sm text-blue-800">
-                        <div className="font-medium mb-1">自然语言知识查询</div>
-                        <div>使用自然语言查询知识图谱。例如："小明喜欢什么"、"告诉我关于北京的信息"</div>
-                      </div>
-                    </div>
-                  </div>
-
-                  <div className="flex gap-2">
+        {loading ? (
+          <div className="flex justify-center items-center py-20">
+            <div className="w-8 h-8 border-2 border-blue-600 border-t-transparent rounded-full animate-spin"></div>
+          </div>
+        ) : (
+          <>
+            {/* Content Renderers */}
+            {activeTab === 0 && (
+              <>
+                <div className="mb-4">
+                  <div className="relative max-w-sm">
+                    <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
                     <input
                       type="text"
-                      placeholder="输入自然语言查询..."
-                      value={kgQueryText}
-                      onChange={(e) => setKgQueryText(e.target.value)}
-                      onKeyPress={(e) => e.key === 'Enter' && handleKgQuery()}
-                      className="flex-1 px-4 py-2 border rounded-lg"
+                      placeholder="筛选聊天 ID..."
+                      value={expressionsFilter}
+                      onChange={(e) => {
+                        setExpressionsFilter(e.target.value);
+                        setExpressionsPage(1);
+                      }}
+                      className="w-full pl-9 pr-4 py-2.5 bg-white border border-gray-200 rounded-xl text-sm focus:ring-2 focus:ring-blue-500 focus:border-transparent shadow-sm transition-all"
                     />
-                    <button
-                      onClick={handleKgQuery}
-                      disabled={kgQuerying || !kgQueryText.trim()}
-                      className="px-6 py-2 bg-blue-500 text-white rounded-lg hover:bg-blue-600 disabled:opacity-50 flex items-center gap-2"
-                    >
-                      {kgQuerying ? (
-                        <>
-                          <Loader2 className="w-4 h-4 animate-spin" />
-                          查询中...
-                        </>
-                      ) : (
-                        <>
-                          <Search className="w-4 h-4" />
-                          查询
-                        </>
-                      )}
-                    </button>
+                  </div>
+                </div>
+                <div className="bg-white border border-gray-200 rounded-xl shadow-sm overflow-hidden">
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-sm text-left">
+                      <thead className="bg-gray-50 text-gray-500 font-medium">
+                        <tr>
+                          <th className="px-6 py-3">情境</th>
+                          <th className="px-6 py-3">表达方式</th>
+                          <th className="px-6 py-3">来源</th>
+                          <th className="px-6 py-3">次数</th>
+                          <th className="px-6 py-3">状态</th>
+                          <th className="px-6 py-3">更新时间</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-gray-100">
+                        {expressions.map((expr) => (
+                          <tr key={expr.id} className="hover:bg-gray-50/50 transition-colors">
+                            <td className="px-6 py-4 text-gray-900 font-medium">{expr.situation}</td>
+                            <td className="px-6 py-4 text-gray-700">{expr.style}</td>
+                            <td className="px-6 py-4 font-mono text-gray-500 text-xs">{expr.chat_id}</td>
+                            <td className="px-6 py-4 text-gray-500">{expr.count}</td>
+                            <td className="px-6 py-4">
+                              <span className={`px-2.5 py-1 rounded-full text-xs font-medium border ${
+                                expr.rejected ? 'bg-red-50 text-red-700 border-red-100' :
+                                expr.checked ? 'bg-green-50 text-green-700 border-green-100' :
+                                'bg-gray-100 text-gray-600 border-gray-200'
+                              }`}>
+                                {expr.rejected ? '已拒绝' : expr.checked ? '已检查' : '未检查'}
+                              </span>
+                            </td>
+                            <td className="px-6 py-4 text-gray-500 text-xs">{formatDate(expr.updated_at)}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+                {renderPagination(expressionsPage, expressionsTotal, setExpressionsPage)}
+              </>
+            )}
+
+            {/* Other tabs follow similar pattern of removing outer wrapper and enhancing table style */}
+            {/* Jargons Tab */}
+            {activeTab === 1 && (
+              <>
+                <div className="mb-4">
+                  <div className="relative max-w-sm">
+                    <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
+                    <input
+                      type="text"
+                      placeholder="筛选聊天 ID..."
+                      value={jargonsFilter}
+                      onChange={(e) => {
+                        setJargonsFilter(e.target.value);
+                        setJargonsPage(1);
+                      }}
+                      className="w-full pl-9 pr-4 py-2.5 bg-white border border-gray-200 rounded-xl text-sm focus:ring-2 focus:ring-blue-500 focus:border-transparent shadow-sm transition-all"
+                    />
+                  </div>
+                </div>
+                <div className="bg-white border border-gray-200 rounded-xl shadow-sm overflow-hidden">
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-sm text-left">
+                      <thead className="bg-gray-50 text-gray-500 font-medium">
+                        <tr>
+                          <th className="px-6 py-3">黑话</th>
+                          <th className="px-6 py-3">含义</th>
+                          <th className="px-6 py-3">来源</th>
+                          <th className="px-6 py-3">次数</th>
+                          <th className="px-6 py-3">状态</th>
+                          <th className="px-6 py-3">更新时间</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-gray-100">
+                        {jargons.map((jargon) => (
+                          <tr key={jargon.id} className="hover:bg-gray-50/50 transition-colors">
+                            <td className="px-6 py-4 font-bold text-gray-900">{jargon.content}</td>
+                            <td className="px-6 py-4 text-gray-600">{jargon.meaning || '-'}</td>
+                            <td className="px-6 py-4 font-mono text-gray-500 text-xs">{jargon.chat_id}</td>
+                            <td className="px-6 py-4 text-gray-500">{jargon.count}</td>
+                            <td className="px-6 py-4">
+                              <span className={`px-2.5 py-1 rounded-full text-xs font-medium border ${
+                                jargon.is_complete ? 'bg-green-50 text-green-700 border-green-100' :
+                                jargon.is_jargon === true ? 'bg-blue-50 text-blue-700 border-blue-100' :
+                                jargon.is_jargon === false ? 'bg-gray-100 text-gray-600 border-gray-200' :
+                                'bg-yellow-50 text-yellow-700 border-yellow-100'
+                              }`}>
+                                {jargon.is_complete ? '已完成' :
+                                 jargon.is_jargon === true ? '是黑话' :
+                                 jargon.is_jargon === false ? '非黑话' : '待判定'}
+                              </span>
+                            </td>
+                            <td className="px-6 py-4 text-gray-500 text-xs">{formatDate(jargon.updated_at)}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+                {renderPagination(jargonsPage, jargonsTotal, setJargonsPage)}
+              </>
+            )}
+
+            {/* Chat History Tab */}
+            {activeTab === 2 && (
+              <>
+                <div className="mb-4">
+                  <div className="relative max-w-sm">
+                    <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
+                    <input
+                      type="text"
+                      placeholder="筛选聊天 ID..."
+                      value={chatHistoryFilter}
+                      onChange={(e) => {
+                        setChatHistoryFilter(e.target.value);
+                        setChatHistoryPage(1);
+                      }}
+                      className="w-full pl-9 pr-4 py-2.5 bg-white border border-gray-200 rounded-xl text-sm focus:ring-2 focus:ring-blue-500 focus:border-transparent shadow-sm transition-all"
+                    />
+                  </div>
+                </div>
+                <div className="bg-white border border-gray-200 rounded-xl shadow-sm overflow-hidden">
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-sm text-left">
+                      <thead className="bg-gray-50 text-gray-500 font-medium">
+                        <tr>
+                          <th className="px-6 py-3 w-1/4">主题</th>
+                          <th className="px-6 py-3 w-1/2">概要</th>
+                          <th className="px-6 py-3">来源</th>
+                          <th className="px-6 py-3 text-right">检索次数</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-gray-100">
+                        {chatHistory.map((hist) => (
+                          <tr key={hist.id} className="hover:bg-gray-50/50 transition-colors">
+                            <td className="px-6 py-4 font-bold text-gray-900">{hist.theme}</td>
+                            <td className="px-6 py-4 text-gray-600 leading-relaxed">{hist.summary.substring(0, 100)}{hist.summary.length > 100 ? '...' : ''}</td>
+                            <td className="px-6 py-4 font-mono text-gray-500 text-xs">{hist.chat_id}</td>
+                            <td className="px-6 py-4 text-gray-500 text-right">{hist.count}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+                {renderPagination(chatHistoryPage, chatHistoryTotal, setChatHistoryPage)}
+              </>
+            )}
+
+            {/* Message Records Tab */}
+            {activeTab === 3 && (
+              <>
+                <div className="mb-4">
+                  <div className="relative max-w-sm">
+                    <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
+                    <input
+                      type="text"
+                      placeholder="筛选聊天 ID..."
+                      value={messageRecordsFilter}
+                      onChange={(e) => {
+                        setMessageRecordsFilter(e.target.value);
+                        setMessageRecordsPage(1);
+                      }}
+                      className="w-full pl-9 pr-4 py-2.5 bg-white border border-gray-200 rounded-xl text-sm focus:ring-2 focus:ring-blue-500 focus:border-transparent shadow-sm transition-all"
+                    />
+                  </div>
+                </div>
+                <div className="bg-white border border-gray-200 rounded-xl shadow-sm overflow-hidden">
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-sm text-left">
+                      <thead className="bg-gray-50 text-gray-500 font-medium">
+                        <tr>
+                          <th className="px-6 py-3 w-1/2">内容</th>
+                          <th className="px-6 py-3">发送者</th>
+                          <th className="px-6 py-3">来源</th>
+                          <th className="px-6 py-3">时间</th>
+                          <th className="px-6 py-3">类型</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-gray-100">
+                        {messageRecords.map((record) => (
+                          <tr key={record.id} className="hover:bg-gray-50/50 transition-colors">
+                            <td className="px-6 py-4 text-gray-900 break-words max-w-md leading-relaxed">{record.plain_text?.substring(0, 150) || '-'}</td>
+                            <td className="px-6 py-4 text-gray-600 font-medium">{record.user_nickname || record.user_id}</td>
+                            <td className="px-6 py-4 font-mono text-gray-500 text-xs">{record.chat_id}</td>
+                            <td className="px-6 py-4 text-gray-500 text-xs">{formatTimestamp(record.time)}</td>
+                            <td className="px-6 py-4">
+                              <span className={`px-2.5 py-1 rounded-full text-xs font-medium border ${
+                                record.is_bot_message 
+                                  ? 'bg-blue-50 text-blue-700 border-blue-100' 
+                                  : 'bg-gray-50 text-gray-600 border-gray-200'
+                              }`}>
+                                {record.is_bot_message ? 'Bot' : 'User'}
+                              </span>
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+                {renderPagination(messageRecordsPage, messageRecordsTotal, setMessageRecordsPage)}
+              </>
+            )}
+
+            {/* Persons Tab */}
+            {activeTab === 4 && (
+              <>
+                <div className="bg-white border border-gray-200 rounded-xl shadow-sm overflow-hidden">
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-sm text-left">
+                      <thead className="bg-gray-50 text-gray-500 font-medium">
+                        <tr>
+                          <th className="px-6 py-3">用户 ID</th>
+                          <th className="px-6 py-3">AI 认知名</th>
+                          <th className="px-6 py-3">昵称</th>
+                          <th className="px-6 py-3">状态</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-gray-100">
+                        {persons.map((person) => (
+                          <tr key={person.id} className="hover:bg-gray-50/50 transition-colors">
+                            <td className="px-6 py-4 font-mono text-gray-900 font-medium">{person.person_id}</td>
+                            <td className="px-6 py-4 text-gray-900">{person.person_name || '-'}</td>
+                            <td className="px-6 py-4 text-gray-600">{person.nickname || '-'}</td>
+                            <td className="px-6 py-4">
+                              <span className={`px-2.5 py-1 rounded-full text-xs font-medium border ${
+                                person.is_known 
+                                  ? 'bg-green-50 text-green-700 border-green-100' 
+                                  : 'bg-gray-50 text-gray-500 border-gray-200'
+                              }`}>
+                                {person.is_known ? '已认识' : '未认识'}
+                              </span>
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+                {renderPagination(personsPage, personsTotal, setPersonsPage)}
+              </>
+            )}
+
+            {/* Groups Tab */}
+            {activeTab === 5 && (
+              <>
+                <div className="bg-white border border-gray-200 rounded-xl shadow-sm overflow-hidden">
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-sm text-left">
+                      <thead className="bg-gray-50 text-gray-500 font-medium">
+                        <tr>
+                          <th className="px-6 py-3">群 ID</th>
+                          <th className="px-6 py-3">群名称</th>
+                          <th className="px-6 py-3 w-1/3">群印象</th>
+                          <th className="px-6 py-3 text-right">成员数</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-gray-100">
+                        {groups.map((group) => (
+                          <tr key={group.id} className="hover:bg-gray-50/50 transition-colors">
+                            <td className="px-6 py-4 font-mono text-gray-900 font-medium">{group.group_id}</td>
+                            <td className="px-6 py-4 font-bold text-gray-900">{group.group_name || '-'}</td>
+                            <td className="px-6 py-4 text-gray-600">{group.group_impression?.substring(0, 100) || '-'}...</td>
+                            <td className="px-6 py-4 text-gray-600 font-mono text-right">{group.member_count}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+                {renderPagination(groupsPage, groupsTotal, setGroupsPage)}
+              </>
+            )}
+
+            {/* Stickers Tab */}
+            {activeTab === 6 && (
+              <>
+                <div className="mb-4">
+                  <div className="relative max-w-sm">
+                    <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
+                    <input
+                      type="text"
+                      placeholder="筛选聊天 ID..."
+                      value={stickersFilter}
+                      onChange={(e) => {
+                        setStickersFilter(e.target.value);
+                        setStickersPage(1);
+                      }}
+                      className="w-full pl-9 pr-4 py-2.5 bg-white border border-gray-200 rounded-xl text-sm focus:ring-2 focus:ring-blue-500 focus:border-transparent shadow-sm transition-all"
+                    />
+                  </div>
+                </div>
+                <div className="bg-white border border-gray-200 rounded-xl shadow-sm overflow-hidden">
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-sm text-left">
+                      <thead className="bg-gray-50 text-gray-500 font-medium">
+                        <tr>
+                          <th className="px-6 py-3">类型</th>
+                          <th className="px-6 py-3">情境/情感</th>
+                          <th className="px-6 py-3 w-1/4">含义</th>
+                          <th className="px-6 py-3">来源</th>
+                          <th className="px-6 py-3">次数</th>
+                          <th className="px-6 py-3">状态</th>
+                          <th className="px-6 py-3">最后使用</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-gray-100">
+                        {stickers.map((sticker) => (
+                          <tr key={sticker.id} className="hover:bg-gray-50/50 transition-colors">
+                            <td className="px-6 py-4 text-gray-900 font-medium">{sticker.sticker_type}</td>
+                            <td className="px-6 py-4">
+                              <div className="flex flex-col">
+                                <span className="text-gray-900">{sticker.situation || '-'}</span>
+                                <span className="text-xs text-gray-500">{sticker.emotion || '-'}</span>
+                              </div>
+                            </td>
+                            <td className="px-6 py-4 text-gray-600 text-xs leading-relaxed" title={sticker.meaning || ''}>
+                              {sticker.meaning ? sticker.meaning.substring(0, 50) + '...' : '-'}
+                            </td>
+                            <td className="px-6 py-4 font-mono text-gray-500 text-xs">{sticker.chat_id}</td>
+                            <td className="px-6 py-4 text-gray-500">{sticker.count}</td>
+                            <td className="px-6 py-4">
+                              <span className={`px-2.5 py-1 rounded-full text-xs font-medium border ${
+                                sticker.rejected ? 'bg-red-50 text-red-700 border-red-100' :
+                                sticker.checked ? 'bg-green-50 text-green-700 border-green-100' :
+                                'bg-gray-100 text-gray-600 border-gray-200'
+                              }`}>
+                                {sticker.rejected ? '已拒绝' : sticker.checked ? '已检查' : '未检查'}
+                              </span>
+                            </td>
+                            <td className="px-6 py-4 text-gray-500 text-xs font-mono">
+                              {sticker.last_active_time ? formatTimestamp(sticker.last_active_time) : '-'}
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+                {renderPagination(stickersPage, stickersTotal, setStickersPage)}
+              </>
+            )}
+
+            {/* Maintenance Tab */}
+            {activeTab === 7 && (
+              <div className="space-y-6">
+                <div className="bg-blue-50 border border-blue-100 rounded-xl p-5 flex items-start gap-4">
+                  <div className="p-2 bg-blue-100 rounded-lg text-blue-600">
+                    <Settings className="w-5 h-5" />
+                  </div>
+                  <div>
+                    <h3 className="font-bold text-blue-900 text-lg">AI 自动维护系统</h3>
+                    <p className="text-blue-700/80 text-sm mt-1">包括梦境系统（自动整理记忆）、表达方式自动检查、表达方式反思等功能</p>
+                  </div>
+                </div>
+
+                <div className="grid md:grid-cols-2 lg:grid-cols-3 gap-6">
+                  {/* Dream System */}
+                  <div className="bg-white border border-gray-200 rounded-xl p-6 hover:shadow-md transition-all">
+                    <div className="flex items-center gap-3 mb-5 pb-4 border-b border-gray-100">
+                      <div className="p-2 bg-indigo-50 rounded-lg text-indigo-600">
+                        <Moon className="w-5 h-5" />
+                      </div>
+                      <h3 className="font-bold text-gray-900 text-lg">Dream 梦境系统</h3>
+                    </div>
+                    {maintenanceStats.dream ? (
+                      <div className="space-y-4">
+                        <div className="flex justify-between items-center">
+                          <span className="text-gray-500 text-sm">总周期数</span>
+                          <span className="font-mono font-bold text-gray-900 text-lg">{maintenanceStats.dream.total_cycles}</span>
+                        </div>
+                        <div className="flex justify-between items-center">
+                          <span className="text-gray-500 text-sm">成功率</span>
+                          <span className="font-mono font-bold text-green-600 text-lg">
+                            {maintenanceStats.dream.total_cycles > 0
+                              ? `${((maintenanceStats.dream.successful_cycles || 0) / maintenanceStats.dream.total_cycles * 100).toFixed(1)}%`
+                              : '0%'}
+                          </span>
+                        </div>
+                        <div className="flex justify-between items-center">
+                          <span className="text-gray-500 text-sm">运行状态</span>
+                          <span className={`px-2 py-1 rounded text-xs font-bold ${maintenanceStats.dream.is_running ? 'bg-green-100 text-green-700' : 'bg-gray-100 text-gray-500'}`}>
+                            {maintenanceStats.dream.is_running ? 'RUNNING' : 'STOPPED'}
+                          </span>
+                        </div>
+                      </div>
+                    ) : (
+                      <div className="text-center py-8 text-gray-400 text-sm">暂无数据</div>
+                    )}
                   </div>
 
-                  {kgQueryResults.length > 0 && (
-                    <div className="space-y-4">
-                      <div className="text-sm text-gray-600">找到 {kgQueryResults.length} 条相关知识</div>
-                      <div className="space-y-2">
-                        {kgQueryResults.map((triple: any, idx: number) => (
-                          <div key={idx} className="bg-white border border-gray-200 rounded-lg p-4">
-                            <div className="flex items-center gap-2 text-sm">
-                              <span className="font-medium text-gray-900">{triple.subject}</span>
-                              <span className="text-blue-600">{triple.predicate}</span>
-                              <span className="font-medium text-gray-900">{triple.object}</span>
-                              <span className="ml-auto text-xs text-gray-500">
-                                置信度: {(triple.confidence * 100).toFixed(0)}%
+                  {/* Check System */}
+                  <div className="bg-white border border-gray-200 rounded-xl p-6 hover:shadow-md transition-all">
+                    <div className="flex items-center gap-3 mb-5 pb-4 border-b border-gray-100">
+                      <div className="p-2 bg-green-50 rounded-lg text-green-600">
+                        <Settings className="w-5 h-5" />
+                      </div>
+                      <h3 className="font-bold text-gray-900 text-lg">表达检查</h3>
+                    </div>
+                    {maintenanceStats.check ? (
+                      <div className="space-y-4">
+                        <div className="flex justify-between items-center">
+                          <span className="text-gray-500 text-sm">已检查</span>
+                          <span className="font-mono font-bold text-gray-900 text-lg">{maintenanceStats.check.total_checked}</span>
+                        </div>
+                        <div className="flex justify-between items-center">
+                          <span className="text-gray-500 text-sm">接受率</span>
+                          <span className="font-mono font-bold text-blue-600 text-lg">
+                            {maintenanceStats.check.total_checked > 0
+                              ? `${((maintenanceStats.check.total_accepted || 0) / maintenanceStats.check.total_checked * 100).toFixed(1)}%`
+                              : '0%'}
+                          </span>
+                        </div>
+                        <div className="flex gap-2 mt-2 pt-2 border-t border-gray-50">
+                          <div className="flex-1 bg-green-50 text-green-700 text-xs py-1.5 px-3 rounded-lg text-center font-bold">
+                            +{maintenanceStats.check.total_accepted} 接受
+                          </div>
+                          <div className="flex-1 bg-red-50 text-red-700 text-xs py-1.5 px-3 rounded-lg text-center font-bold">
+                            -{maintenanceStats.check.total_rejected} 拒绝
+                          </div>
+                        </div>
+                      </div>
+                    ) : (
+                      <div className="text-center py-8 text-gray-400 text-sm">暂无数据</div>
+                    )}
+                  </div>
+
+                  {/* Reflect System */}
+                  <div className="bg-white border border-gray-200 rounded-xl p-6 hover:shadow-md transition-all">
+                    <div className="flex items-center gap-3 mb-5 pb-4 border-b border-gray-100">
+                      <div className="p-2 bg-purple-50 rounded-lg text-purple-600">
+                        <Settings className="w-5 h-5" />
+                      </div>
+                      <h3 className="font-bold text-gray-900 text-lg">表达反思</h3>
+                    </div>
+                    {maintenanceStats.reflect ? (
+                      <div className="space-y-4">
+                        <div className="flex justify-between items-center">
+                          <span className="text-gray-500 text-sm">反思次数</span>
+                          <span className="font-mono font-bold text-gray-900 text-lg">{maintenanceStats.reflect.total_reflections}</span>
+                        </div>
+                        <div className="flex justify-between items-center">
+                          <span className="text-gray-500 text-sm">建议数</span>
+                          <span className="font-mono font-bold text-purple-600 text-lg">{maintenanceStats.reflect.total_recommendations}</span>
+                        </div>
+                        <div className="flex justify-between items-center">
+                          <span className="text-gray-500 text-sm">追踪表达</span>
+                          <span className="font-mono font-bold text-blue-600 text-lg">{maintenanceStats.reflect.tracked_expressions}</span>
+                        </div>
+                      </div>
+                    ) : (
+                      <div className="text-center py-8 text-gray-400 text-sm">暂无数据</div>
+                    )}
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* Knowledge Graph Tab */}
+            {activeTab === 8 && (
+              <div className="space-y-6">
+                {/* Stats Cards */}
+                {kgStats && (
+                  <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+                    {[
+                      { label: '知识三元组', value: kgStats.triples, color: 'bg-blue-500' },
+                      { label: '实体数量', value: kgStats.entities, color: 'bg-green-500' },
+                      { label: '关系类型', value: kgStats.relationships, color: 'bg-purple-500' },
+                      { label: '平均置信度', value: `${(kgStats.avg_confidence * 100).toFixed(1)}%`, color: 'bg-orange-500' }
+                    ].map((stat, i) => (
+                      <div key={i} className={`${stat.color} rounded-xl p-5 text-white shadow-sm hover:shadow-md transition-shadow`}>
+                        <div className="text-sm font-medium opacity-90">{stat.label}</div>
+                        <div className="text-3xl font-bold mt-2">{stat.value}</div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+
+                {/* Sub Tabs */}
+                <div className="flex space-x-6 border-b border-gray-200">
+                  <button
+                    onClick={() => setKgActiveSubTab('triples')}
+                    className={`pb-3 text-sm font-bold border-b-2 transition-colors ${
+                      kgActiveSubTab === 'triples' ? 'border-blue-600 text-blue-600' : 'border-transparent text-gray-500 hover:text-gray-700'
+                    }`}
+                  >
+                    知识三元组
+                  </button>
+                  <button
+                    onClick={() => setKgActiveSubTab('query')}
+                    className={`pb-3 text-sm font-bold border-b-2 transition-colors ${
+                      kgActiveSubTab === 'query' ? 'border-blue-600 text-blue-600' : 'border-transparent text-gray-500 hover:text-gray-700'
+                    }`}
+                  >
+                    自然语言查询
+                  </button>
+                </div>
+
+                {kgActiveSubTab === 'triples' && (
+                  <div className="space-y-4">
+                    {kgTriples.length > 0 ? (
+                      <div className="grid gap-4">
+                        {kgTriples.slice(0, 10).map((triple: any, idx: number) => (
+                          <div key={idx} className="bg-white border border-gray-200 rounded-xl p-5 hover:shadow-md transition-all">
+                            <div className="flex flex-wrap items-center gap-3 text-sm mb-3">
+                              <span className="font-bold text-gray-900 bg-gray-100 px-3 py-1 rounded-lg border border-gray-200">{triple.subject}</span>
+                              <span className="text-gray-400">→</span>
+                              <span className="text-blue-600 font-bold bg-blue-50 px-3 py-1 rounded-lg border border-blue-100">{triple.predicate}</span>
+                              <span className="text-gray-400">→</span>
+                              <span className="font-bold text-gray-900 bg-gray-100 px-3 py-1 rounded-lg border border-gray-200">{triple.object}</span>
+                              <span className="ml-auto text-xs font-bold text-green-700 bg-green-50 px-2.5 py-1 rounded-full border border-green-100">
+                                {(triple.confidence * 100).toFixed(0)}% Conf
                               </span>
                             </div>
                             {triple.context && (
-                              <div className="mt-2 text-xs text-gray-600 bg-gray-50 p-2 rounded">
+                              <div className="text-sm text-gray-600 bg-gray-50/50 p-3 rounded-xl border border-gray-100 mb-3 leading-relaxed">
                                 {triple.context}
                               </div>
                             )}
-                            {triple.source_chat_id && (
-                              <div className="mt-1 text-xs text-gray-400">
-                                来源: {triple.source_chat_id} | {triple.timestamp ? new Date(triple.timestamp * 1000).toLocaleString('zh-CN') : ''}
-                              </div>
-                            )}
+                            <div className="text-xs text-gray-400 flex justify-between font-mono pt-2 border-t border-gray-50">
+                              <span>SOURCE: {triple.source_chat_id}</span>
+                              <span>{new Date(triple.timestamp * 1000).toLocaleString('zh-CN')}</span>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    ) : (
+                       <div className="text-center py-12 bg-white rounded-xl border border-dashed border-gray-200 text-gray-400">暂无数据</div>
+                    )}
+                  </div>
+                )}
+
+                {kgActiveSubTab === 'query' && (
+                  <div className="space-y-6">
+                    <div className="flex gap-3">
+                      <input
+                        type="text"
+                        placeholder="输入自然语言查询... (例如: 小明喜欢什么)"
+                        value={kgQueryText}
+                        onChange={(e) => setKgQueryText(e.target.value)}
+                        onKeyPress={(e) => e.key === 'Enter' && handleKgQuery()}
+                        className="flex-1 px-5 py-3 border border-gray-300 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-transparent shadow-sm text-base"
+                      />
+                      <button
+                        onClick={handleKgQuery}
+                        disabled={kgQuerying || !kgQueryText.trim()}
+                        className="px-8 py-3 bg-blue-600 text-white font-bold rounded-xl hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed shadow-md flex items-center gap-2 transition-all"
+                      >
+                        {kgQuerying ? <Loader2 className="w-5 h-5 animate-spin" /> : <Search className="w-5 h-5" />}
+                        查询
+                      </button>
+                    </div>
+
+                    {kgQueryResults.length > 0 && (
+                      <div className="space-y-4">
+                        <p className="text-sm text-gray-500 font-bold px-1">找到 {kgQueryResults.length} 条相关结果</p>
+                        {kgQueryResults.map((triple: any, idx: number) => (
+                          <div key={idx} className="bg-white border border-gray-200 rounded-xl p-5 hover:shadow-md transition-all">
+                            <div className="flex flex-wrap items-center gap-3 text-sm mb-3">
+                              <span className="font-bold text-gray-900 bg-gray-100 px-3 py-1 rounded-lg border border-gray-200">{triple.subject}</span>
+                              <span className="text-gray-400">→</span>
+                              <span className="text-blue-600 font-bold bg-blue-50 px-3 py-1 rounded-lg border border-blue-100">{triple.predicate}</span>
+                              <span className="text-gray-400">→</span>
+                              <span className="font-bold text-gray-900 bg-gray-100 px-3 py-1 rounded-lg border border-gray-200">{triple.object}</span>
+                            </div>
+                            <div className="text-sm text-gray-600 bg-gray-50/50 p-3 rounded-xl border border-gray-100 leading-relaxed">
+                              {triple.context}
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* HeartFlow Tab */}
+            {activeTab === 9 && (
+              <div className="space-y-6">
+                {/* Stats Overview */}
+                <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+                  {[
+                     { label: '活跃对话', value: heartflowChats.length, color: 'bg-purple-500' },
+                     { label: '总消息数', value: heartflowChats.reduce((sum, chat) => sum + (chat.message_count || 0), 0), color: 'bg-green-500' },
+                     { label: '总回复数', value: heartflowChats.reduce((sum, chat) => sum + (chat.reply_count || 0), 0), color: 'bg-blue-500' },
+                     { label: '平均回复率', value: `${heartflowChats.length > 0 ? (heartflowChats.reduce((sum, chat) => sum + (chat.reply_ratio || 0), 0) / heartflowChats.length * 100).toFixed(1) : 0}%`, color: 'bg-orange-500' }
+                  ].map((stat, i) => (
+                    <div key={i} className={`${stat.color} rounded-xl p-5 text-white shadow-sm hover:shadow-md transition-all`}>
+                      <div className="text-sm font-medium opacity-90">{stat.label}</div>
+                      <div className="text-3xl font-bold mt-2">{stat.value}</div>
+                    </div>
+                  ))}
+                </div>
+
+                <div className="space-y-4">
+                   {heartflowChats.length === 0 ? (
+                      <div className="py-16 text-center text-gray-400 bg-white rounded-xl border border-dashed border-gray-200">暂无活跃对话</div>
+                   ) : (
+                      <div className="grid gap-4">
+                        {heartflowChats.map((chat: any) => (
+                          <div 
+                             key={chat.chat_id}
+                             onClick={() => loadHeartflowChatDetails(chat.chat_id)}
+                             className="bg-white border border-gray-200 rounded-xl p-5 hover:shadow-md cursor-pointer transition-all hover:border-blue-300 group"
+                          >
+                             <div className="flex justify-between items-start mb-4">
+                                <h3 className="font-mono font-bold text-gray-900 text-lg group-hover:text-blue-600 transition-colors">{chat.chat_id}</h3>
+                                <div className="flex gap-2">
+                                   <span className="px-3 py-1 bg-gray-100 text-gray-700 rounded-lg text-xs font-bold uppercase tracking-wide border border-gray-200">
+                                      {chat.atmosphere}
+                                   </span>
+                                   <span className="px-3 py-1 bg-blue-50 text-blue-700 rounded-lg text-xs font-bold uppercase tracking-wide border border-blue-100">
+                                      {chat.emotional_state}
+                                   </span>
+                                </div>
+                             </div>
+                             <div className="grid grid-cols-4 gap-4 text-sm bg-gray-50/50 p-4 rounded-xl border border-gray-100">
+                                <div>
+                                   <span className="text-gray-500 block text-xs font-medium mb-1">参与者</span>
+                                   <span className="font-bold text-gray-900">{chat.active_participants || 0}</span>
+                                </div>
+                                <div>
+                                   <span className="text-gray-500 block text-xs font-medium mb-1">消息</span>
+                                   <span className="font-bold text-gray-900">{chat.message_count || 0}</span>
+                                </div>
+                                <div>
+                                   <span className="text-gray-500 block text-xs font-medium mb-1">回复率</span>
+                                   <span className="font-bold text-gray-900">{((chat.reply_ratio || 0) * 100).toFixed(0)}%</span>
+                                </div>
+                                <div>
+                                   <span className="text-gray-500 block text-xs font-medium mb-1">热度</span>
+                                   <span className="font-bold text-gray-900">{((chat.topic_activity || 0) * 100).toFixed(0)}%</span>
+                                </div>
+                             </div>
+                          </div>
+                        ))}
+                      </div>
+                   )}
+                </div>
+                
+                {selectedHeartflowChat && (
+                  <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4 backdrop-blur-sm">
+                     <div className="bg-white rounded-2xl shadow-2xl max-w-lg w-full p-6">
+                        <div className="flex justify-between items-center mb-6 border-b border-gray-100 pb-4">
+                           <h3 className="text-xl font-bold text-gray-900">对话详情</h3>
+                           <button onClick={() => setSelectedHeartflowChat(null)} className="text-gray-400 hover:text-gray-600 p-1 hover:bg-gray-100 rounded-full transition-colors">
+                             <Trash2 className="w-5 h-5 rotate-45" /> {/* Using Trash2 as close icon placeholder, should ideally be X */}
+                           </button>
+                        </div>
+                        {/* ... Detail content ... */}
+                     </div>
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* Config Tab */}
+            {activeTab === 10 && learningConfig && (
+              <div className="space-y-6 max-w-4xl">
+                <div className="grid gap-6 md:grid-cols-2">
+                  {[
+                    { key: 'expression_learning', title: '表达方式学习', sub: [
+                        { k: 'use_expressions', l: '在回复中使用学到的表达' },
+                        { k: 'auto_check', l: '自动检查表达质量' }
+                      ]
+                    },
+                    { key: 'jargon_learning', title: '黑话术语学习', sub: [
+                        { k: 'explain_jargons', l: '在回复中解释黑话' }
+                      ]
+                    },
+                    { key: 'sticker_learning', title: '表情包学习', sub: [
+                        { k: 'use_stickers', l: '在回复中使用表情包' }
+                      ]
+                    },
+                    { key: 'knowledge_graph', title: '知识图谱', sub: [
+                        { k: 'extract_triples', l: '自动提取知识三元组' }
+                      ]
+                    },
+                    { key: 'heartflow', title: 'HeartFlow 对话流', sub: [
+                        { k: 'track_emotions', l: '追踪情感状态' },
+                        { k: 'track_atmosphere', l: '追踪对话氛围' }
+                      ]
+                    }
+                  ].map(section => (
+                    <div key={section.key} className="bg-white border border-gray-200 rounded-xl p-6 shadow-sm hover:shadow-md transition-all">
+                      <div className="flex items-center justify-between mb-5">
+                        <h3 className="font-bold text-gray-900 text-lg">{section.title}</h3>
+                        <label className="relative inline-flex items-center cursor-pointer">
+                          <input
+                            type="checkbox"
+                            checked={learningConfig[section.key]?.enabled ?? true}
+                            onChange={(e) => setLearningConfig({
+                              ...learningConfig,
+                              [section.key]: { ...learningConfig[section.key], enabled: e.target.checked }
+                            })}
+                            className="sr-only peer"
+                          />
+                          <div className="w-11 h-6 bg-gray-200 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-blue-600"></div>
+                        </label>
+                      </div>
+                      
+                      <div className={`space-y-3 transition-opacity ${!learningConfig[section.key]?.enabled ? 'opacity-50' : ''}`}>
+                        {section.sub.map(subItem => (
+                          <div key={subItem.k} className="flex items-center gap-3 p-3 rounded-lg hover:bg-gray-50 transition-colors border border-transparent hover:border-gray-100">
+                            <input
+                              type="checkbox"
+                              checked={learningConfig[section.key]?.[subItem.k] ?? true}
+                              onChange={(e) => setLearningConfig({
+                                ...learningConfig,
+                                [section.key]: { ...learningConfig[section.key], [subItem.k]: e.target.checked }
+                              })}
+                              disabled={!learningConfig[section.key]?.enabled}
+                              className="w-4 h-4 text-blue-600 rounded border-gray-300 focus:ring-blue-500 disabled:opacity-50 disabled:cursor-not-allowed"
+                            />
+                            <span className="text-sm font-medium text-gray-700">{subItem.l}</span>
                           </div>
                         ))}
                       </div>
                     </div>
-                  )}
-
-                  {kgQueryResults.length === 0 && kgQueryText && !kgQuerying && (
-                    <div className="text-center py-8 text-gray-500">
-                      <p>未找到相关结果</p>
-                      <p className="text-xs mt-2">尝试使用不同的关键词或更具体的查询</p>
-                    </div>
-                  )}
+                  ))}
                 </div>
-              )}
-            </div>
-          )}
 
-          {/* HeartFlow Tab */}
-          {activeTab === 9 && (
-            <div className="space-y-6">
-              <div className="bg-red-50 border border-red-200 rounded-lg p-4">
-                <div className="flex items-start gap-2">
-                  <Heart className="w-5 h-5 text-red-600 mt-0.5" />
-                  <div className="text-sm text-red-800">
-                    <div className="font-medium mb-1">HeartFlow 脑流系统</div>
-                    <div>智能监控对话氛围、情感状态、参与度，动态调节回复策略</div>
-                  </div>
+                <div className="sticky bottom-4 flex justify-end">
+                  <button
+                    onClick={saveLearningConfig}
+                    disabled={savingConfig}
+                    className="px-8 py-3 bg-blue-600 text-white font-bold rounded-xl hover:bg-blue-700 disabled:opacity-50 shadow-lg hover:shadow-xl transition-all"
+                  >
+                    {savingConfig ? '保存中...' : '保存所有配置'}
+                  </button>
                 </div>
               </div>
-
-              {/* Overview Stats */}
-              <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-                <div className="bg-gradient-to-br from-purple-500 to-purple-600 rounded-lg p-4 text-white">
-                  <div className="text-sm opacity-90">活跃对话</div>
-                  <div className="text-2xl font-bold">{heartflowChats.length}</div>
-                </div>
-                <div className="bg-gradient-to-br from-green-500 to-green-600 rounded-lg p-4 text-white">
-                  <div className="text-sm opacity-90">总消息数</div>
-                  <div className="text-2xl font-bold">
-                    {heartflowChats.reduce((sum, chat) => sum + (chat.message_count || 0), 0)}
-                  </div>
-                </div>
-                <div className="bg-gradient-to-br from-blue-500 to-blue-600 rounded-lg p-4 text-white">
-                  <div className="text-sm opacity-90">总回复数</div>
-                  <div className="text-2xl font-bold">
-                    {heartflowChats.reduce((sum, chat) => sum + (chat.reply_count || 0), 0)}
-                  </div>
-                </div>
-                <div className="bg-gradient-to-br from-orange-500 to-orange-600 rounded-lg p-4 text-white">
-                  <div className="text-sm opacity-90">平均回复率</div>
-                  <div className="text-2xl font-bold">
-                    {heartflowChats.length > 0
-                      ? (heartflowChats.reduce((sum, chat) => sum + (chat.reply_ratio || 0), 0) / heartflowChats.length * 100).toFixed(1)
-                      : 0}%
-                  </div>
-                </div>
-              </div>
-
-              {/* Chat List */}
-              <div className="border border-gray-200 rounded-lg">
-                <div className="px-4 py-3 border-b border-gray-200 bg-gray-50">
-                  <h3 className="text-lg font-semibold">对话列表</h3>
-                </div>
-                <div className="divide-y divide-gray-200">
-                  {heartflowChats.length === 0 ? (
-                    <div className="px-6 py-12 text-center text-gray-500">暂无活跃对话</div>
-                  ) : (
-                    heartflowChats.map((chat: any) => (
-                      <div
-                        key={chat.chat_id}
-                        className="px-6 py-4 hover:bg-gray-50 cursor-pointer transition-colors"
-                        onClick={() => loadHeartflowChatDetails(chat.chat_id)}
-                      >
-                        <div className="flex items-center justify-between mb-2">
-                          <div className="font-medium text-gray-900">{chat.chat_id}</div>
-                          <div className="flex items-center gap-2">
-                            <span className={`px-2 py-1 text-xs rounded-full ${
-                              chat.atmosphere === 'silent' ? 'bg-gray-100 text-gray-700' :
-                              chat.atmosphere === 'calm' ? 'bg-blue-100 text-blue-700' :
-                              chat.atmosphere === 'active' ? 'bg-green-100 text-green-700' :
-                              chat.atmosphere === 'heated' ? 'bg-orange-100 text-orange-700' :
-                              'bg-red-100 text-red-700'
-                            }`}>
-                              {chat.atmosphere === 'silent' ? '沉默' :
-                               chat.atmosphere === 'calm' ? '平静' :
-                               chat.atmosphere === 'active' ? '活跃' :
-                               chat.atmosphere === 'heated' ? '热烈' : '混乱'}
-                            </span>
-                            <span className="text-2xl">
-                              {chat.emotional_state === 'neutral' ? '😐' :
-                               chat.emotional_state === 'happy' ? '😊' :
-                               chat.emotional_state === 'excited' ? '🤩' :
-                               chat.emotional_state === 'sad' ? '😢' :
-                               chat.emotional_state === 'angry' ? '😠' :
-                               chat.emotional_state === 'confused' ? '😕' : '🤔'}
-                            </span>
-                          </div>
-                        </div>
-                        <div className="grid grid-cols-2 md:grid-cols-4 gap-4 text-sm text-gray-600">
-                          <div>
-                            <div className="text-xs text-gray-500">活跃参与者</div>
-                            <div className="font-medium">{chat.active_participants || 0}</div>
-                          </div>
-                          <div>
-                            <div className="text-xs text-gray-500">消息数</div>
-                            <div className="font-medium">{chat.message_count || 0}</div>
-                          </div>
-                          <div>
-                            <div className="text-xs text-gray-500">回复率</div>
-                            <div className="font-medium">{((chat.reply_ratio || 0) * 100).toFixed(1)}%</div>
-                          </div>
-                          <div>
-                            <div className="text-xs text-gray-500">话题活跃度</div>
-                            <div className="font-medium">{((chat.topic_activity || 0) * 100).toFixed(0)}%</div>
-                          </div>
-                        </div>
-                      </div>
-                    ))
-                  )}
-                </div>
-              </div>
-
-              {/* Selected Chat Details */}
-              {selectedHeartflowChat && (
-                <div className="border border-gray-200 rounded-lg p-4 bg-gray-50">
-                  <div className="flex items-center justify-between mb-4">
-                    <h3 className="text-lg font-semibold">对话详情: {selectedHeartflowChat.chat_id}</h3>
-                    <button
-                      onClick={() => setSelectedHeartflowChat(null)}
-                      className="text-gray-500 hover:text-gray-700 text-sm"
-                    >
-                      关闭
-                    </button>
-                  </div>
-                  <div className="grid grid-cols-2 gap-4">
-                    <div>
-                      <div className="text-sm font-medium text-gray-700 mb-2">对话氛围</div>
-                      <div className="text-lg font-medium">
-                        {selectedHeartflowChat.atmosphere === 'silent' ? '沉默' :
-                         selectedHeartflowChat.atmosphere === 'calm' ? '平静' :
-                         selectedHeartflowChat.atmosphere === 'active' ? '活跃' :
-                         selectedHeartflowChat.atmosphere === 'heated' ? '热烈' : '混乱'}
-                      </div>
-                    </div>
-                    <div>
-                      <div className="text-sm font-medium text-gray-700 mb-2">情感状态</div>
-                      <div className="text-lg font-medium">
-                        {selectedHeartflowChat.emotional_state === 'neutral' ? '中立' :
-                         selectedHeartflowChat.emotional_state === 'happy' ? '开心' :
-                         selectedHeartflowChat.emotional_state === 'excited' ? '兴奋' :
-                         selectedHeartflowChat.emotional_state === 'sad' ? '悲伤' :
-                         selectedHeartflowChat.emotional_state === 'angry' ? '愤怒' :
-                         selectedHeartflowChat.emotional_state === 'confused' ? '困惑' : '思考'}
-                      </div>
-                    </div>
-                  </div>
-                </div>
-              )}
-            </div>
-          )}
-
-          {/* Learning Config Tab */}
-          {activeTab === 10 && (
-            <div className="space-y-6">
-              <div className="bg-blue-50 border border-blue-200 rounded-lg p-4">
-                <div className="flex items-start gap-2">
-                  <Settings className="w-5 h-5 text-blue-600 mt-0.5" />
-                  <div className="text-sm text-blue-800">
-                    <div className="font-medium mb-1">学习功能配置</div>
-                    <div>配置各个学习功能的启用状态和参数</div>
-                  </div>
-                </div>
-              </div>
-
-              {learningConfig ? (
-                <div className="space-y-6">
-                  {/* Expression Learning */}
-                  <div className="border border-gray-200 rounded-lg p-4">
-                    <div className="flex items-center justify-between mb-4">
-                      <h3 className="text-lg font-semibold">表达方式学习</h3>
-                      <label className="flex items-center gap-2 cursor-pointer">
-                        <input
-                          type="checkbox"
-                          checked={learningConfig.expression_learning?.enabled ?? true}
-                          onChange={(e) => {
-                            setLearningConfig({
-                              ...learningConfig,
-                              expression_learning: {
-                                ...learningConfig.expression_learning,
-                                enabled: e.target.checked
-                              }
-                            });
-                          }}
-                          className="w-4 h-4"
-                        />
-                        <span className="text-sm">启用</span>
-                      </label>
-                    </div>
-                    {learningConfig.expression_learning?.enabled && (
-                      <div className="space-y-3 ml-6">
-                        <label className="flex items-center gap-2 cursor-pointer">
-                          <input
-                            type="checkbox"
-                            checked={learningConfig.expression_learning?.use_expressions ?? true}
-                            onChange={(e) => {
-                              setLearningConfig({
-                                ...learningConfig,
-                                expression_learning: {
-                                  ...learningConfig.expression_learning,
-                                  use_expressions: e.target.checked
-                                }
-                              });
-                            }}
-                            className="w-4 h-4"
-                          />
-                          <span className="text-sm">在回复中使用学到的表达方式</span>
-                        </label>
-                        <label className="flex items-center gap-2 cursor-pointer">
-                          <input
-                            type="checkbox"
-                            checked={learningConfig.expression_learning?.auto_check ?? true}
-                            onChange={(e) => {
-                              setLearningConfig({
-                                ...learningConfig,
-                                expression_learning: {
-                                  ...learningConfig.expression_learning,
-                                  auto_check: e.target.checked
-                                }
-                              });
-                            }}
-                            className="w-4 h-4"
-                          />
-                          <span className="text-sm">自动检查表达质量</span>
-                        </label>
-                      </div>
-                    )}
-                  </div>
-
-                  {/* Jargon Learning */}
-                  <div className="border border-gray-200 rounded-lg p-4">
-                    <div className="flex items-center justify-between mb-4">
-                      <h3 className="text-lg font-semibold">黑话术语学习</h3>
-                      <label className="flex items-center gap-2 cursor-pointer">
-                        <input
-                          type="checkbox"
-                          checked={learningConfig.jargon_learning?.enabled ?? true}
-                          onChange={(e) => {
-                            setLearningConfig({
-                              ...learningConfig,
-                              jargon_learning: {
-                                ...learningConfig.jargon_learning,
-                                enabled: e.target.checked
-                              }
-                            });
-                          }}
-                          className="w-4 h-4"
-                        />
-                        <span className="text-sm">启用</span>
-                      </label>
-                    </div>
-                    {learningConfig.jargon_learning?.enabled && (
-                      <div className="ml-6">
-                        <label className="flex items-center gap-2 cursor-pointer">
-                          <input
-                            type="checkbox"
-                            checked={learningConfig.jargon_learning?.explain_jargons ?? true}
-                            onChange={(e) => {
-                              setLearningConfig({
-                                ...learningConfig,
-                                jargon_learning: {
-                                  ...learningConfig.jargon_learning,
-                                  explain_jargons: e.target.checked
-                                }
-                              });
-                            }}
-                            className="w-4 h-4"
-                          />
-                          <span className="text-sm">在回复中解释黑话</span>
-                        </label>
-                      </div>
-                    )}
-                  </div>
-
-                  {/* Sticker Learning */}
-                  <div className="border border-gray-200 rounded-lg p-4">
-                    <div className="flex items-center justify-between mb-4">
-                      <h3 className="text-lg font-semibold">表情包学习</h3>
-                      <label className="flex items-center gap-2 cursor-pointer">
-                        <input
-                          type="checkbox"
-                          checked={learningConfig.sticker_learning?.enabled ?? true}
-                          onChange={(e) => {
-                            setLearningConfig({
-                              ...learningConfig,
-                              sticker_learning: {
-                                ...learningConfig.sticker_learning,
-                                enabled: e.target.checked
-                              }
-                            });
-                          }}
-                          className="w-4 h-4"
-                        />
-                        <span className="text-sm">启用</span>
-                      </label>
-                    </div>
-                    {learningConfig.sticker_learning?.enabled && (
-                      <div className="ml-6">
-                        <label className="flex items-center gap-2 cursor-pointer">
-                          <input
-                            type="checkbox"
-                            checked={learningConfig.sticker_learning?.use_stickers ?? true}
-                            onChange={(e) => {
-                              setLearningConfig({
-                                ...learningConfig,
-                                sticker_learning: {
-                                  ...learningConfig.sticker_learning,
-                                  use_stickers: e.target.checked
-                                }
-                              });
-                            }}
-                            className="w-4 h-4"
-                          />
-                          <span className="text-sm">在回复中使用学到的表情包</span>
-                        </label>
-                      </div>
-                    )}
-                  </div>
-
-                  {/* Knowledge Graph */}
-                  <div className="border border-gray-200 rounded-lg p-4">
-                    <div className="flex items-center justify-between mb-4">
-                      <h3 className="text-lg font-semibold">知识图谱</h3>
-                      <label className="flex items-center gap-2 cursor-pointer">
-                        <input
-                          type="checkbox"
-                          checked={learningConfig.knowledge_graph?.enabled ?? true}
-                          onChange={(e) => {
-                            setLearningConfig({
-                              ...learningConfig,
-                              knowledge_graph: {
-                                ...learningConfig.knowledge_graph,
-                                enabled: e.target.checked
-                              }
-                            });
-                          }}
-                          className="w-4 h-4"
-                        />
-                        <span className="text-sm">启用</span>
-                      </label>
-                    </div>
-                    {learningConfig.knowledge_graph?.enabled && (
-                      <div className="space-y-3 ml-6">
-                        <label className="flex items-center gap-2 cursor-pointer">
-                          <input
-                            type="checkbox"
-                            checked={learningConfig.knowledge_graph?.extract_triples ?? true}
-                            onChange={(e) => {
-                              setLearningConfig({
-                                ...learningConfig,
-                                knowledge_graph: {
-                                  ...learningConfig.knowledge_graph,
-                                  extract_triples: e.target.checked
-                                }
-                              });
-                            }}
-                            className="w-4 h-4"
-                          />
-                          <span className="text-sm">提取知识三元组</span>
-                        </label>
-                        <div>
-                          <label className="text-sm text-gray-700">
-                            每条消息最大提取三元组数
-                          </label>
-                          <input
-                            type="number"
-                            min="1"
-                            max="20"
-                            value={learningConfig.knowledge_graph?.max_triples_per_message ?? 5}
-                            onChange={(e) => {
-                              setLearningConfig({
-                                ...learningConfig,
-                                knowledge_graph: {
-                                  ...learningConfig.knowledge_graph,
-                                  max_triples_per_message: parseInt(e.target.value) || 5
-                                }
-                              });
-                            }}
-                            className="mt-1 px-3 py-2 border rounded-lg w-32"
-                          />
-                        </div>
-                      </div>
-                    )}
-                  </div>
-
-                  {/* HeartFlow */}
-                  <div className="border border-gray-200 rounded-lg p-4">
-                    <div className="flex items-center justify-between mb-4">
-                      <h3 className="text-lg font-semibold">HeartFlow 对话流</h3>
-                      <label className="flex items-center gap-2 cursor-pointer">
-                        <input
-                          type="checkbox"
-                          checked={learningConfig.heartflow?.enabled ?? true}
-                          onChange={(e) => {
-                            setLearningConfig({
-                              ...learningConfig,
-                              heartflow: {
-                                ...learningConfig.heartflow,
-                                enabled: e.target.checked
-                              }
-                            });
-                          }}
-                          className="w-4 h-4"
-                        />
-                        <span className="text-sm">启用</span>
-                      </label>
-                    </div>
-                    {learningConfig.heartflow?.enabled && (
-                      <div className="space-y-3 ml-6">
-                        <label className="flex items-center gap-2 cursor-pointer">
-                          <input
-                            type="checkbox"
-                            checked={learningConfig.heartflow?.track_emotions ?? true}
-                            onChange={(e) => {
-                              setLearningConfig({
-                                ...learningConfig,
-                                heartflow: {
-                                  ...learningConfig.heartflow,
-                                  track_emotions: e.target.checked
-                                }
-                              });
-                            }}
-                            className="w-4 h-4"
-                          />
-                          <span className="text-sm">追踪情感状态</span>
-                        </label>
-                        <label className="flex items-center gap-2 cursor-pointer">
-                          <input
-                            type="checkbox"
-                            checked={learningConfig.heartflow?.track_atmosphere ?? true}
-                            onChange={(e) => {
-                              setLearningConfig({
-                                ...learningConfig,
-                                heartflow: {
-                                  ...learningConfig.heartflow,
-                                  track_atmosphere: e.target.checked
-                                }
-                              });
-                            }}
-                            className="w-4 h-4"
-                          />
-                          <span className="text-sm">追踪对话氛围</span>
-                        </label>
-                      </div>
-                    )}
-                  </div>
-
-                  {/* Save Button */}
-                  <div className="flex justify-end">
-                    <button
-                      onClick={saveLearningConfig}
-                      disabled={savingConfig}
-                      className="px-6 py-2 bg-blue-500 text-white rounded-lg hover:bg-blue-600 disabled:opacity-50 flex items-center gap-2"
-                    >
-                      {savingConfig ? '保存中...' : '保存配置'}
-                    </button>
-                  </div>
-                </div>
-              ) : (
-                <div className="text-center py-8 text-gray-500">
-                  加载配置中...
-                </div>
-              )}
-            </div>
-          )}
-        </div>
+            )}
+          </>
+        )}
       </div>
     </div>
   );

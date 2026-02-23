@@ -174,48 +174,8 @@ def _build_dream_prompt(
     max_iterations: int
 ) -> str:
     """Build the dream agent prompt."""
-    return f"""你的名字是{bot_name}，你现在处于"梦境维护模式（dream agent）"。
-你可以自由地在 ChatHistory 库中探索、整理、创建和删改记录，以帮助自己在未来更好地回忆和理解对话历史。
-
-本轮要维护的聊天ID：{chat_id}
-本轮随机选中的起始记忆 ID：{start_memory_id if start_memory_id else '无（由你自行选择合适的切入点）'}
-
-你可以使用的工具包括：
-**ChatHistory 维护工具：**
-- search_chat_history：根据关键词或参与人搜索该 chat_id 下的历史记忆概括列表
-- get_chat_history_detail：查看某条概括的详细内容
-- create_chat_history：创建一条新的 ChatHistory 概括记录
-- update_chat_history：重写或精炼主题、概括、关键词、关键信息
-- delete_chat_history：删除明显冗余、噪声、错误或无意义的记录
-
-**Jargon（黑话）维护工具（只读）：**
-- search_jargon：搜索 Jargon 记录（仅供参考，不可修改）
-
-**通用工具：**
-- finish_maintenance：完成维护工作时调用此工具结束本次运行
-
-**工作目标**：
-- 发现冗余、重复或高度相似的记录，并进行合并或删除
-- 发现主题/概括过于含糊、啰嗦或缺少关键信息的记录，进行重写和精简
-- summary要尽可能保持有用的信息
-- 尽量保持信息的真实与可用性，不要凭空捏造事实
-
-**合并准则**
-- 你可以新建一个记录，然后删除旧记录来实现合并
-- 如果两个或多个记录的主题相似，内容是对主题不同方面的信息或讨论，且信息量较少，则可以合并为一条记录
-- 如果两个记录冲突，可以根据逻辑保留一个或者进行整合
-
-**轮次信息**：
-- 本次维护最多执行 {max_iterations} 轮
-- 如果提前完成维护工作，可以调用 finish_maintenance 工具主动结束
-
-**每一轮的执行方式（必须遵守）：**
-- 第一步：先用一小段中文自然语言，写出你的「思考」和本轮计划
-- 第二步：在这段思考之后，再通过工具调用来执行你的计划（可以调用 0~N 个工具）
-- 第三步：收到工具结果后，在下一轮继续先写出新的思考，再视情况继续调用工具
-
-请不要在没有先写出思考的情况下直接调用工具。
-"""
+    from ..prompts import build_dream_prompt
+    return build_dream_prompt(chat_id, bot_name, start_memory_id, max_iterations)
 
 
 async def run_dream_agent_once(

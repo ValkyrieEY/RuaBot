@@ -435,6 +435,19 @@ function GitHubInstallModal({ isOpen, onClose, onSuccess }: GitHubInstallModalPr
   const [installing, setInstalling] = useState(false)
   const [error, setError] = useState('')
   const [success, setSuccess] = useState(false)
+  const [progress, setProgress] = useState(0)
+  const [progressMessage, setProgressMessage] = useState('')
+  const eventSourceRef = useRef<EventSource | null>(null)
+
+  useEffect(() => {
+    // Cleanup EventSource on unmount or close
+    return () => {
+      if (eventSourceRef.current) {
+        eventSourceRef.current.close()
+        eventSourceRef.current = null
+      }
+    }
+  }, [])
 
   const handleInstall = async () => {
     if (!repoUrl.trim()) {
@@ -445,21 +458,82 @@ function GitHubInstallModal({ isOpen, onClose, onSuccess }: GitHubInstallModalPr
     setInstalling(true)
     setError('')
     setSuccess(false)
+    setProgress(0)
+    setProgressMessage('')
 
     try {
-      await api.installPluginFromGitHub(repoUrl.trim())
-      setSuccess(true)
-      setTimeout(() => {
-        onSuccess()
-        onClose()
-        setRepoUrl('')
-        setSuccess(false)
-      }, 1500)
+      // Start installation and get task_id
+      const response = await api.installPluginFromGitHub(repoUrl.trim())
+      const taskId = response.task_id
+
+      // Connect to SSE endpoint for progress updates
+      const protocol = window.location.protocol === 'https:' ? 'https:' : 'http:'
+      const host = window.location.host
+      const progressUrl = `${protocol}//${host}/api/plugins/install-progress/${taskId}`
+      
+      const eventSource = new EventSource(progressUrl)
+      eventSourceRef.current = eventSource
+
+      eventSource.onmessage = (event) => {
+        try {
+          const data = JSON.parse(event.data)
+          
+          if (data.status === 'completed') {
+            setProgress(100)
+            setProgressMessage('安装完成！')
+            setSuccess(true)
+            eventSource.close()
+            eventSourceRef.current = null
+            setTimeout(() => {
+              onSuccess()
+              onClose()
+              setRepoUrl('')
+              setSuccess(false)
+              setProgress(0)
+              setProgressMessage('')
+            }, 1500)
+          } else if (data.status === 'failed') {
+            setError(data.message || '安装失败')
+            setInstalling(false)
+            eventSource.close()
+            eventSourceRef.current = null
+          } else {
+            setProgress(data.progress || 0)
+            setProgressMessage(data.message || '')
+          }
+        } catch (err) {
+          console.error('Failed to parse progress data:', err)
+        }
+      }
+
+      eventSource.onerror = (err) => {
+        console.error('EventSource error:', err)
+        eventSource.close()
+        eventSourceRef.current = null
+        if (!success && !error) {
+          setError('连接中断，请重试')
+          setInstalling(false)
+        }
+      }
     } catch (err: any) {
       setError(err.response?.data?.detail || '安装失败')
-    } finally {
       setInstalling(false)
+      if (eventSourceRef.current) {
+        eventSourceRef.current.close()
+        eventSourceRef.current = null
+      }
     }
+  }
+
+  const handleClose = () => {
+    if (eventSourceRef.current) {
+      eventSourceRef.current.close()
+      eventSourceRef.current = null
+    }
+    setInstalling(false)
+    setProgress(0)
+    setProgressMessage('')
+    onClose()
   }
 
   if (!isOpen) return null
@@ -472,8 +546,9 @@ function GitHubInstallModal({ isOpen, onClose, onSuccess }: GitHubInstallModalPr
             从 GitHub 安装插件
           </h2>
           <button
-            onClick={onClose}
-            className="p-2 hover:bg-gray-100 rounded-lg transition-colors"
+            onClick={handleClose}
+            disabled={installing && !success}
+            className="p-2 hover:bg-gray-100 rounded-lg transition-colors disabled:opacity-50"
           >
             <X className="w-5 h-5" />
           </button>
@@ -497,6 +572,7 @@ function GitHubInstallModal({ isOpen, onClose, onSuccess }: GitHubInstallModalPr
                   onChange={(e) => setRepoUrl(e.target.value)}
                   placeholder="owner/repo 或 https://github.com/owner/repo"
                   className="input w-full"
+                  disabled={installing}
                   onKeyDown={(e) => {
                     if (e.key === 'Enter' && !installing) {
                       handleInstall()
@@ -507,6 +583,21 @@ function GitHubInstallModal({ isOpen, onClose, onSuccess }: GitHubInstallModalPr
                   支持格式：owner/repo 或完整的 GitHub URL
                 </p>
               </div>
+              
+              {installing && (
+                <div className="space-y-2">
+                  <div className="flex items-center justify-between text-sm">
+                    <span className="text-gray-700">{progressMessage || '准备中...'}</span>
+                    <span className="text-gray-500">{progress}%</span>
+                  </div>
+                  <div className="w-full bg-gray-200 rounded-full h-2.5">
+                    <div
+                      className="bg-blue-600 h-2.5 rounded-full transition-all duration-300"
+                      style={{ width: `${progress}%` }}
+                    />
+                  </div>
+                </div>
+              )}
               
               {error && (
                 <div className="bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded-lg text-sm">
@@ -520,7 +611,7 @@ function GitHubInstallModal({ isOpen, onClose, onSuccess }: GitHubInstallModalPr
         {!success && (
           <div className="flex items-center justify-end gap-3 p-6 border-t border-gray-200">
             <button
-              onClick={onClose}
+              onClick={handleClose}
               disabled={installing}
               className="btn btn-secondary"
             >

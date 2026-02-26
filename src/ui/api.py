@@ -8,7 +8,7 @@ from fastapi import FastAPI, HTTPException, Depends, status, UploadFile, File, F
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import HTMLResponse, FileResponse, JSONResponse
+from fastapi.responses import HTMLResponse, FileResponse, JSONResponse, StreamingResponse
 from starlette.middleware import Middleware
 from pydantic import BaseModel
 from pathlib import Path
@@ -19,6 +19,7 @@ import uuid
 import time
 import os
 import json
+from collections import defaultdict
 
 from ..core.app import get_app
 from ..core.config import get_config, get_config_manager, reload_config
@@ -40,6 +41,9 @@ _model_manager = None
 _ai_manager = None
 _mcp_manager = None
 _ai_available = None
+
+# Plugin installation progress tracking
+_plugin_install_progress: Dict[str, Dict[str, Any]] = {}
 
 # Request/Response Models
 class LoginRequest(BaseModel):
@@ -1379,6 +1383,41 @@ def create_app() -> FastAPI:
             logger.error(f"Failed to delete config file: {e}")
             raise HTTPException(status_code=500, detail=f"Failed to delete file: {str(e)}")
     
+    @app.get("/api/plugins/install-progress/{task_id}")
+    async def get_plugin_install_progress(
+        task_id: str,
+        user: Dict[str, Any] = Depends(get_current_user)
+    ):
+        """Get plugin installation progress via SSE."""
+        async def event_generator():
+            while True:
+                if task_id in _plugin_install_progress:
+                    progress_data = _plugin_install_progress[task_id]
+                    yield f"data: {json.dumps(progress_data)}\n\n"
+                    
+                    # If completed or failed, close connection
+                    if progress_data.get('status') in ['completed', 'failed']:
+                        # Clean up after a delay
+                        await asyncio.sleep(1)
+                        _plugin_install_progress.pop(task_id, None)
+                        break
+                else:
+                    # Task not found
+                    yield f"data: {json.dumps({'status': 'not_found'})}\n\n"
+                    break
+                
+                await asyncio.sleep(0.5)  # Update every 500ms
+        
+        return StreamingResponse(
+            event_generator(),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "Connection": "keep-alive",
+                "X-Accel-Buffering": "no"
+            }
+        )
+    
     @app.post("/api/plugins/install-from-github")
     async def install_plugin_from_github(
         repo_url: str = Body(..., embed=True),
@@ -1411,41 +1450,76 @@ def create_app() -> FastAPI:
         
         owner, repo = parts[0], parts[1]
         
-        # Download ZIP from GitHub
+        # Generate task ID for progress tracking
+        task_id = str(uuid.uuid4())
+        _plugin_install_progress[task_id] = {
+            'status': 'downloading',
+            'progress': 0,
+            'message': '开始下载...'
+        }
+        
+        # Download ZIP from GitHub with progress tracking
         download_url = f"https://github.com/{owner}/{repo}/archive/refs/heads/main.zip"
         
-        try:
-            async with httpx.AsyncClient(follow_redirects=True, timeout=60.0) as client:
-                logger.info(f"Downloading plugin from GitHub: {owner}/{repo}")
-                response = await client.get(download_url)
-                
-                # Try master branch if main doesn't exist
-                if response.status_code == 404:
-                    download_url = f"https://github.com/{owner}/{repo}/archive/refs/heads/master.zip"
-                    response = await client.get(download_url)
-                
-                response.raise_for_status()
-                zip_content = response.content
-        except httpx.HTTPStatusError as e:
-            logger.error(f"Failed to download plugin from GitHub: {e}")
-            raise HTTPException(
-                status_code=400, 
-                detail=f"Failed to download from GitHub. Please check the repository URL and ensure it's public."
-            )
-        except Exception as e:
-            logger.error(f"Error downloading plugin: {e}")
-            raise HTTPException(status_code=500, detail=f"Download error: {str(e)}")
-        
-        # Save to temporary file and install
+        # Create temporary directory
         with tempfile.TemporaryDirectory() as temp_dir:
             temp_path = Path(temp_dir)
             zip_path = temp_path / f"{repo}.zip"
             
-            with open(zip_path, 'wb') as f:
-                f.write(zip_content)
-            
             try:
+                async with httpx.AsyncClient(follow_redirects=True, timeout=120.0) as client:
+                    logger.info(f"Downloading plugin from GitHub: {owner}/{repo}")
+                    
+                    # Try main branch first
+                    async with client.stream('GET', download_url) as response:
+                        # Try master branch if main doesn't exist
+                        if response.status_code == 404:
+                            download_url = f"https://github.com/{owner}/{repo}/archive/refs/heads/master.zip"
+                            async with client.stream('GET', download_url) as response2:
+                                response2.raise_for_status()
+                                total_size = int(response2.headers.get('content-length', 0))
+                                zip_path = await _download_with_progress(response2, task_id, total_size, zip_path)
+                        else:
+                            response.raise_for_status()
+                            total_size = int(response.headers.get('content-length', 0))
+                            zip_path = await _download_with_progress(response, task_id, total_size, zip_path)
+                            
+            except httpx.HTTPStatusError as e:
+                logger.error(f"Failed to download plugin from GitHub: {e}")
+                _plugin_install_progress[task_id] = {
+                    'status': 'failed',
+                    'progress': 0,
+                    'message': f'下载失败: HTTP {e.response.status_code}'
+                }
+                raise HTTPException(
+                    status_code=400, 
+                    detail=f"Failed to download from GitHub. Please check the repository URL and ensure it's public."
+                )
+            except Exception as e:
+                logger.error(f"Error downloading plugin: {e}")
+                _plugin_install_progress[task_id] = {
+                    'status': 'failed',
+                    'progress': 0,
+                    'message': f'下载错误: {str(e)}'
+                }
+                raise HTTPException(status_code=500, detail=f"Download error: {str(e)}")
+            
+            # Install plugin
+            try:
+                _plugin_install_progress[task_id] = {
+                    'status': 'installing',
+                    'progress': 90,
+                    'message': '正在安装插件...'
+                }
+                
                 result = await _install_plugin_from_zip(zip_path, config, db_manager, plugin_connector, user)
+                
+                _plugin_install_progress[task_id] = {
+                    'status': 'completed',
+                    'progress': 100,
+                    'message': '安装完成！',
+                    'result': result
+                }
                 
                 # Log action
                 await get_audit_logger().log_plugin_action(
@@ -1456,8 +1530,13 @@ def create_app() -> FastAPI:
                     details={"repo": f"{owner}/{repo}"}
                 )
                 
-                return result
+                return {"task_id": task_id, **result}
             except Exception as e:
+                _plugin_install_progress[task_id] = {
+                    'status': 'failed',
+                    'progress': 0,
+                    'message': f'安装失败: {str(e)}'
+                }
                 await get_audit_logger().log_plugin_action(
                     action="install_from_github",
                     plugin_name=repo,
@@ -1466,6 +1545,32 @@ def create_app() -> FastAPI:
                     details={"repo": f"{owner}/{repo}", "error": str(e)}
                 )
                 raise
+    
+    async def _download_with_progress(response, task_id: str, total_size: int, zip_path: Path):
+        """Download file with progress tracking."""
+        downloaded = 0
+        
+        with open(zip_path, 'wb') as f:
+            async for chunk in response.aiter_bytes(chunk_size=8192):
+                f.write(chunk)
+                downloaded += len(chunk)
+                
+                if total_size > 0:
+                    progress = int((downloaded / total_size) * 90)  # 90% for download, 10% for install
+                    _plugin_install_progress[task_id] = {
+                        'status': 'downloading',
+                        'progress': progress,
+                        'message': f'下载中... {downloaded // 1024 // 1024}MB / {total_size // 1024 // 1024}MB'
+                    }
+                else:
+                    # If total size is unknown, show indeterminate progress
+                    _plugin_install_progress[task_id] = {
+                        'status': 'downloading',
+                        'progress': min(90, downloaded // 1024 // 1024),  # Rough estimate
+                        'message': f'下载中... {downloaded // 1024 // 1024}MB'
+                    }
+        
+        return zip_path
     
     async def _install_plugin_from_zip(zip_path: Path, config, db_manager, plugin_connector, user):
         """Helper function to install plugin from ZIP file.

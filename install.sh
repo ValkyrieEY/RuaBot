@@ -769,6 +769,149 @@ EOF
     log_success "配置文件创建完成"
 }
 
+# 初始化 config.toml 配置
+init_config_toml() {
+    log_info "初始化 config.toml 配置..."
+    
+    cd "$INSTALL_DIR"
+    
+    # 检查 config.toml 是否存在
+    if [ ! -f "config.toml" ]; then
+        log_warning "config.toml 不存在，将创建默认配置"
+        # 如果不存在，从模板复制（如果有的话）
+        if [ -f "config.toml.example" ]; then
+            cp config.toml.example config.toml
+        fi
+    fi
+    
+    echo ""
+    echo -e "${CYAN}═══════════════════════════════════════${NC}"
+    echo -e "${CYAN}        配置初始化${NC}"
+    echo -e "${CYAN}═══════════════════════════════════════${NC}"
+    echo ""
+    
+    # 设置 WebUI 管理账号
+    echo -e "${YELLOW}设置 WebUI 管理账号${NC}"
+    read -p "请输入管理员用户名 [默认: admin]: " webui_username
+    webui_username=${webui_username:-admin}
+    
+    read -sp "请输入管理员密码 [默认: admin123]: " webui_password
+    echo ""
+    webui_password=${webui_password:-admin123}
+    
+    # 设置 WebUI 端口
+    echo ""
+    echo -e "${YELLOW}设置 WebUI 后台端口${NC}"
+    read -p "请输入 WebUI 端口 [默认: 8000]: " webui_port
+    webui_port=${webui_port:-8000}
+    
+    # 验证端口是否被占用
+    if command -v lsof &> /dev/null || command -v netstat &> /dev/null; then
+        local port_in_use=false
+        if command -v lsof &> /dev/null; then
+            if lsof -i :$webui_port &> /dev/null; then
+                port_in_use=true
+            fi
+        elif command -v netstat &> /dev/null; then
+            if netstat -tuln 2>/dev/null | grep -q ":$webui_port "; then
+                port_in_use=true
+            fi
+        fi
+        
+        if [ "$port_in_use" = true ]; then
+            log_warning "端口 $webui_port 已被占用，请确保这是您想要使用的端口"
+            read -p "是否继续使用端口 $webui_port? (Y/n): " -n 1 -r
+            echo
+            if [[ $REPLY =~ ^[Nn]$ ]]; then
+                read -p "请输入新的端口号: " webui_port
+            fi
+        fi
+    fi
+    
+    # 设置服务器主机
+    echo ""
+    echo -e "${YELLOW}设置服务器配置${NC}"
+    read -p "请输入服务器主机地址 [默认: 0.0.0.0]: " server_host
+    server_host=${server_host:-0.0.0.0}
+    
+    # 询问是否启用调试模式
+    echo ""
+    read -p "是否启用调试模式? (y/N): " -n 1 -r
+    echo
+    if [[ $REPLY =~ ^[Yy]$ ]]; then
+        debug_mode="true"
+        log_level="DEBUG"
+    else
+        debug_mode="false"
+        log_level="INFO"
+    fi
+    
+    # 更新 config.toml
+    log_info "正在更新 config.toml..."
+    
+    # 使用 Python 或 sed 来更新配置
+    if command -v python3 &> /dev/null; then
+        python3 << EOF
+import re
+import sys
+
+config_file = "$INSTALL_DIR/config.toml"
+
+try:
+    with open(config_file, 'r', encoding='utf-8') as f:
+        content = f.read()
+    
+    # 更新 WebUI 配置
+    content = re.sub(r'username\s*=\s*"[^"]*"', f'username = "$webui_username"', content)
+    content = re.sub(r'password\s*=\s*"[^"]*"', f'password = "$webui_password"', content)
+    
+    # 更新服务器端口
+    content = re.sub(r'port\s*=\s*\d+', f'port = $webui_port', content)
+    content = re.sub(r'host\s*=\s*"[^"]*"', f'host = "$server_host"', content)
+    
+    # 更新调试模式
+    content = re.sub(r'debug\s*=\s*(true|false)', f'debug = $debug_mode', content)
+    content = re.sub(r'level\s*=\s*"[^"]*"', f'level = "$log_level"', content)
+    
+    with open(config_file, 'w', encoding='utf-8') as f:
+        f.write(content)
+    
+    print("✓ config.toml 更新成功")
+except Exception as e:
+    print(f"✗ config.toml 更新失败: {e}")
+    sys.exit(1)
+EOF
+    else
+        # 使用 sed 更新配置（简单替换）
+        if [[ "$OSTYPE" == "darwin"* ]]; then
+            sed -i '' "s/username = \".*\"/username = \"$webui_username\"/" config.toml 2>/dev/null || true
+            sed -i '' "s/password = \".*\"/password = \"$webui_password\"/" config.toml 2>/dev/null || true
+            sed -i '' "s/port = [0-9]*/port = $webui_port/" config.toml 2>/dev/null || true
+            sed -i '' "s/host = \".*\"/host = \"$server_host\"/" config.toml 2>/dev/null || true
+            sed -i '' "s/debug = .*/debug = $debug_mode/" config.toml 2>/dev/null || true
+            sed -i '' "s/level = \".*\"/level = \"$log_level\"/" config.toml 2>/dev/null || true
+        else
+            sed -i "s/username = \".*\"/username = \"$webui_username\"/" config.toml 2>/dev/null || true
+            sed -i "s/password = \".*\"/password = \"$webui_password\"/" config.toml 2>/dev/null || true
+            sed -i "s/port = [0-9]*/port = $webui_port/" config.toml 2>/dev/null || true
+            sed -i "s/host = \".*\"/host = \"$server_host\"/" config.toml 2>/dev/null || true
+            sed -i "s/debug = .*/debug = $debug_mode/" config.toml 2>/dev/null || true
+            sed -i "s/level = \".*\"/level = \"$log_level\"/" config.toml 2>/dev/null || true
+        fi
+    fi
+    
+    log_success "配置初始化完成"
+    echo ""
+    echo -e "${GREEN}配置摘要:${NC}"
+    echo -e "  WebUI 用户名: ${BLUE}$webui_username${NC}"
+    echo -e "  WebUI 密码: ${BLUE}******${NC}"
+    echo -e "  WebUI 端口: ${BLUE}$webui_port${NC}"
+    echo -e "  服务器主机: ${BLUE}$server_host${NC}"
+    echo -e "  调试模式: ${BLUE}$debug_mode${NC}"
+    echo ""
+    log_info "您可以在 $INSTALL_DIR/config.toml 中修改这些配置"
+}
+
 # 安装 CLI 工具
 install_cli() {
     log_info "安装 rcli 命令行工具..."
@@ -865,7 +1008,7 @@ main() {
         set -x
     fi
     
-    local total_steps=10
+    local total_steps=11
     local current_step=0
     
     ((current_step++))
@@ -912,6 +1055,11 @@ main() {
     ((current_step++))
     show_progress $current_step $total_steps "创建配置文件..."
     create_config
+    echo ""
+    
+    ((current_step++))
+    show_progress $current_step $total_steps "初始化配置..."
+    init_config_toml
     echo ""
     
     ((current_step++))

@@ -91,10 +91,19 @@ class MessageRelayInterceptor(MessageInterceptor):
                         return InterceptorResult(allow=True)
             
             # 拦截其他插件或框架发送的消息，通过中继发送
-            # 先返回结果，再异步记录日志和发送到中继（避免阻塞）
-            asyncio.create_task(
-                self._handle_intercepted_message(group_id, message, source_plugin)
-            )
+            # 先快速记录日志和发送到中继，再返回结果（确保在超时时间内完成）
+            try:
+                self.relay_client.api.log("info", f"拦截到消息发送: 群{group_id}, 来源: {source_plugin or '框架'}")
+                # 异步发送到中继（不等待结果）
+                asyncio.create_task(
+                    self.relay_client._send_to_relay(
+                        group_id=group_id,
+                        message=message if isinstance(message, str) else str(message),
+                        sender_id=0  # 拦截器无法获取发送者ID，使用0
+                    )
+                )
+            except Exception as e:
+                self.relay_client.api.log("error", f"处理拦截消息失败: {e}")
             
             # 阻止原消息发送
             return InterceptorResult(allow=False, block_reason="消息已通过官方机器人中继发送")
@@ -102,17 +111,7 @@ class MessageRelayInterceptor(MessageInterceptor):
         # 其他消息类型放行
         return InterceptorResult(allow=True)
     
-    async def _handle_intercepted_message(self, group_id: int, message: str, source_plugin: Optional[str]):
-        """异步处理被拦截的消息（记录日志并发送到中继）"""
-        try:
-            self.relay_client.api.log("info", f"拦截到消息发送: 群{group_id}, 来源: {source_plugin or '框架'}")
-            await self.relay_client._send_to_relay(
-                group_id=group_id,
-                message=message if isinstance(message, str) else str(message),
-                sender_id=0  # 拦截器无法获取发送者ID，使用0
-            )
-        except Exception as e:
-            self.relay_client.api.log("error", f"处理拦截消息失败: {e}")
+    
 
 
 class MessageRelayClient:

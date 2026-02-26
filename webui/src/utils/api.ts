@@ -146,7 +146,7 @@ class ApiClient {
     return response.data
   }
 
-  async installPluginFromGitHub(repoUrl: string): Promise<any> {
+  async installPluginFromGitHub(repoUrl: string): Promise<{ task_id: string }> {
     const response = await this.client.post('/plugins/install-from-github', {
       repo_url: repoUrl
     })

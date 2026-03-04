@@ -5,6 +5,14 @@
 # 用法: bash <(curl -fsSL https://raw.githubusercontent.com/ValkyrieEY/RuaBot/main/install.sh)
 ################################################################################
 
+# 广告信息
+echo ""
+echo -e "\033[1;36m合作商推广：\033[0m"
+echo -e "\033[1;32m1\033[0m. 项目仓库：\033[1;34mhttps://github.com/ValkyrieEY/RuaBot\033[0m"
+echo -e "\033[1;32m2\033[0m. 顶端云：\033[1;34mhttps://cloud.dinduan.com\033[0m"
+echo -e "\033[1;32m3\033[0m. 创创云：\033[1;34mhttps://www.ccyidc.com\033[0m"
+echo ""
+
 # 不立即退出，先显示错误
 set -o pipefail
 
@@ -16,10 +24,20 @@ BLUE='\033[0;34m'
 NC='\033[0m' # No Color
 
 # 项目配置
-REPO_URL="https://github.com/ValkyrieEY/RuaBot.git"
 INSTALL_DIR="$HOME/RuaBot"
 PYTHON_VERSION="3.13"
 NODE_VERSION="24.12.0"
+
+# 镜像源配置
+declare -a REPO_MIRRORS=(
+    "https://github.com/ValkyrieEY/RuaBot.git"                    # 官方源
+    "https://ghproxy.com/https://github.com/ValkyrieEY/RuaBot.git"    # GitHub Proxy
+    "https://github.chenc.dev/https://github.com/ValkyrieEY/RuaBot.git"   # GitHub Proxy Net
+    "https://hub.fgit.ml/https://github.com/ValkyrieEY/RuaBot.git"    # FastGit
+)
+
+# 默认仓库URL（将通过自动检测确定）
+REPO_URL=""
 
 # 日志函数
 log_info() {
@@ -135,7 +153,93 @@ install_system_dependencies() {
     log_success "系统依赖安装完成"
 }
 
-# 克隆仓库（带重试机制）
+# 测试URL响应时间
+test_url_speed() {
+    local url=$1
+    local timeout=${2:-10}
+    
+    # 尝试不同方法测试连接速度
+    if command -v curl &> /dev/null; then
+        # 使用curl测试连接时间
+        local start_time=$(date +%s.%N)
+        if curl -s -m $timeout --connect-timeout $timeout -o /dev/null "$url/info/refs?service=git-upload-pack" 2>/dev/null; then
+            local end_time=$(date +%s.%N)
+            local duration=$(echo "$end_time - $start_time" | bc 2>/dev/null || echo "999")
+            if [ -z "$duration" ] || [ "$duration" = "999" ]; then
+                duration=999
+            fi
+            echo "$duration"
+        else
+            echo "999"  # 超时或失败
+        fi
+    elif command -v wget &> /dev/null; then
+        # 使用wget测试连接时间
+        local start_time=$(date +%s.%N)
+        if wget -T $timeout --spider "$url/info/refs?service=git-upload-pack" 2>/dev/null; then
+            local end_time=$(date +%s.%N)
+            local duration=$(echo "$end_time - $start_time" | bc 2>/dev/null || echo "999")
+            if [ -z "$duration" ] || [ "$duration" = "999" ]; then
+                duration=999
+            fi
+            echo "$duration"
+        else
+            echo "999"  # 超时或失败
+        fi
+    else
+        echo "999"  # 命令不存在
+    fi
+}
+
+
+# 自动选择最快的仓库源
+select_fastest_repo() {
+    log_info "正在自动检测最快的仓库源..."
+    
+    local fastest_url=""
+    local fastest_time=999
+    local timeout=15
+    
+    echo ""
+    echo -e "${BLUE}[源测试进度]${NC} 测试各仓库源的连接速度..."
+    
+    for i in "${!REPO_MIRRORS[@]}"; do
+        local url="${REPO_MIRRORS[$i]#*://}"
+        url="${url%%/*}"
+        echo -ne "\r${BLUE}[测试]${NC} 正在测试源 $((i+1))/$(echo ${#REPO_MIRRORS[@]}) - $url"
+        
+        local response_time=$(test_url_speed "${REPO_MIRRORS[$i]}" $timeout)
+        
+        # 确保response_time是数字
+        if ! [[ "$response_time" =~ ^[0-9]+\.?[0-9]*$ ]]; then
+            response_time=999
+        fi
+        
+        if (( $(echo "$response_time < $fastest_time" | bc -l 2>/dev/null || echo "0") )); then
+            fastest_time=$response_time
+            fastest_url="${REPO_MIRRORS[$i]}"
+        fi
+        
+        if [ $(echo "$response_time >= 999" | bc -l 2>/dev/null || echo "1") -eq 1 ]; then
+            echo -e " -> ${RED}超时${NC}"
+        else
+            echo -e " -> ${GREEN}$(printf "%.2f秒" $response_time)${NC}"
+        fi
+    done
+    
+    if [ "$fastest_time" = "999" ] || [ -z "$fastest_url" ]; then
+        log_warning "所有源测试均超时或失败，使用官方源作为备选"
+        REPO_URL="${REPO_MIRRORS[0]}"
+    else
+        REPO_URL="$fastest_url"
+        local fastest_domain="${REPO_URL#*://}"
+        fastest_domain="${fastest_domain%%/*}"
+        log_success "已选择最快源: $fastest_domain (${fastest_time}s 响应时间)"
+    fi
+    
+    echo ""
+}
+
+# 克隆仓库（带重试机制和详细进度显示）
 clone_with_retry() {
     local repo_url=$1
     local target_dir=$2
@@ -155,16 +259,56 @@ clone_with_retry() {
         fi
         
         log_info "正在克隆仓库..."
-        if git clone "$repo_url" "$target_dir" 2>&1 | while IFS= read -r line; do
-            if [[ "$line" =~ (Cloning|remote:|Receiving|Resolving|Checking out) ]]; then
+        
+        # 启动后台提示进程，显示长时间运行的提示
+        (
+            local count=0
+            while true; do
+                sleep 10
+                count=$((count + 10))
+                local elapsed_min=$((count / 60))
+                local elapsed_sec=$((count % 60))
+                echo -e "\r${YELLOW}[提示]${NC} 正在克隆仓库，已进行 ${elapsed_min}分${elapsed_sec}秒，请耐心等待... (时间: $(date +%H:%M:%S))" >&2
+            done
+        ) &
+        local PROGRESS_PID=$!
+        
+        # 使用更详细的进度显示，包含文件级别的进度
+        if git clone --progress --verbose "$repo_url" "$target_dir" 2>&1 | while IFS= read -r line; do
+            # 检查是否有进度信息
+            if [[ "$line" =~ ([0-9]{1,3}%|[0-9]+/.*) ]]; then
+                # 这是进度信息，显示为蓝色
+                echo -e "${BLUE}[进度]${NC} $line"
+            elif [[ "$line" =~ (Cloning into|remote: Counting objects|remote: Compressing objects|remote: Total|Receiving objects|Resolving deltas|Checking out|Updating files) ]]; then
+                # 这是克隆过程的关键步骤，显示为蓝色
+                echo -e "${BLUE}[INFO]${NC} $line"
+            elif [[ "$line" =~ (Counting|Compressing|Total|Receiving|Resolving|Checking out|Updating) ]]; then
+                # 这是克隆过程的一般步骤，显示为蓝色
+                echo -e "${BLUE}[INFO]${NC} $line"
+            elif [[ "$line" =~ (Receiving|objects|delta|resolving|checkout) ]]; then
+                # 包含接收对象的信息，显示为蓝色
+                echo -e "${BLUE}[INFO]${NC} $line"
+            elif [[ "$line" =~ (Writing objects|Enumerating objects|remote:|Receiving|Resolving deltas) ]]; then
+                # 更多Git操作信息
                 echo -e "${BLUE}[INFO]${NC} $line"
             elif [[ "$line" =~ (fatal|error|Error|ERROR) ]]; then
-                echo -e "${YELLOW}[WARN]${NC} $line"
+                # 这是错误信息，显示为黄色警告
+                echo -e "${YELLOW}[ERROR]${NC} $line"
+            else
+                # 其他信息，也显示为蓝色
+                echo -e "${BLUE}[INFO]${NC} $line"
             fi
         done && [ -d "$target_dir/.git" ]; then
             clone_success=true
+            # 成功时停止后台提示进程
+            kill $PROGRESS_PID 2>/dev/null || true
+            echo ""
             return 0
         else
+            # 失败时也要停止后台提示进程
+            kill $PROGRESS_PID 2>/dev/null || true
+            echo ""
+            
             # 清理失败的克隆
             rm -rf "$target_dir" 2>/dev/null || true
             
@@ -187,6 +331,9 @@ clone_with_retry() {
 # 克隆仓库
 clone_repository() {
     log_info "克隆 RuaBot 仓库..."
+    
+    # 自动选择最快的仓库源
+    select_fastest_repo
     
     if [ -d "$INSTALL_DIR" ]; then
         log_warning "检测到已存在的安装目录: $INSTALL_DIR"
@@ -263,55 +410,6 @@ clone_repository() {
     }
     
     log_success "仓库克隆完成"
-}
-
-# 克隆仓库（带重试机制）
-clone_with_retry() {
-    local repo_url=$1
-    local target_dir=$2
-    local retry_count=0
-    local max_retries=5
-    local clone_success=false
-    
-    # 配置 Git 以处理 TLS 问题
-    git config --global http.sslVerify true 2>/dev/null || true
-    git config --global http.postBuffer 524288000 2>/dev/null || true
-    
-    while [ $retry_count -lt $max_retries ] && [ "$clone_success" = false ]; do
-        retry_count=$((retry_count + 1))
-        if [ $retry_count -gt 1 ]; then
-            log_info "第 $retry_count 次尝试克隆仓库（共 $max_retries 次）..."
-            sleep 3
-        fi
-        
-        log_info "正在克隆仓库..."
-        if git clone "$repo_url" "$target_dir" 2>&1 | while IFS= read -r line; do
-            if [[ "$line" =~ (Cloning|remote:|Receiving|Resolving|Checking out) ]]; then
-                echo -e "${BLUE}[INFO]${NC} $line"
-            elif [[ "$line" =~ (fatal|error|Error|ERROR) ]]; then
-                echo -e "${YELLOW}[WARN]${NC} $line"
-            fi
-        done && [ -d "$target_dir/.git" ]; then
-            clone_success=true
-            return 0
-        else
-            # 清理失败的克隆
-            rm -rf "$target_dir" 2>/dev/null || true
-            
-            if [ $retry_count -lt $max_retries ]; then
-                log_warning "克隆失败，将在 3 秒后自动重试..."
-            else
-                log_error "克隆失败（已重试 $max_retries 次）"
-                log_info "可能的原因："
-                log_info "  1. 网络连接问题"
-                log_info "  2. GitHub 访问受限"
-                log_info "  3. 仓库不存在或无权访问"
-                return 1
-            fi
-        fi
-    done
-    
-    return 0
 }
 
 # 安装 Python (使用 pyenv)
@@ -1094,4 +1192,3 @@ main() {
 
 # 执行主函数
 main
-

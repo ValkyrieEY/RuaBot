@@ -3,6 +3,10 @@
 import asyncio
 from contextlib import asynccontextmanager
 from typing import Any, Dict, List, Optional
+import platform
+import sys
+import uuid
+import time
 
 from fastapi import FastAPI, HTTPException, Depends, status, UploadFile, File, Form, Body, WebSocket, WebSocketDisconnect
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
@@ -28,6 +32,7 @@ from ..core.database import get_database_manager
 from ..security.auth import AuthManager
 from ..security.permissions import get_permission_manager, Permission
 from ..security.audit import get_audit_logger, AuditEventType, AuditEvent
+from ..security.device_keys import get_device_key_manager, DeviceKeyStatus
 from ..core.logger import get_logger
 from ..core.ai_detector import is_ai_available, get_ai_detector
 from ..core.version import get_version
@@ -53,6 +58,30 @@ class LoginRequest(BaseModel):
 class LoginResponse(BaseModel):
     access_token: str
     token_type: str = "bearer"
+
+
+class DeviceKeyCreateRequest(BaseModel):
+    """Request body for creating a new device key."""
+
+    name: Optional[str] = None
+    device_fingerprint: Dict[str, Any] = {}
+
+
+class DeviceKeyResponse(BaseModel):
+    """Public information about a device key (without opaque token)."""
+
+    key_id: str
+    name: str
+    status: str
+    created_at: Optional[str] = None
+    last_used_at: Optional[str] = None
+    device_fingerprint: Dict[str, Any] = {}
+
+
+class DeviceKeyWithTokenResponse(DeviceKeyResponse):
+    """Device key plus opaque token (only returned at creation time)."""
+
+    opaque_token: str
 
 class PluginInfo(BaseModel):
     name: str
@@ -489,6 +518,144 @@ def create_app() -> FastAPI:
     async def get_current_user_info(user: Dict[str, Any] = Depends(get_current_user)):
         """Get current user info."""
         return user
+
+    # ------------------------------------------------------------------
+    # Device key endpoints (for browser extension based login)
+    # ------------------------------------------------------------------
+    @app.post("/api/device-keys", response_model=DeviceKeyWithTokenResponse)
+    async def create_device_key(
+        request: DeviceKeyCreateRequest,
+        user: Dict[str, Any] = Depends(get_current_user),
+    ):
+        """Create a new device key for current user."""
+        username = user.get("username")
+        mgr = get_device_key_manager()
+        record = mgr.create_key(
+            username=username,
+            name=request.name,
+            device_fingerprint=request.device_fingerprint or {},
+        )
+        return DeviceKeyWithTokenResponse(**record)
+
+    @app.get("/api/device-keys", response_model=List[DeviceKeyResponse])
+    async def list_device_keys(user: Dict[str, Any] = Depends(get_current_user)):
+        """List all device keys of current user."""
+        username = user.get("username")
+        mgr = get_device_key_manager()
+        records = mgr.list_keys_for_user(username)
+        return [DeviceKeyResponse(**r) for r in records]
+
+    @app.post("/api/device-keys/{key_id}/enable", response_model=DeviceKeyResponse)
+    async def enable_device_key(
+        key_id: str,
+        user: Dict[str, Any] = Depends(get_current_user),
+    ):
+        """Enable a specific device key."""
+        username = user.get("username")
+        mgr = get_device_key_manager()
+        try:
+            rec = mgr.set_status(username, key_id, DeviceKeyStatus.ENABLED)
+        except KeyError:
+            raise HTTPException(status_code=404, detail="Device key not found")
+        return DeviceKeyResponse(
+            key_id=rec["key_id"],
+            name=rec.get("name", ""),
+            status=rec.get("status", ""),
+            created_at=rec.get("created_at"),
+            last_used_at=rec.get("last_used_at"),
+            device_fingerprint=rec.get("device_fingerprint") or {},
+        )
+
+    @app.post("/api/device-keys/{key_id}/disable", response_model=DeviceKeyResponse)
+    async def disable_device_key(
+        key_id: str,
+        user: Dict[str, Any] = Depends(get_current_user),
+    ):
+        """Disable a specific device key."""
+        username = user.get("username")
+        mgr = get_device_key_manager()
+        try:
+            rec = mgr.set_status(username, key_id, DeviceKeyStatus.DISABLED)
+        except KeyError:
+            raise HTTPException(status_code=404, detail="Device key not found")
+        return DeviceKeyResponse(
+            key_id=rec["key_id"],
+            name=rec.get("name", ""),
+            status=rec.get("status", ""),
+            created_at=rec.get("created_at"),
+            last_used_at=rec.get("last_used_at"),
+            device_fingerprint=rec.get("device_fingerprint") or {},
+        )
+
+    @app.delete("/api/device-keys/{key_id}")
+    async def delete_device_key(
+        key_id: str,
+        user: Dict[str, Any] = Depends(get_current_user),
+    ):
+        """Delete a specific device key."""
+        username = user.get("username")
+        mgr = get_device_key_manager()
+        ok = mgr.delete_key(username, key_id)
+        if not ok:
+            raise HTTPException(status_code=404, detail="Device key not found")
+        return {"deleted": True}
+
+    class DeviceLoginRequest(BaseModel):
+        """Request body for device key based login."""
+
+        device_key: Optional[str] = None
+        device_fingerprint: Dict[str, Any] = {}
+
+    @app.post("/api/auth/device-login", response_model=LoginResponse)
+    async def device_login(request: DeviceLoginRequest):
+        """
+        Login using a device key issued earlier.
+        """
+        mgr = get_device_key_manager()
+        opaque = request.device_key
+        if not opaque:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="device_key is required",
+            )
+
+        username = mgr.authenticate(
+            opaque_token=opaque,
+            device_fingerprint=request.device_fingerprint or {},
+        )
+        if not username:
+            await get_audit_logger().log_access_denied(
+                username="unknown",
+                resource="auth",
+                action="device-login",
+                reason="Invalid device key",
+            )
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Invalid device key",
+            )
+
+        auth_manager = get_auth_manager()
+        token = await auth_manager.create_session_for_user(username)
+        if not token:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="User not available for login",
+            )
+
+        # 记录审计日志（与普通登录保持一致风格）
+        await get_audit_logger().log(
+            AuditEvent(
+                event_type=AuditEventType.AUTH_LOGIN,
+                timestamp=datetime.utcnow(),
+                username=username,
+                action="device-login",
+                success=True,
+                details={"method": "device-key"},
+            )
+        )
+
+        return LoginResponse(access_token=token)
     
     # Plugin management endpoints
     @app.get("/api/plugins", response_model=List[PluginInfo])
@@ -5617,6 +5784,420 @@ def create_app() -> FastAPI:
         except Exception as e:
             logger.error(f"Failed to approve tool: {e}", exc_info=True)
             raise HTTPException(status_code=500, detail=str(e))
+    
+    # ===== NapCat Management Routes =====
+    
+    @app.post("/api/system/open-dialog")
+    async def system_open_dialog(
+        user: Dict[str, Any] = Depends(require_permission(Permission.SYSTEM_CONFIG_EDIT))
+    ):
+        """Open system file/folder dialog."""
+        try:
+            import tkinter as tk
+            from tkinter import filedialog
+            
+            # Create a hidden root window
+            root = tk.Tk()
+            root.withdraw()
+            root.attributes('-topmost', True)  # Bring to front
+            
+            # Open directory dialog
+            path = filedialog.askdirectory(title="选择 NapCat 安装目录")
+            
+            root.destroy()
+            
+            if path:
+                # Convert to standard path format
+                import os
+                path = os.path.normpath(path)
+                return {'ok': True, 'path': path}
+            else:
+                return {'ok': False, 'error': 'Canceled'}
+                
+        except Exception as e:
+            logger.error(f"Failed to open dialog: {e}")
+            return {'ok': False, 'error': str(e)}
+    
+    @app.post("/api/system/list-directory")
+    async def list_directory(
+        data: Dict[str, Any] = Body(...),
+        user: Dict[str, Any] = Depends(require_permission(Permission.SYSTEM_CONFIG_VIEW))
+    ):
+        """List directory contents."""
+        import os
+        
+        path = data.get('path', '')
+        if not path:
+            # Return root directories based on platform
+            if platform.system() == 'Windows':
+                import string
+                drives = []
+                for letter in string.ascii_uppercase:
+                    drive = f"{letter}:\\"
+                    if os.path.exists(drive):
+                        drives.append({
+                            'name': drive,
+                            'path': drive,
+                            'is_dir': True,
+                            'is_parent': False
+                        })
+                return {'ok': True, 'path': '', 'items': drives}
+            else:
+                path = '/'
+        
+        try:
+            path = os.path.abspath(path)
+            if not os.path.exists(path):
+                return {'ok': False, 'error': 'Path does not exist'}
+            
+            if not os.path.isdir(path):
+                return {'ok': False, 'error': 'Path is not a directory'}
+            
+            items = []
+            
+            # Add parent directory entry
+            parent = os.path.dirname(path)
+            if parent != path:  # Not at root
+                items.append({
+                    'name': '..',
+                    'path': parent,
+                    'is_dir': True,
+                    'is_parent': True
+                })
+            
+            # List directory contents
+            try:
+                entries = os.listdir(path)
+                entries.sort(key=lambda x: (not os.path.isdir(os.path.join(path, x)), x.lower()))
+                
+                for entry in entries:
+                    try:
+                        full_path = os.path.join(path, entry)
+                        is_dir = os.path.isdir(full_path)
+                        
+                        items.append({
+                            'name': entry,
+                            'path': full_path,
+                            'is_dir': is_dir,
+                            'is_parent': False
+                        })
+                    except (PermissionError, OSError):
+                        # Skip inaccessible items
+                        continue
+                        
+            except PermissionError:
+                return {'ok': False, 'error': 'Permission denied'}
+            
+            return {
+                'ok': True,
+                'path': path,
+                'items': items
+            }
+            
+        except Exception as e:
+            logger.error(f"Failed to list directory: {e}")
+            return {'ok': False, 'error': str(e)}
+
+    @app.get("/api/napcat/docker/containers")
+    async def list_napcat_docker_containers(
+        user: Dict[str, Any] = Depends(require_permission(Permission.SYSTEM_CONFIG_VIEW))
+    ):
+        """List docker containers to help user pick an existing napcat container."""
+        from ..napcat import get_napcat_manager
+
+        napcat_mgr = get_napcat_manager()
+        containers = napcat_mgr.list_docker_containers()
+        return {'ok': True, 'containers': containers}
+    
+    @app.get("/api/napcat/system/info")
+    async def get_system_info(
+        user: Dict[str, Any] = Depends(require_permission(Permission.SYSTEM_CONFIG_VIEW))
+    ):
+        """Get system information for NapCat installation."""
+        from ..napcat import get_napcat_manager
+        
+        napcat_mgr = get_napcat_manager()
+        plat = napcat_mgr.detect_platform()
+        
+        return {
+            'platform': plat,
+            'system': platform.system(),
+            'release': platform.release(),
+            'machine': platform.machine(),
+            'python': sys.version.split(' ')[0],
+            'is_admin': napcat_mgr.is_admin(),
+            'has_sudo': napcat_mgr.has_sudo(),
+            'commands': {
+                'curl': napcat_mgr.cmd_exists('curl'),
+                'wget': napcat_mgr.cmd_exists('wget'),
+                'bash': napcat_mgr.cmd_exists('bash'),
+                'docker': napcat_mgr.cmd_exists('docker'),
+                'powershell': napcat_mgr.cmd_exists('powershell') or napcat_mgr.cmd_exists('pwsh')
+            }
+        }
+    
+    @app.get("/api/napcat/config")
+    async def get_napcat_config(
+        user: Dict[str, Any] = Depends(require_permission(Permission.SYSTEM_CONFIG_VIEW))
+    ):
+        """Get NapCat installer configuration."""
+        from ..napcat import get_napcat_manager
+        
+        napcat_mgr = get_napcat_manager()
+        napcat_config = napcat_mgr._get_napcat_config()
+        
+        custom = []
+        for b in (napcat_config.get('installer_bases') or []):
+            try:
+                custom.append(napcat_mgr.normalize_napcat_base(b))
+            except Exception:
+                continue
+        
+        recommended = [napcat_mgr.normalize_napcat_base(b) for b in napcat_mgr.napcat_recommended_bases()]
+        
+        return {
+            'ok': True,
+            'installer_base': napcat_mgr.napcat_installer_base(),
+            'bases': napcat_mgr.napcat_allowed_bases(),
+            'custom_bases': custom,
+            'recommended_bases': recommended
+        }
+    
+    @app.post("/api/napcat/config")
+    async def update_napcat_config(
+        data: Dict[str, Any] = Body(...),
+        user: Dict[str, Any] = Depends(require_permission(Permission.SYSTEM_CONFIG_EDIT))
+    ):
+        """Update NapCat installer configuration."""
+        from ..napcat import get_napcat_manager
+        
+        napcat_mgr = get_napcat_manager()
+        napcat_config = napcat_mgr._get_napcat_config()
+        
+        raw_bases = napcat_config.get('installer_bases') or []
+        if not isinstance(raw_bases, list):
+            raw_bases = []
+        
+        bases = []
+        for b in raw_bases:
+            try:
+                bases.append(napcat_mgr.normalize_napcat_base(b))
+            except Exception:
+                continue
+        
+        recommended = [napcat_mgr.normalize_napcat_base(b) for b in napcat_mgr.napcat_recommended_bases()]
+        
+        remove_base = str(data.get('remove_base') or '').strip()
+        if remove_base:
+            try:
+                remove_base = napcat_mgr.normalize_napcat_base(remove_base)
+            except Exception:
+                remove_base = ''
+        if remove_base:
+            bases = [b for b in bases if str(b).strip() != remove_base]
+            if str(napcat_config.get('installer_base') or '').strip() == remove_base:
+                napcat_config.pop('installer_base', None)
+        
+        base = str(data.get('installer_base') or '').strip()
+        if base:
+            try:
+                base = napcat_mgr.normalize_napcat_base(base)
+            except Exception as e:
+                raise HTTPException(status_code=400, detail=str(e))
+            if base not in bases and base not in recommended:
+                bases.append(base)
+            napcat_config['installer_base'] = base
+        elif 'installer_base' in data:
+            napcat_config.pop('installer_base', None)
+        
+        napcat_config['installer_bases'] = bases
+        napcat_mgr._set_napcat_config(napcat_config)
+        
+        return {
+            'ok': True,
+            'installer_base': napcat_mgr.napcat_installer_base(),
+            'bases': napcat_mgr.napcat_allowed_bases()
+        }
+    
+    @app.post("/api/napcat/deploy")
+    async def deploy_napcat(
+        payload: Dict[str, Any] = Body(...),
+        user: Dict[str, Any] = Depends(require_permission(Permission.SYSTEM_CONFIG_EDIT))
+    ):
+        """Deploy NapCat installation."""
+        from ..napcat import get_napcat_manager
+        import asyncio
+        
+        napcat_mgr = get_napcat_manager()
+        
+        platform_name = (payload.get('platform') or 'auto').strip().lower()
+        detected = napcat_mgr.detect_platform()
+        if platform_name == 'auto':
+            platform_name = detected
+        
+        if platform_name not in ['windows', 'linux', 'macos', 'docker', 'termux']:
+            raise HTTPException(status_code=400, detail='Invalid platform')
+        
+        if platform_name == 'docker':
+            payload = dict(payload)
+            payload['docker'] = True
+        
+        # Convert 'path' to 'install_path' for backend compatibility
+        if 'path' in payload:
+            payload['install_path'] = payload.pop('path')
+        
+        try:
+            params = napcat_mgr.validate_payload(payload, platform_name)
+        except Exception as e:
+            raise HTTPException(status_code=400, detail=str(e))
+        
+        script = napcat_mgr.build_script_text(platform_name, params)
+        if params['action'] == 'script':
+            return {'ok': True, 'platform': platform_name, 'script': script}
+        
+        if platform_name in ['linux', 'macos', 'docker'] and params.get('use_sudo') and not napcat_mgr.is_admin() and not napcat_mgr.has_sudo():
+            return {'ok': True, 'platform': platform_name, 'script': script, 'downgraded': True, 'message': 'sudo not available'}
+        
+        job_id = uuid.uuid4().hex
+        with napcat_mgr._lock:
+            napcat_mgr.napcat_progress[job_id] = {
+                'job_id': job_id,
+                'platform': platform_name,
+                'status': 'queued',
+                'percent': 0,
+                'message': 'Queued',
+                'script': script,
+                'logs': [],
+                'created_at': int(time.time())
+            }
+        
+        # Run job in background thread
+        def run_job_wrapper():
+            napcat_mgr.run_job(job_id, platform_name, params)
+        
+        loop = asyncio.get_event_loop()
+        loop.run_in_executor(None, run_job_wrapper)
+        
+        return {'ok': True, 'job_id': job_id, 'platform': platform_name, 'script': script}
+    
+    @app.get("/api/napcat/progress/{job_id}")
+    async def get_napcat_progress(
+        job_id: str,
+        user: Dict[str, Any] = Depends(require_permission(Permission.SYSTEM_CONFIG_VIEW))
+    ):
+        """Get NapCat installation progress."""
+        from ..napcat import get_napcat_manager
+        
+        napcat_mgr = get_napcat_manager()
+        with napcat_mgr._lock:
+            job = napcat_mgr.napcat_progress.get(job_id)
+        if not job:
+            raise HTTPException(status_code=404, detail='Job not found')
+        return job
+    
+    @app.post("/api/napcat/cancel")
+    async def cancel_napcat_install(
+        data: Dict[str, Any] = Body(...),
+        user: Dict[str, Any] = Depends(require_permission(Permission.SYSTEM_CONFIG_EDIT))
+    ):
+        """Cancel NapCat installation."""
+        from ..napcat import get_napcat_manager
+        
+        job_id = str(data.get('job_id') or '')
+        if not job_id:
+            raise HTTPException(status_code=400, detail='No job_id')
+        
+        napcat_mgr = get_napcat_manager()
+        with napcat_mgr._lock:
+            proc = napcat_mgr.napcat_processes.get(job_id)
+            if proc and proc.poll() is None:
+                try:
+                    napcat_mgr.terminate_process(proc)
+                except Exception:
+                    pass
+                napcat_mgr.napcat_processes.pop(job_id, None)
+                napcat_mgr.job_set(job_id, status='canceled', percent=100, message='Canceled')
+                return {'ok': True}
+            
+            if job_id in napcat_mgr.napcat_progress and napcat_mgr.napcat_progress[job_id].get('status') in ['queued', 'preparing', 'downloading', 'extracting', 'running']:
+                napcat_mgr.job_set(job_id, status='canceled', percent=100, message='Canceled')
+                return {'ok': True}
+        
+        raise HTTPException(status_code=400, detail='Not running')
+    
+    @app.get("/api/napcat/status")
+    async def get_napcat_status(
+        user: Dict[str, Any] = Depends(require_permission(Permission.SYSTEM_CONFIG_VIEW))
+    ):
+        """Get NapCat running status."""
+        from ..napcat import get_napcat_manager
+        
+        napcat_mgr = get_napcat_manager()
+        return napcat_mgr.get_status()
+    
+    @app.post("/api/napcat/start")
+    async def start_napcat(
+        user: Dict[str, Any] = Depends(require_permission(Permission.SYSTEM_CONFIG_EDIT))
+    ):
+        """Start NapCat process."""
+        from ..napcat import get_napcat_manager
+        
+        napcat_mgr = get_napcat_manager()
+        result = napcat_mgr.start_napcat()
+        if not result.get('ok'):
+            raise HTTPException(status_code=400, detail=result.get('error', 'Failed to start'))
+        return result
+    
+    @app.post("/api/napcat/stop")
+    async def stop_napcat(
+        user: Dict[str, Any] = Depends(require_permission(Permission.SYSTEM_CONFIG_EDIT))
+    ):
+        """Stop NapCat process."""
+        from ..napcat import get_napcat_manager
+        
+        napcat_mgr = get_napcat_manager()
+        result = napcat_mgr.stop_napcat()
+        if not result.get('ok'):
+            raise HTTPException(status_code=400, detail=result.get('error', 'Failed to stop'))
+        return result
+    
+    @app.get("/api/napcat/logs")
+    async def get_napcat_logs(
+        user: Dict[str, Any] = Depends(require_permission(Permission.SYSTEM_CONFIG_VIEW))
+    ):
+        """Get NapCat logs."""
+        from ..napcat import get_napcat_manager
+        
+        napcat_mgr = get_napcat_manager()
+        return {'logs': napcat_mgr.get_logs()}
+    
+    @app.get("/api/napcat/webui")
+    async def get_napcat_webui_info(
+        user: Dict[str, Any] = Depends(require_permission(Permission.SYSTEM_CONFIG_VIEW))
+    ):
+        """Get NapCat WebUI information."""
+        from ..napcat import get_napcat_manager
+        
+        napcat_mgr = get_napcat_manager()
+        result = napcat_mgr.get_webui_info()
+        if not result.get('ok'):
+            raise HTTPException(status_code=400, detail=result.get('error', 'Failed to get WebUI info'))
+        return result
+    
+    @app.post("/api/napcat/path")
+    async def set_napcat_path(
+        data: Dict[str, Any] = Body(...),
+        user: Dict[str, Any] = Depends(require_permission(Permission.SYSTEM_CONFIG_EDIT))
+    ):
+        """Set NapCat installation path."""
+        from ..napcat import get_napcat_manager
+        
+        path = data.get('path')
+        napcat_mgr = get_napcat_manager()
+        result = napcat_mgr.set_install_path(path)
+        if not result.get('ok'):
+            raise HTTPException(status_code=400, detail=result.get('error', 'Failed to set path'))
+        return result
     
     # Serve Vite React SPA for all non-API routes (must be last) - only if WebUI is enabled
     @app.get("/{full_path:path}")

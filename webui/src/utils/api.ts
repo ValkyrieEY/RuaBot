@@ -436,6 +436,82 @@ class ApiClient {
     const response = await this.client.post('/splash/mark-shown')
     return response.data
   }
+
+  // NapCat Management API
+  async getNapCatSystemInfo(): Promise<any> {
+    const response = await this.client.get('/napcat/system/info')
+    return response.data
+  }
+
+  async getNapCatConfig(): Promise<any> {
+    const response = await this.client.get('/napcat/config')
+    return response.data
+  }
+
+  async updateNapCatConfig(data: any): Promise<any> {
+    const response = await this.client.post('/napcat/config', data)
+    return response.data
+  }
+
+  async deployNapCat(data: any): Promise<any> {
+    const response = await this.client.post('/napcat/deploy', data)
+    return response.data
+  }
+
+  async getNapCatProgress(jobId: string): Promise<any> {
+    const response = await this.client.get(`/napcat/progress/${jobId}`)
+    return response.data
+  }
+
+  async cancelNapCatInstall(data: any): Promise<any> {
+    const response = await this.client.post('/napcat/cancel', data)
+    return response.data
+  }
+
+  async getNapCatStatus(): Promise<any> {
+    const response = await this.client.get('/napcat/status')
+    return response.data
+  }
+
+  async startNapCat(): Promise<any> {
+    const response = await this.client.post('/napcat/start')
+    return response.data
+  }
+
+  async stopNapCat(): Promise<any> {
+    const response = await this.client.post('/napcat/stop')
+    return response.data
+  }
+
+  async getNapCatLogs(): Promise<any> {
+    const response = await this.client.get('/napcat/logs')
+    return response.data
+  }
+
+  async getNapCatWebUIInfo(): Promise<any> {
+    const response = await this.client.get('/napcat/webui')
+    return response.data
+  }
+
+  async setNapCatPath(data: any): Promise<any> {
+    const response = await this.client.post('/napcat/path', data)
+    return response.data
+  }
+
+  async listNapCatDockerContainers(): Promise<any> {
+    const response = await this.client.get('/napcat/docker/containers')
+    return response.data
+  }
+
+  async systemOpenDialog(): Promise<any> {
+    const response = await this.client.post('/system/open-dialog')
+    return response.data
+  }
+
+  async listDirectory(data: any): Promise<any> {
+    const response = await this.client.post('/system/list-directory', data)
+    return response.data
+  }
 }
 
 // Types

@@ -15,6 +15,7 @@ import AuditPage from './pages/AuditPage'
 import SystemPage from './pages/SystemPage'
 import AIPage from './pages/AIPage'
 import AboutPage from './pages/AboutPage'
+import NapCatPage from './pages/NapCatPage'
 
 // 动态导入开屏动画组件，支持热插拔
 // 如果文件不存在，lazy 会在运行时捕获错误
@@ -77,6 +78,16 @@ function AppContent() {
           <PrivateRoute>
             <Layout>
               <OneBotPage />
+            </Layout>
+          </PrivateRoute>
+        }
+      />
+      <Route
+        path="/napcat"
+        element={
+          <PrivateRoute>
+            <Layout>
+              <NapCatPage />
             </Layout>
           </PrivateRoute>
         }

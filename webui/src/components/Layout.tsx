@@ -18,6 +18,7 @@ import {
   MessagesSquare,
   Bot,
   Info,
+  Server,
 } from 'lucide-react'
 import { cn } from '@/utils/cn'
 import { api } from '@/utils/api'
@@ -64,6 +65,7 @@ export default function Layout({ children }: LayoutProps) {
     return [
       { path: '/dashboard', icon: LayoutDashboard, label: t('nav.dashboard'), enabled: true },
       { path: '/onebot', icon: Radio, label: t('nav.onebot'), enabled: true },
+      { path: '/napcat', icon: Server, label: t('nav.napcat'), enabled: true },
       { path: '/chat', icon: MessagesSquare, label: t('nav.chat'), enabled: true },
       { path: '/messages', icon: MessageSquare, label: t('nav.messages'), enabled: true },
       { path: '/plugins', icon: Puzzle, label: t('nav.plugins'), enabled: true },

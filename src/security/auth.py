@@ -191,6 +191,42 @@ class AuthManager:
             return True
         return False
 
+    async def create_session_for_user(self, username: str) -> Optional[str]:
+        """
+        Create a new access token and session for an existing user without
+        verifying password. 用于设备密钥等已在其他渠道完成认证的场景。
+        """
+        user = self._users.get(username)
+        if not user:
+            logger.warning(
+                "Create session failed: user not found",
+                username=username,
+            )
+            return None
+
+        if not user.get("enabled", False):
+            logger.warning(
+                "Create session failed: user disabled",
+                username=username,
+            )
+            return None
+
+        token = create_access_token(
+            data={
+                "sub": username,
+                "roles": user.get("roles", []),
+            }
+        )
+
+        self._sessions[token] = {
+            "username": username,
+            "roles": user.get("roles", []),
+            "created_at": datetime.utcnow(),
+        }
+
+        logger.info("Session created for user without password", username=username)
+        return token
+
     async def create_user(
         self,
         username: str,

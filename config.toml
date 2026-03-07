@@ -1,6 +1,6 @@
 [app]
 name = "XQNEXT Framework"
-version = "0.0.5"
+version = "0.0.6"
 
 # 环境模式："development"（开发）或 "production"（生产）
 environment = "development"
@@ -130,3 +130,13 @@ secret_key = ""
 [ai]
 # 为 AI 操作启用线程池
 thread_pool_enabled = true
+
+[napcat]
+# NapCat 安装路径（安装后自动配置）
+install_path = ""
+
+# NapCat 安装程序基础 URL（留空以使用默认值）
+installer_base = ""
+
+# 自定义安装程序基础（URL 列表）
+installer_bases = []

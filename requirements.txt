@@ -16,6 +16,7 @@ pydantic-settings>=2.1.0
 # HTTP Client
 httpx>=0.26.0
 aiohttp>=3.9.0
+requests>=2.31.0
 
 # Database & Storage
 sqlalchemy>=2.0.36  # Python 3.13 compatibility
@@ -26,13 +27,13 @@ alembic>=1.13.0
 python-jose[cryptography]>=3.3.0
 passlib[bcrypt]>=1.7.4
 bcrypt==4.2.1  # Required for Python 3.13 compatibility (4.2.1 works without 72-byte limit)
-python-multipart>=0.0.6
 
 # Configuration
 python-dotenv>=1.0.0
 pyyaml>=6.0.1
 tomlkit>=0.12.0  # Preserves comments and formatting in TOML files
 tomli>=1.2.0
+tomli_w
 
 # System Monitoring
 psutil>=5.9.0
@@ -46,7 +47,6 @@ pytest>=7.4.3
 pytest-asyncio>=0.23.3
 pytest-cov>=4.1.0
 pytest-mock>=3.12.0
-httpx>=0.26.0
 
 # Development
 black>=23.12.1
@@ -56,4 +56,3 @@ mypy>=1.8.0
 
 # RuaBot AI Features
 json-repair>=0.25.0
-

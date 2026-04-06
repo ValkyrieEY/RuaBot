@@ -17,6 +17,7 @@ CYAN='\033[0;36m'
 NC='\033[0m'
 
 PROJECT_DIR="${RUABOT_INSTALL_DIR:-$HOME/RuaBot}"
+RUABOT_HOME="${RUABOT_HOME:-$HOME/.ruabot}"
 RUNTIME_DIR="$PROJECT_DIR/.runtime"
 NODE_VERSION="${RUABOT_NODE_VERSION:-24.12.0}"
 NPM_PREFIX="$PROJECT_DIR/.npm-global"
@@ -24,6 +25,10 @@ NODE_HOME=""
 NODE_BIN=""
 NPM_BIN_DIR="$NPM_PREFIX/bin"
 NPM_CLI_JS=""
+RUABOT_ENTRY=""
+PY_RUNTIME_DIR="$RUABOT_HOME/runtime/miniforge3"
+PYTHON_BIN="$PY_RUNTIME_DIR/bin/python"
+MINIFORGE_DIST=""
 
 log_info() {
     echo -e "${BLUE}[INFO]${NC} $1"
@@ -75,6 +80,16 @@ detect_platform() {
 
     NODE_DIST="${OS_DIST}-${ARCH_DIST}"
     log_info "检测到平台: ${OS_DIST} ${ARCH_DIST}"
+
+    case "$OS_DIST/$ARCH_DIST" in
+        linux/x64) MINIFORGE_DIST="Linux-x86_64" ;;
+        linux/arm64) MINIFORGE_DIST="Linux-aarch64" ;;
+        darwin/x64) MINIFORGE_DIST="MacOSX-x86_64" ;;
+        darwin/arm64) MINIFORGE_DIST="MacOSX-arm64" ;;
+        *)
+            MINIFORGE_DIST=""
+            ;;
+    esac
 }
 
 download_file() {
@@ -145,6 +160,65 @@ install_cli() {
     log_info "可手动检查版本: PATH=\"$NODE_BIN:$NPM_BIN_DIR:\$PATH\" ruabot --version"
 }
 
+install_shared_python_runtime() {
+    if [ -x "$PYTHON_BIN" ]; then
+        log_info "检测到已安装的共享隔离 Python: $PY_RUNTIME_DIR"
+        log_success "共享 Python 就绪: $("$PYTHON_BIN" --version 2>&1)"
+        return
+    fi
+
+    if [ -z "$MINIFORGE_DIST" ]; then
+        log_warning "当前平台暂无 Miniforge 自动安装映射，将在 ruabot framework install 阶段继续兜底处理"
+        return
+    fi
+
+    mkdir -p "$(dirname "$PY_RUNTIME_DIR")"
+    rm -rf "$PY_RUNTIME_DIR"
+
+    local installer="Miniforge3-${MINIFORGE_DIST}.sh"
+    local url="https://github.com/conda-forge/miniforge/releases/latest/download/${installer}"
+    local tmp_installer="/tmp/${installer}"
+
+    log_info "下载共享隔离 Python 运行时 (${installer}) ..."
+    download_file "$url" "$tmp_installer"
+
+    log_info "安装共享隔离 Python 运行时 ..."
+    bash "$tmp_installer" -b -p "$PY_RUNTIME_DIR"
+    rm -f "$tmp_installer"
+
+    if [ ! -x "$PYTHON_BIN" ]; then
+        log_error "共享 Python 安装失败，未找到: $PYTHON_BIN"
+        exit 1
+    fi
+
+    "$PYTHON_BIN" -m pip install --upgrade pip setuptools wheel >/dev/null 2>&1 || true
+    log_success "共享 Python 就绪: $("$PYTHON_BIN" --version 2>&1)"
+}
+
+install_ruabot_launcher() {
+    local launcher_dir=""
+    if [ "$(id -u)" -eq 0 ] && [ -d "/usr/local/bin" ] && [ -w "/usr/local/bin" ]; then
+        launcher_dir="/usr/local/bin"
+    else
+        launcher_dir="$HOME/.local/bin"
+        mkdir -p "$launcher_dir"
+    fi
+
+    RUABOT_ENTRY="$launcher_dir/ruabot"
+
+    cat > "$RUABOT_ENTRY" << EOF
+#!/bin/sh
+export PATH="$NODE_BIN:$NPM_BIN_DIR:\$PATH"
+export RUABOT_HOME="$RUABOT_HOME"
+if [ -x "$PYTHON_BIN" ]; then
+  export RUABOT_PYTHON_CMD="$PYTHON_BIN"
+fi
+exec "$NPM_BIN_DIR/ruabot" "\$@"
+EOF
+    chmod +x "$RUABOT_ENTRY"
+    log_success "已创建 ruabot 启动器: $RUABOT_ENTRY"
+}
+
 append_path_hint() {
     local shell_rc=""
     local path_line="export PATH=\"$NODE_BIN:$NPM_BIN_DIR:\$PATH\""
@@ -163,13 +237,16 @@ append_path_hint() {
                 echo "$path_line"
             } >> "$shell_rc"
             log_info "已写入 PATH 到 $shell_rc"
-            log_info "请执行: source $shell_rc"
         fi
     fi
 
     if [[ ":$PATH:" != *":$NODE_BIN:"* ]] || [[ ":$PATH:" != *":$NPM_BIN_DIR:"* ]]; then
-        log_warning "当前 PATH 未包含隔离 Node/NPM 路径"
-        log_info "临时生效命令: export PATH=\"$NODE_BIN:$NPM_BIN_DIR:\$PATH\""
+        if [ -n "$RUABOT_ENTRY" ] && [ -x "$RUABOT_ENTRY" ]; then
+            log_info "已通过启动器处理运行时 PATH，无需手动 export"
+        else
+            log_warning "当前 PATH 未包含隔离 Node/NPM 路径"
+            log_info "临时生效命令: export PATH=\"$NODE_BIN:$NPM_BIN_DIR:\$PATH\""
+        fi
     fi
 }
 
@@ -177,9 +254,11 @@ write_runtime_env_file() {
     cat > "$PROJECT_DIR/.ruabot-node.env" << EOF
 # RuaBot Node runtime metadata
 PROJECT_DIR="$PROJECT_DIR"
+RUABOT_HOME="$RUABOT_HOME"
 NODE_VERSION="$NODE_VERSION"
 NODE_HOME="$NODE_HOME"
 NPM_PREFIX="$NPM_PREFIX"
+SHARED_PYTHON="$PYTHON_BIN"
 INSTALL_DATE="$(date +%Y-%m-%d\ %H:%M:%S)"
 EOF
     log_success "已写入运行时信息: $PROJECT_DIR/.ruabot-node.env"
@@ -194,6 +273,8 @@ main() {
     detect_platform
     install_isolated_node
     install_cli
+    install_shared_python_runtime
+    install_ruabot_launcher
     append_path_hint
     write_runtime_env_file
 
@@ -203,10 +284,11 @@ main() {
     echo -e "${CYAN}后续说明:${NC}"
     echo -e "  1) 旧版 ${YELLOW}rcli${NC} 维护脚本已弃用"
     echo -e "  2) 请改用 ${YELLOW}ruabot${NC} 管理框架"
-    echo -e "  3) 首次使用可执行: ${YELLOW}ruabot framework install --path \"$PROJECT_DIR\"${NC}"
+    echo -e "  3) 默认使用共享隔离 Python（多框架共用一套本体）"
+    echo -e "  4) 首次使用可执行: ${YELLOW}ruabot framework install --path \"$PROJECT_DIR\"${NC}"
     echo ""
     echo -e "${CYAN}常用命令:${NC}"
-    echo -e "  ${YELLOW}ruabot help${NC}"
+    echo -e "  ${YELLOW}ruabot help${NC}  (若提示命令不存在，请重新登录终端)"
     echo -e "  ${YELLOW}ruabot framework list${NC}"
     echo -e "  ${YELLOW}ruabot framework install --path /your/path/RuaBot${NC}"
     echo ""

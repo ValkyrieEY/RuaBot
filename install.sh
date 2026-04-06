@@ -23,6 +23,7 @@ NPM_PREFIX="$PROJECT_DIR/.npm-global"
 NODE_HOME=""
 NODE_BIN=""
 NPM_BIN_DIR="$NPM_PREFIX/bin"
+NPM_CLI_JS=""
 
 log_info() {
     echo -e "${BLUE}[INFO]${NC} $1"
@@ -111,33 +112,41 @@ install_isolated_node() {
 
     NODE_HOME="$extract_dir"
     NODE_BIN="$NODE_HOME/bin"
+    NPM_CLI_JS="$NODE_HOME/lib/node_modules/npm/bin/npm-cli.js"
 
-    if [ ! -x "$NODE_BIN/node" ] || [ ! -x "$NODE_BIN/npm" ]; then
-        log_error "Node.js 安装异常，缺少 node/npm 可执行文件"
+    if [ ! -x "$NODE_BIN/node" ] || [ ! -f "$NPM_CLI_JS" ]; then
+        log_error "Node.js 安装异常，缺少 node 或 npm-cli.js"
         exit 1
     fi
 
     log_success "隔离 Node.js 就绪: $("$NODE_BIN/node" --version)"
-    log_success "隔离 npm 就绪: v$("$NODE_BIN/npm" --version)"
+    log_success "隔离 npm 就绪: v$("$NODE_BIN/node" "$NPM_CLI_JS" --version)"
 }
 
 install_cli() {
     mkdir -p "$NPM_PREFIX"
 
     log_info "使用隔离 npm 安装 ruabot-cli@latest ..."
-    NPM_CONFIG_PREFIX="$NPM_PREFIX" "$NODE_BIN/npm" install -g ruabot-cli@latest
+    PATH="$NODE_BIN:$PATH" \
+    NPM_CONFIG_PREFIX="$NPM_PREFIX" \
+    "$NODE_BIN/node" "$NPM_CLI_JS" install -g ruabot-cli@latest
+
+    # 某些环境只把 NPM_BIN_DIR 加入 PATH，给它补一个 node 入口避免 env node 失败
+    if [ ! -e "$NPM_BIN_DIR/node" ]; then
+        ln -s "$NODE_BIN/node" "$NPM_BIN_DIR/node" 2>/dev/null || true
+    fi
 
     if [ ! -x "$NPM_BIN_DIR/ruabot" ]; then
         log_error "未找到 ruabot 可执行文件: $NPM_BIN_DIR/ruabot"
         exit 1
     fi
 
-    log_success "ruabot-cli 安装完成: $("$NPM_BIN_DIR/ruabot" --version 2>/dev/null || echo '已安装')"
+    log_success "ruabot-cli 安装完成: $(PATH="$NODE_BIN:$NPM_BIN_DIR:$PATH" "$NPM_BIN_DIR/ruabot" --version 2>/dev/null || echo '已安装')"
 }
 
 append_path_hint() {
     local shell_rc=""
-    local path_line="export PATH=\"$NPM_BIN_DIR:\$PATH\""
+    local path_line="export PATH=\"$NODE_BIN:$NPM_BIN_DIR:\$PATH\""
 
     if [ -n "${BASH_VERSION:-}" ]; then
         shell_rc="$HOME/.bashrc"
@@ -157,9 +166,9 @@ append_path_hint() {
         fi
     fi
 
-    if [[ ":$PATH:" != *":$NPM_BIN_DIR:"* ]]; then
-        log_warning "当前 PATH 未包含 $NPM_BIN_DIR"
-        log_info "临时生效命令: export PATH=\"$NPM_BIN_DIR:\$PATH\""
+    if [[ ":$PATH:" != *":$NODE_BIN:"* ]] || [[ ":$PATH:" != *":$NPM_BIN_DIR:"* ]]; then
+        log_warning "当前 PATH 未包含隔离 Node/NPM 路径"
+        log_info "临时生效命令: export PATH=\"$NODE_BIN:$NPM_BIN_DIR:\$PATH\""
     fi
 }
 

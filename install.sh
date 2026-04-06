@@ -141,7 +141,8 @@ install_cli() {
         exit 1
     fi
 
-    log_success "ruabot-cli 安装完成: $(PATH="$NODE_BIN:$NPM_BIN_DIR:$PATH" "$NPM_BIN_DIR/ruabot" --version 2>/dev/null || echo '已安装')"
+    log_success "ruabot-cli 安装完成: $NPM_BIN_DIR/ruabot"
+    log_info "可手动检查版本: PATH=\"$NODE_BIN:$NPM_BIN_DIR:\$PATH\" ruabot --version"
 }
 
 append_path_hint() {

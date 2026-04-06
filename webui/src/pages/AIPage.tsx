@@ -1,89 +1,177 @@
-import { useState } from 'react'
-import { useTranslation } from 'react-i18next'
-import { Settings, Cpu, Brain, Shield, Network, FileText, Wrench, Database } from 'lucide-react'
-import AIConfigPage from './ai/AIConfigPage'
-import ModelManagementPage from './ai/ModelManagementPage'
-import MemoryManagementPage from './ai/MemoryManagementPage'
-import PermissionManagementPage from './ai/PermissionManagementPage'
-import MCPManagementPage from './ai/MCPManagementPage'
-import PresetManagementPage from './ai/PresetManagementPage'
-import ToolsManagementPage from './ai/ToolsManagementPage'
-import AILearningPage from './ai/AILearningPage'
+import { useEffect, useState } from 'react'
+import {
+  BrainCircuit,
+  CalendarClock,
+  List,
+  SlidersHorizontal,
+  Sparkles,
+  Workflow,
+  Wrench,
+} from 'lucide-react'
+import type { LucideIcon } from 'lucide-react'
+import { api, type AIWorkspaceMode } from '@/utils/api'
+import { cn } from '@/utils/cn'
 
-type TabType = 'config' | 'models' | 'memory' | 'permissions' | 'mcp' | 'presets' | 'tools' | 'learning'
+type Mode = AIWorkspaceMode
+type AgentSection = 'sessions' | 'skills' | 'tasks' | 'tools' | 'settings'
+type AssistantSection = 'sessions' | 'schedule' | 'notes' | 'preferences' | 'settings'
+type Section = AgentSection | AssistantSection
+
+type NavItem<T extends string> = {
+  key: T
+  icon: LucideIcon
+  label: string
+}
+
+const modeLabel: Record<Mode, string> = {
+  agent: 'Agent',
+  assistant: 'Assistant',
+}
+
+const agentNavItems: NavItem<AgentSection>[] = [
+  { key: 'sessions', icon: List, label: '会话' },
+  { key: 'skills', icon: Sparkles, label: '技能' },
+  { key: 'tasks', icon: Workflow, label: '任务' },
+  { key: 'tools', icon: Wrench, label: '工具' },
+  { key: 'settings', icon: SlidersHorizontal, label: '设置' },
+]
+
+const assistantNavItems: NavItem<AssistantSection>[] = [
+  { key: 'sessions', icon: List, label: '会话' },
+  { key: 'schedule', icon: CalendarClock, label: '日程' },
+  { key: 'notes', icon: BrainCircuit, label: '记录' },
+  { key: 'preferences', icon: SlidersHorizontal, label: '偏好' },
+  { key: 'settings', icon: Workflow, label: '设置' },
+]
+
+const MODE_STORAGE_KEY = 'ai_workspace_mode'
+
+function normalizeMode(mode: string | null | undefined): Mode {
+  return mode === 'assistant' ? 'assistant' : 'agent'
+}
 
 export default function AIPage() {
-  const { t } = useTranslation()
-  const [activeTab, setActiveTab] = useState<TabType>('config')
+  const [mode, setMode] = useState<Mode>(() => normalizeMode(localStorage.getItem(MODE_STORAGE_KEY)))
+  const [agentSection, setAgentSection] = useState<AgentSection>('sessions')
+  const [assistantSection, setAssistantSection] = useState<AssistantSection>('sessions')
+  const [isSavingMode, setIsSavingMode] = useState(false)
+  const [modeLoaded, setModeLoaded] = useState(false)
+  const [modeSaveError, setModeSaveError] = useState('')
 
-  const tabs = [
-    { id: 'config' as TabType, label: t('ai.tabs.config') || '配置', icon: Settings },
-    { id: 'models' as TabType, label: t('ai.tabs.models') || '模型', icon: Cpu },
-    { id: 'presets' as TabType, label: t('ai.tabs.presets') || '预设', icon: FileText },
-    { id: 'memory' as TabType, label: t('ai.tabs.memory') || '记忆', icon: Brain },
-    { id: 'learning' as TabType, label: t('ai.tabs.learning') || '学习', icon: Database },
-    { id: 'tools' as TabType, label: t('ai.tabs.tools') || '工具', icon: Wrench },
-    { id: 'permissions' as TabType, label: t('ai.tabs.permissions') || '权限', icon: Shield },
-    { id: 'mcp' as TabType, label: t('ai.tabs.mcp') || 'MCP', icon: Network },
-  ]
+  useEffect(() => {
+    let cancelled = false
 
-  const renderContent = () => {
-    switch (activeTab) {
-      case 'config':
-        return <AIConfigPage />
-      case 'models':
-        return <ModelManagementPage />
-      case 'memory':
-        return <MemoryManagementPage />
-      case 'permissions':
-        return <PermissionManagementPage />
-      case 'mcp':
-        return <MCPManagementPage />
-      case 'presets':
-        return <PresetManagementPage />
-      case 'tools':
-        return <ToolsManagementPage />
-      case 'learning':
-        return <AILearningPage />
-      default:
-        return <AIConfigPage />
+    const loadMode = async () => {
+      try {
+        const config = await api.getAIWorkspaceConfig()
+        if (cancelled) return
+        const loadedMode = normalizeMode(config?.mode)
+        setMode(loadedMode)
+        localStorage.setItem(MODE_STORAGE_KEY, loadedMode)
+      } catch {
+        if (cancelled) return
+        const localMode = normalizeMode(localStorage.getItem(MODE_STORAGE_KEY))
+        setMode(localMode)
+      } finally {
+        if (!cancelled) setModeLoaded(true)
+      }
+    }
+
+    void loadMode()
+    return () => {
+      cancelled = true
+    }
+  }, [])
+
+  const handleModeSwitch = async (nextMode: Mode) => {
+    if (nextMode === mode || isSavingMode) return
+
+    const previousMode = mode
+    setMode(nextMode)
+    localStorage.setItem(MODE_STORAGE_KEY, nextMode)
+    setModeSaveError('')
+    setIsSavingMode(true)
+
+    try {
+      await api.updateAIWorkspaceConfig(nextMode)
+    } catch {
+      setMode(previousMode)
+      localStorage.setItem(MODE_STORAGE_KEY, previousMode)
+      setModeSaveError('模式保存失败，已回退到上一模式')
+    } finally {
+      setIsSavingMode(false)
     }
   }
 
+  const navItems = mode === 'agent' ? agentNavItems : assistantNavItems
+  const activeSection: Section = mode === 'agent' ? agentSection : assistantSection
+
+  const handleSectionSwitch = (nextSection: Section) => {
+    if (mode === 'agent') {
+      setAgentSection(nextSection as AgentSection)
+      return
+    }
+    setAssistantSection(nextSection as AssistantSection)
+  }
+
   return (
-    <div className="space-y-6">
-      <div className="min-w-0">
-        <h1 className="text-xl sm:text-2xl font-bold text-gray-900 truncate">AI 智能管理</h1>
-        <p className="text-gray-500 text-sm mt-1">统一管理 AI 配置、模型、记忆和权限</p>
-      </div>
-
-      <div className="border-b border-gray-200">
-        <nav className="flex -mb-px space-x-6 overflow-x-auto no-scrollbar" aria-label="Tabs">
-          {tabs.map((tab) => {
-            const Icon = tab.icon
-            const isActive = activeTab === tab.id
-            return (
+    <div className="fixed top-16 left-0 md:left-64 right-0 bottom-0 overflow-hidden bg-white">
+      <div className="h-full w-full flex flex-col bg-white">
+        <header className="relative h-14 shrink-0 border-b border-slate-200 bg-white px-3 md:px-5 flex items-center justify-end">
+          <div className="absolute left-1/2 -translate-x-1/2 h-9 border border-slate-200 rounded-xl p-1 bg-white flex items-center gap-1">
+            {(['agent', 'assistant'] as Mode[]).map((item) => (
               <button
-                key={tab.id}
-                onClick={() => setActiveTab(tab.id)}
-                className={`
-                  group inline-flex items-center py-4 px-1 border-b-2 font-medium text-sm whitespace-nowrap transition-colors
-                  ${isActive
-                    ? 'border-blue-500 text-blue-600'
-                    : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
-                  }
-                `}
+                key={item}
+                type="button"
+                disabled={isSavingMode || !modeLoaded}
+                onClick={() => void handleModeSwitch(item)}
+                className={cn(
+                  'h-7 px-3 text-xs md:text-sm rounded-lg font-medium transition-colors disabled:opacity-60 disabled:cursor-not-allowed',
+                  mode === item
+                    ? 'bg-primary-600 text-white'
+                    : 'text-slate-600 hover:text-slate-900 hover:bg-slate-100',
+                )}
               >
-                <Icon className={`-ml-0.5 mr-2 h-5 w-5 ${isActive ? 'text-blue-500' : 'text-gray-400 group-hover:text-gray-500'}`} />
-                <span>{tab.label}</span>
+                {modeLabel[item]}
               </button>
-            )
-          })}
-        </nav>
-      </div>
+            ))}
+          </div>
 
-      <div className="min-h-[400px] animate-fadeIn">
-        {renderContent()}
+          <div className="text-xs text-slate-500">{isSavingMode ? '保存中...' : `${modeLabel[mode]} Mode`}</div>
+        </header>
+
+        {modeSaveError && (
+          <div className="px-4 py-2 text-xs text-red-600 bg-red-50 border-b border-red-100">{modeSaveError}</div>
+        )}
+
+        <div className="min-h-0 flex-1 flex bg-white">
+          <aside className="w-14 md:w-16 shrink-0 border-r border-slate-200 bg-white flex flex-col items-center py-3 gap-2">
+            {navItems.map((item) => {
+              const Icon = item.icon
+              const active = activeSection === item.key
+              return (
+                <button
+                  key={item.key}
+                  type="button"
+                  title={item.label}
+                  onClick={() => handleSectionSwitch(item.key)}
+                  className={cn(
+                    'h-10 w-10 rounded-lg flex items-center justify-center transition-colors',
+                    active
+                      ? 'bg-primary-600 text-white'
+                      : 'text-slate-500 hover:text-slate-900 hover:bg-slate-100',
+                  )}
+                >
+                  <Icon className="w-4 h-4" />
+                </button>
+              )
+            })}
+          </aside>
+
+          <div className="min-w-0 flex-1 flex flex-col bg-white">
+            <div className="flex-1 min-h-0 bg-white" />
+          </div>
+        </div>
       </div>
     </div>
   )

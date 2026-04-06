@@ -24,9 +24,9 @@ if not exist "logs" mkdir logs
 if not exist "plugins" mkdir plugins
 
 REM Run the application
-echo   [SCLI] Starting application...
-echo   [SCLI] Web UI: http://localhost:8000
-echo   [SCLI] API Docs: http://localhost:8000/docs
+echo [SCLI] Starting application...
+echo [SCLI] Web UI: http://localhost:8000
+echo [SCLI] API Docs: http://localhost:8000/docs
 echo ============================================================
 
 python -m src.main

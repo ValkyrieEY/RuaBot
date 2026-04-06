@@ -25,6 +25,7 @@ interface PluginConfigModalProps {
 }
 
 function PluginConfigModal({ pluginName, isOpen, onClose, onSave }: PluginConfigModalProps) {
+  const { t } = useTranslation()
   const toast = useToast()
   const [config, setConfig] = useState<any>({})
   const [schema, setSchema] = useState<any>(null)
@@ -33,7 +34,7 @@ function PluginConfigModal({ pluginName, isOpen, onClose, onSave }: PluginConfig
   const [saving, setSaving] = useState(false)
   const [priority, setPriority] = useState<number>(100)
   
-  // 用于防止竞态条件
+  // 
   const loadingRequestRef = useRef(0)
 
   useEffect(() => {
@@ -48,34 +49,34 @@ function PluginConfigModal({ pluginName, isOpen, onClose, onSave }: PluginConfig
     setLoadError('')
     
     try {
-      // 并行加载配置和插件信息
+      // 
       const [schemaData, pluginData] = await Promise.allSettled([
         api.getPluginConfigSchema(pluginName),
         api.getPlugin(pluginName)
       ])
       
-      // 只有最新的请求才更新状态
+      // 
       if (currentRequest !== loadingRequestRef.current) {
         return
       }
       
-      // 处理配置schema
+      // schema
       if (schemaData.status === 'fulfilled') {
         setSchema(schemaData.value)
         const loadedConfig = schemaData.value.current_config || schemaData.value.default_config || {}
         setConfig(loadedConfig)
       } else {
         console.error('Failed to load config schema:', schemaData.reason)
-        throw new Error('加载配置失败: ' + (schemaData.reason?.message || '未知错误'))
+        throw new Error(t('plugins.configLoadErrorTitle') + ': ' + (schemaData.reason?.message || ''))
       }
       
-      // 处理优先级
+      // 
       if (pluginData.status === 'fulfilled') {
         const loadedPriority = pluginData.value?.system_data?.priority
         setPriority(loadedPriority !== undefined ? loadedPriority : 100)
       } else {
         console.error('Failed to load plugin info:', pluginData.reason)
-        // 优先级加载失败不影响整体，使用默认值
+        // 
         setPriority(100)
       }
     } catch (error: any) {
@@ -86,7 +87,7 @@ function PluginConfigModal({ pluginName, isOpen, onClose, onSave }: PluginConfig
       console.error('Failed to load config data:', error)
       const errorMessage = error.response?.data?.detail || 
                           error.message || 
-                          '加载插件配置失败'
+                          t('plugins.configLoadErrorTitle')
       setLoadError(errorMessage)
     } finally {
       if (currentRequest === loadingRequestRef.current) {
@@ -111,13 +112,13 @@ function PluginConfigModal({ pluginName, isOpen, onClose, onSave }: PluginConfig
       }
       
       // Show success message
-      toast.success('配置保存成功')
+      toast.success(t('plugins.configSaveSuccess'))
       
       // Notify parent but don't close modal
       onSave(updatedConfig)
       // Don't close modal automatically - let user close it manually
     } catch (error: any) {
-      toast.error(error.response?.data?.detail || '保存失败')
+      toast.error(error.response?.data?.detail || t('common.error'))
     } finally {
       setSaving(false)
     }
@@ -130,7 +131,7 @@ function PluginConfigModal({ pluginName, isOpen, onClose, onSave }: PluginConfig
       <div className="bg-white rounded-lg shadow-xl max-w-2xl w-full max-h-[90vh] flex flex-col">
         {/* Fixed Header */}
         <div className="flex items-center justify-between p-6 border-b border-gray-200 flex-shrink-0">
-          <h2 className="text-xl font-bold text-gray-900">插件设置: {pluginName}</h2>
+          <h2 className="text-xl font-bold text-gray-900">{t('plugins.pluginConfigTitle', { name: pluginName })}</h2>
           <button
             onClick={onClose}
             className="p-2 hover:bg-gray-100 rounded-lg transition-colors"
@@ -141,13 +142,13 @@ function PluginConfigModal({ pluginName, isOpen, onClose, onSave }: PluginConfig
         
         {/* Scrollable Content */}
         <div className="flex-1 overflow-y-auto p-6 space-y-6">
-          {/* 错误显示 */}
+          {/*  */}
           {loadError && (
             <div className="bg-red-50 border border-red-200 rounded-lg p-4">
               <div className="flex items-start gap-3">
                 <AlertCircle className="w-5 h-5 text-red-500 flex-shrink-0 mt-0.5" />
                 <div className="flex-1 min-w-0">
-                  <h4 className="text-sm font-medium text-red-800 mb-1">加载配置失败</h4>
+                  <h4 className="text-sm font-medium text-red-800 mb-1">{t('plugins.configLoadErrorTitle')}</h4>
                   <p className="text-sm text-red-700 break-words">{loadError}</p>
                   <button
                     onClick={loadConfigData}
@@ -155,7 +156,7 @@ function PluginConfigModal({ pluginName, isOpen, onClose, onSave }: PluginConfig
                     className="mt-3 px-3 py-1.5 bg-red-100 hover:bg-red-200 text-red-700 rounded text-sm font-medium transition-colors inline-flex items-center gap-1.5"
                   >
                     <RotateCw className={`w-3.5 h-3.5 ${loading ? 'animate-spin' : ''}`} />
-                    {loading ? '加载中...' : '重试'}
+                    {loading ? t('common.loading') : t('plugins.retryLoad')}
                   </button>
                 </div>
               </div>
@@ -166,7 +167,7 @@ function PluginConfigModal({ pluginName, isOpen, onClose, onSave }: PluginConfig
           {!loadError && (
             <div className="border-b border-gray-200 pb-4">
               <label className="block text-sm font-medium text-gray-700 mb-2">
-                插件优先级
+                {t('plugins.interceptorPriority')}
               </label>
               <div className="space-y-2">
                 <input
@@ -179,7 +180,7 @@ function PluginConfigModal({ pluginName, isOpen, onClose, onSave }: PluginConfig
                   placeholder="100"
                 />
                 <p className="text-xs text-gray-500">
-                  优先级越小，越早执行（默认：100）。用于控制事件上下文处理的顺序。
+                  {t('plugins.interceptorPriorityHint')}
                 </p>
               </div>
             </div>
@@ -199,7 +200,7 @@ function PluginConfigModal({ pluginName, isOpen, onClose, onSave }: PluginConfig
               />
             ) : (
               <div className="text-center py-12 text-gray-500">
-                此插件没有可配置项
+                {t('plugins.noConfigSchema')}
               </div>
             )
           )}
@@ -211,7 +212,7 @@ function PluginConfigModal({ pluginName, isOpen, onClose, onSave }: PluginConfig
             onClick={onClose}
             className="btn btn-secondary"
           >
-            取消
+            {t('common.cancel')}
           </button>
           <button
             onClick={handleSave}
@@ -219,7 +220,7 @@ function PluginConfigModal({ pluginName, isOpen, onClose, onSave }: PluginConfig
             className="btn btn-primary flex items-center gap-2"
           >
             <Save className="w-4 h-4" />
-            {saving ? '保存中...' : '保存'}
+            {saving ? t('common.loading') : t('common.save')}
           </button>
         </div>
       </div>
@@ -234,6 +235,7 @@ interface UploadModalProps {
 }
 
 function UploadModal({ isOpen, onClose, onSuccess }: UploadModalProps) {
+  const { t } = useTranslation()
   const [file, setFile] = useState<File | null>(null)
   const [uploading, setUploading] = useState(false)
   const [error, setError] = useState('')
@@ -242,7 +244,7 @@ function UploadModal({ isOpen, onClose, onSuccess }: UploadModalProps) {
 
   const handleUpload = async () => {
     if (!file) {
-      setError('请选择文件')
+      setError('')
       return
     }
 
@@ -260,7 +262,7 @@ function UploadModal({ isOpen, onClose, onSuccess }: UploadModalProps) {
         setSuccess(false)
       }, 1500)
     } catch (err: any) {
-      setError(err.response?.data?.detail || '上传失败')
+      setError(err.response?.data?.detail || '')
     } finally {
       setUploading(false)
     }
@@ -295,7 +297,7 @@ function UploadModal({ isOpen, onClose, onSuccess }: UploadModalProps) {
         setFile(droppedFile)
         setError('')
       } else {
-        setError('只支持 ZIP 文件')
+        setError(t('plugins.invalidZip'))
       }
     }
   }
@@ -307,7 +309,7 @@ function UploadModal({ isOpen, onClose, onSuccess }: UploadModalProps) {
       <div className="bg-white rounded-lg shadow-xl max-w-md w-full">
         <div className="flex items-center justify-between p-6 border-b border-gray-200">
           <h2 className="text-xl font-bold text-gray-900">
-            上传插件
+            {t('plugins.uploadZipTitle')}
           </h2>
           <button
             onClick={onClose}
@@ -321,13 +323,13 @@ function UploadModal({ isOpen, onClose, onSuccess }: UploadModalProps) {
           {success ? (
             <div className="flex items-center gap-2 text-green-600">
               <CheckCircle className="w-5 h-5" />
-              <span>上传成功！</span>
+              <span>{t('plugins.uploadSuccessMsg')}</span>
             </div>
           ) : (
             <>
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-2">
-                  选择或拖入 ZIP 文件
+                  {t('plugins.uploadZipLabel')}
                 </label>
                 
                 {/* Drag and Drop Zone */}
@@ -375,16 +377,16 @@ function UploadModal({ isOpen, onClose, onSuccess }: UploadModalProps) {
                         }}
                         className="text-sm text-primary-600 hover:text-primary-700"
                       >
-                        重新选择
+                        {t('plugins.removeFile')}
                       </button>
                     </div>
                   ) : (
                     <div className="space-y-1">
                       <p className="text-sm text-gray-600">
-                        {isDragging ? '松开鼠标上传文件' : '拖入文件或点击选择'}
+                        {isDragging ? t('plugins.dragDropZip') : t('plugins.dragDropZip')}
                       </p>
                       <p className="text-xs text-gray-500">
-                        支持 .zip 格式
+                        {t('plugins.zipOnlyHint')}
                       </p>
                     </div>
                   )}
@@ -407,7 +409,7 @@ function UploadModal({ isOpen, onClose, onSuccess }: UploadModalProps) {
               className="btn btn-secondary"
               disabled={uploading}
             >
-              取消
+              {t('common.cancel')}
             </button>
             <button
               onClick={handleUpload}
@@ -415,7 +417,7 @@ function UploadModal({ isOpen, onClose, onSuccess }: UploadModalProps) {
               className="btn btn-primary flex items-center gap-2"
             >
               <Upload className="w-4 h-4" />
-              {uploading ? '上传中...' : '上传'}
+              {uploading ? t('common.loading') : t('plugins.uploadPlugin')}
             </button>
           </div>
         )}
@@ -431,6 +433,7 @@ interface GitHubInstallModalProps {
 }
 
 function GitHubInstallModal({ isOpen, onClose, onSuccess }: GitHubInstallModalProps) {
+  const { t } = useTranslation()
   const [repoUrl, setRepoUrl] = useState('')
   const [installing, setInstalling] = useState(false)
   const [error, setError] = useState('')
@@ -451,7 +454,7 @@ function GitHubInstallModal({ isOpen, onClose, onSuccess }: GitHubInstallModalPr
 
   const handleInstall = async () => {
     if (!repoUrl.trim()) {
-      setError('请输入 GitHub 仓库地址')
+      setError(t('plugins.githubUrlRequired'))
       return
     }
 
@@ -480,7 +483,7 @@ function GitHubInstallModal({ isOpen, onClose, onSuccess }: GitHubInstallModalPr
           
           if (data.status === 'completed') {
             setProgress(100)
-            setProgressMessage('安装完成！')
+            setProgressMessage('Update OK')
             setSuccess(true)
             eventSource.close()
             eventSourceRef.current = null
@@ -493,7 +496,7 @@ function GitHubInstallModal({ isOpen, onClose, onSuccess }: GitHubInstallModalPr
               setProgressMessage('')
             }, 1500)
           } else if (data.status === 'failed') {
-            setError(data.message || '安装失败')
+            setError(data.message || 'Update failed')
             setInstalling(false)
             eventSource.close()
             eventSourceRef.current = null
@@ -511,12 +514,12 @@ function GitHubInstallModal({ isOpen, onClose, onSuccess }: GitHubInstallModalPr
         eventSource.close()
         eventSourceRef.current = null
         if (!success && !error) {
-          setError('连接中断，请重试')
+          setError('Connection interrupted')
           setInstalling(false)
         }
       }
     } catch (err: any) {
-      setError(err.response?.data?.detail || '安装失败')
+      setError(err.response?.data?.detail || t('common.error'))
       setInstalling(false)
       if (eventSourceRef.current) {
         eventSourceRef.current.close()
@@ -543,7 +546,7 @@ function GitHubInstallModal({ isOpen, onClose, onSuccess }: GitHubInstallModalPr
       <div className="bg-white rounded-lg shadow-xl max-w-md w-full">
         <div className="flex items-center justify-between p-6 border-b border-gray-200">
           <h2 className="text-xl font-bold text-gray-900">
-            从 GitHub 安装插件
+            {t('plugins.githubInstallTitle')}
           </h2>
           <button
             onClick={handleClose}
@@ -558,19 +561,19 @@ function GitHubInstallModal({ isOpen, onClose, onSuccess }: GitHubInstallModalPr
           {success ? (
             <div className="flex items-center gap-2 text-green-600">
               <CheckCircle className="w-5 h-5" />
-              <span>安装成功！</span>
+              <span>{t('plugins.uploadSuccessMsg')}</span>
             </div>
           ) : (
             <>
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-2">
-                  GitHub 仓库地址
+                  {t('plugins.githubRepoLabel')}
                 </label>
                 <input
                   type="text"
                   value={repoUrl}
                   onChange={(e) => setRepoUrl(e.target.value)}
-                  placeholder="owner/repo 或 https://github.com/owner/repo"
+                  placeholder={t('plugins.githubRepoPlaceholder')}
                   className="input w-full"
                   disabled={installing}
                   onKeyDown={(e) => {
@@ -580,14 +583,14 @@ function GitHubInstallModal({ isOpen, onClose, onSuccess }: GitHubInstallModalPr
                   }}
                 />
                 <p className="text-xs text-gray-500 mt-2">
-                  支持格式：owner/repo 或完整的 GitHub URL
+                  {t('plugins.githubRepoHelp')}
                 </p>
               </div>
               
               {installing && (
                 <div className="space-y-2">
                   <div className="flex items-center justify-between text-sm">
-                    <span className="text-gray-700">{progressMessage || '准备中...'}</span>
+                    <span className="text-gray-700">{progressMessage || t('plugins.installingGithub')}</span>
                     <span className="text-gray-500">{progress}%</span>
                   </div>
                   <div className="w-full bg-gray-200 rounded-full h-2.5">
@@ -615,7 +618,7 @@ function GitHubInstallModal({ isOpen, onClose, onSuccess }: GitHubInstallModalPr
               disabled={installing}
               className="btn btn-secondary"
             >
-              取消
+              {t('common.cancel')}
             </button>
             <button
               onClick={handleInstall}
@@ -623,7 +626,7 @@ function GitHubInstallModal({ isOpen, onClose, onSuccess }: GitHubInstallModalPr
               className="btn btn-primary flex items-center gap-2"
             >
               <Download className="w-4 h-4" />
-              {installing ? '安装中...' : '安装'}
+              {installing ? t('plugins.installingGithub') : t('plugins.installFromGithub')}
             </button>
           </div>
         )}
@@ -644,7 +647,7 @@ export default function PluginsPage() {
   const [showGitHubModal, setShowGitHubModal] = useState(false)
   const [configPlugin, setConfigPlugin] = useState<string | null>(null)
   
-  // 用于防止竞态条件
+  // 
   const loadingRequestRef = useRef(0)
 
   useEffect(() => {
@@ -660,16 +663,16 @@ export default function PluginsPage() {
     
     try {
       setLoading(true)
-      setLoadError('') // 清除之前的错误
+      setLoadError('') // 
       
       const data = await api.getPlugins()
       
-      // 只有最新的请求才更新状态
+      // 
       if (currentRequest !== loadingRequestRef.current) {
         return
       }
       
-      // 验证数据
+      // 
       if (!Array.isArray(data)) {
         throw new Error('Invalid plugins data received')
       }
@@ -677,7 +680,7 @@ export default function PluginsPage() {
       console.log('Loaded plugins:', data)
       setPlugins(data)
     } catch (error: any) {
-      // 只有最新的请求才更新错误状态
+      // 
       if (currentRequest !== loadingRequestRef.current) {
         return
       }
@@ -685,11 +688,11 @@ export default function PluginsPage() {
       console.error('Failed to load plugins:', error)
       const errorMessage = error.response?.data?.detail || 
                           error.message || 
-                          '加载插件列表失败'
+                          t('plugins.loadPluginsFailed')
       setLoadError(errorMessage)
       toast.error(errorMessage)
     } finally {
-      // 只有最新的请求才更新加载状态
+      // 
       if (currentRequest === loadingRequestRef.current) {
         setLoading(false)
       }
@@ -703,14 +706,14 @@ export default function PluginsPage() {
       await loadPlugins() // Reload plugins after action
       
       // Show success toast based on action
-      const actionMessages = {
-        enable: `插件 "${pluginName}" 已启用`,
-        disable: `插件 "${pluginName}" 已停用`,
-        load: `插件 "${pluginName}" 已启用`,
-        unload: `插件 "${pluginName}" 已停用`,
-        reload: `插件 "${pluginName}" 已重载`
+      const actionMessages: Record<string, string> = {
+        enable: t('plugins.enableSuccess'),
+        disable: t('plugins.disableSuccess'),
+        load: t('plugins.enableSuccess'),
+        unload: t('plugins.disableSuccess'),
+        reload: t('plugins.reloadSuccess'),
       }
-      toast.success(actionMessages[action as keyof typeof actionMessages] || `操作成功`)
+      toast.success(actionMessages[action] || t('common.success'))
     } catch (error: any) {
       const errorMsg = error.response?.data?.detail || t('plugins.actionFailed')
       toast.error(errorMsg)
@@ -720,7 +723,7 @@ export default function PluginsPage() {
   }
 
   const handleDelete = async (pluginName: string) => {
-    if (!confirm(`确定要删除插件 "${pluginName}" 吗？此操作将删除插件数据库记录和文件目录，无法恢复！`)) {
+    if (!confirm(t('plugins.deleteConfirm', { name: pluginName }))) {
       return
     }
     
@@ -728,9 +731,9 @@ export default function PluginsPage() {
     try {
       await api.deletePlugin(pluginName)
       await loadPlugins() // Reload plugins after deletion
-      toast.success(`插件 "${pluginName}" 已成功删除`)
+      toast.success(t('plugins.pluginDeleted'))
     } catch (error: any) {
-      const errorMsg = error.response?.data?.detail || '删除插件失败'
+      const errorMsg = error.response?.data?.detail || t('plugins.deleteFailed')
       toast.error(errorMsg)
     } finally {
       setActionLoading(null)
@@ -745,7 +748,7 @@ export default function PluginsPage() {
     )
   }
 
-  // 加载失败显示
+  // 
   if (loadError && plugins.length === 0) {
     return (
       <div className="space-y-6">
@@ -759,7 +762,7 @@ export default function PluginsPage() {
         <div className="card text-center py-12">
           <AlertCircle className="w-12 h-12 text-red-500 mx-auto mb-4" />
           <h3 className="text-lg font-medium text-gray-900 mb-2">
-            加载插件失败
+            {t('plugins.loadPluginsFailed')}
           </h3>
           <p className="text-sm text-gray-600 mb-4">{loadError}</p>
           <button
@@ -768,7 +771,7 @@ export default function PluginsPage() {
             className="px-4 py-2 bg-primary-600 text-white rounded-lg hover:bg-primary-700 transition-colors inline-flex items-center gap-2"
           >
             <RotateCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} />
-            {loading ? '加载中...' : t('common.retry') || '重试'}
+            {loading ? t('common.loading') : t('common.retry')}
           </button>
         </div>
       </div>
@@ -788,7 +791,7 @@ export default function PluginsPage() {
             className="btn btn-secondary flex items-center gap-1.5 text-sm px-3 py-2 whitespace-nowrap"
           >
             <Download className="w-4 h-4" />
-            <span className="hidden xl:inline">GitHub 安装</span>
+            <span className="hidden xl:inline">{t('plugins.githubInstallTitle')}</span>
             <span className="xl:hidden">GitHub</span>
           </button>
           <button
@@ -867,7 +870,7 @@ export default function PluginsPage() {
               </div>
 
               <div className="space-y-2 mt-auto">
-                {/* 主操作按钮行 */}
+                {/*  */}
                 <div className="flex gap-2">
                   {plugin.enabled === true ? (
                     <>
@@ -899,25 +902,25 @@ export default function PluginsPage() {
                     </button>
                   )}
                 </div>
-                {/* 次要操作按钮行 */}
+                {/*  */}
                 <div className="flex gap-2">
                   <button
                     onClick={() => setConfigPlugin(plugin.name)}
                     disabled={loading}
                     className="btn btn-secondary flex-1 flex items-center justify-center gap-1.5 text-sm whitespace-nowrap"
-                    title="配置"
+                    title={t('plugins.configure')}
                   >
                     <Settings className="w-4 h-4" />
-                    <span>配置</span>
+                    <span>{t('plugins.configure')}</span>
                   </button>
                   <button
                     onClick={() => handleDelete(plugin.name)}
                     disabled={actionLoading === plugin.name || loading}
                     className="btn btn-danger flex-1 flex items-center justify-center gap-1.5 text-sm whitespace-nowrap"
-                    title="删除插件"
+                    title={t('plugins.delete')}
                   >
                     <Trash2 className="w-4 h-4" />
-                    <span>删除</span>
+                    <span>{t('plugins.delete')}</span>
                   </button>
                 </div>
               </div>

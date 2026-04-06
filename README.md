@@ -30,6 +30,9 @@ One-line installation script (Linux/macOS):
 curl -# -fSL https://raw.githubusercontent.com/ValkyrieEY/RuaBot/main/install.sh -o /tmp/ruabot_install.sh && bash /tmp/ruabot_install.sh
 ```
 
+The installer now creates an isolated Node.js runtime for the project and installs the new `ruabot-cli` via `npm install -g ruabot-cli`.
+Legacy `rcli` maintenance workflow is deprecated.
+
 For detailed installation instructions, see [Installation Guide](docs/installation.md).
 
 ---

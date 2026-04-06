@@ -146,15 +146,15 @@ async def install_plugin_dependencies(plugin_path: Path, plugin_metadata: Dict[s
 
 
 class ProxyMessageInterceptor(MessageInterceptor):
-    """代理拦截器 - 通过消息传递调用插件运行时的拦截逻辑"""
+    """ - """
     
     def __init__(self, plugin_id: str, connector, priority: int = 100):
-        """初始化代理拦截器
+        """
         
         Args:
-            plugin_id: 插件ID
-            connector: PluginRuntimeConnector实例
-            priority: 优先级
+            plugin_id: ID
+            connector: PluginRuntimeConnector
+            priority: 
         """
         super().__init__(plugin_id, priority)
         self.connector = connector
@@ -166,19 +166,19 @@ class ProxyMessageInterceptor(MessageInterceptor):
         params: Dict[str, Any],
         source_plugin: Optional[str] = None
     ) -> InterceptorResult:
-        """拦截消息 - 通过消息传递到插件运行时执行拦截逻辑"""
+        """ - """
         import uuid
         
-        # 发送拦截请求到插件运行时
+        # 
         request_id = str(uuid.uuid4())
         future = asyncio.get_event_loop().create_future()
         
-        # 临时存储future（需要在connector中实现）
+        # futureconnector
         if not hasattr(self.connector, '_interceptor_futures'):
             self.connector._interceptor_futures = {}
         self.connector._interceptor_futures[request_id] = future
         
-        # 发送拦截请求
+        # 
         await self.connector._send_to_runtime({
             'type': 'intercept_message',
             'data': {
@@ -191,16 +191,16 @@ class ProxyMessageInterceptor(MessageInterceptor):
         })
         
         try:
-            # 等待响应（超时3秒，与运行时拦截器超时保持一致）
+            # 3
             result = await asyncio.wait_for(future, timeout=3.0)
             logger.debug(f"拦截器响应成功: {self.plugin_id}, allow={result.allow}")
             return result
         except asyncio.TimeoutError:
-            # 超时则放行
+            # 
             logger.warning(f"拦截器响应超时: {self.plugin_id}, 放行消息")
             return InterceptorResult(allow=True)
         except Exception as e:
-            logger.error(f"拦截器执行错误: {self.plugin_id}, {e}")
+            logger.error(f"拦截器执行错误： {self.plugin_id}, {e}")
             return InterceptorResult(allow=True)
         finally:
             self.connector._interceptor_futures.pop(request_id, None)
@@ -280,6 +280,31 @@ class PluginRuntimeConnector:
         # Cleanup task for expired requests
         self._cleanup_task: Optional[asyncio.Task] = None
     
+    def _get_resolved_plugin_base(self) -> Path:
+        """Resolved absolute path to the configured plugins directory (``plugins/``)."""
+        from ...core.config import get_config
+        
+        config = get_config()
+        plugin_dir = Path(config.plugin_dir)
+        if not plugin_dir.is_absolute():
+            project_root = Path(__file__).parent.parent.parent.parent
+            plugin_dir = (project_root / config.plugin_dir).resolve()
+        else:
+            plugin_dir = plugin_dir.resolve()
+        return plugin_dir
+    
+    async def _prune_orphaned_plugin_records(self) -> None:
+        """Drop DB and binary storage for plugins whose folder was removed from disk."""
+        if not self.db_manager:
+            return
+        try:
+            base = self._get_resolved_plugin_base()
+            pruned = await self.db_manager.prune_orphaned_plugin_settings(base)
+            if pruned:
+                logger.info("Orphan plugin cleanup at startup: %s", pruned)
+        except Exception as e:
+            logger.warning("Orphan plugin prune failed (continuing startup): %s", e, exc_info=True)
+    
     async def initialize(self):
         """Initialize plugin runtime."""
         if not self.is_enabled:
@@ -299,6 +324,9 @@ class PluginRuntimeConnector:
             
             # Start cleanup task for expired requests
             self._cleanup_task = asyncio.create_task(self._cleanup_expired_requests())
+            
+            # DB rows for plugins whose directory was deleted manually (align with Web UI delete)
+            await self._prune_orphaned_plugin_records()
             
             # Initialize plugins
             await self._initialize_plugins()
@@ -557,15 +585,15 @@ class PluginRuntimeConnector:
                     consecutive_errors = 0
                     
                     try:
-                        # Parse JSON message - 使用 utf-8 编码解码，添加错误处理
+                        # Parse JSON message -  utf-8 
                         try:
                             message = json.loads(line.decode('utf-8').strip())
                         except UnicodeDecodeError:
-                            # 如果UTF-8解码失败，尝试其他编码
+                            # UTF-8
                             try:
                                 message = json.loads(line.decode('gbk').strip())
                             except UnicodeDecodeError:
-                                # 最后尝试Latin-1
+                                # Latin-1
                                 message = json.loads(line.decode('latin-1').strip())
                         await self._handle_runtime_message(message)
                     except json.JSONDecodeError as e:
@@ -659,7 +687,7 @@ class PluginRuntimeConnector:
             # Create proxy interceptor
             proxy_interceptor = ProxyMessageInterceptor(plugin_id, self, priority=priority)
             self.interceptor_registry.register_message_interceptor(proxy_interceptor)
-            logger.info(f"✅ 拦截器已注册: {plugin_id}")
+            logger.info(f"拦截器已注册: {plugin_id}")
         
         elif msg_type == 'unregister_interceptor':
             # Plugin wants to unregister an interceptor
@@ -667,7 +695,7 @@ class PluginRuntimeConnector:
             
             logger.info(f"Unregistering interceptor for plugin: {plugin_id}")
             self.interceptor_registry.unregister_message_interceptor(plugin_id)
-            logger.info(f"✅ 拦截器已取消注册: {plugin_id}")
+            logger.info(f"拦截器已注销: {plugin_id}")
         
         elif msg_type == 'intercept_message_response':
             # Response from plugin runtime for intercept_message request
@@ -1038,19 +1066,11 @@ class PluginRuntimeConnector:
             # Send init command to runtime
             # Priority: database > plugin.json > default (100)
             plugin_list = []
+            plugin_dir = self._get_resolved_plugin_base()
             for p in plugins:
                 # Try to get priority from plugin.json
                 priority_from_json = None
                 try:
-                    from pathlib import Path
-                    from ...core.config import get_config
-                    config = get_config()
-                    plugin_dir = Path(config.plugin_dir)
-                    if not plugin_dir.is_absolute():
-                        from pathlib import Path as P
-                        project_root = P(__file__).parent.parent.parent.parent
-                        plugin_dir = (project_root / config.plugin_dir).resolve()
-                    
                     plugin_path = plugin_dir / p.plugin_name
                     plugin_json = plugin_path / "plugin.json"
                     if plugin_json.exists():
@@ -1066,6 +1086,16 @@ class PluginRuntimeConnector:
                 if p.priority == 100 and priority_from_json is not None:
                     # Database has default, use plugin.json if available
                     final_priority = priority_from_json
+                
+                manifest_path = plugin_dir / p.plugin_name / "plugin.json"
+                if not manifest_path.is_file():
+                    logger.warning(
+                        "Skipping enabled plugin %s/%s: manifest missing at %s",
+                        p.plugin_author,
+                        p.plugin_name,
+                        manifest_path,
+                    )
+                    continue
                 
                 plugin_list.append({
                     'author': p.plugin_author,
@@ -1170,16 +1200,16 @@ class PluginRuntimeConnector:
         
         try:
             # Wait for response (with timeout)
-            # ⚡ 优化超时时间以避免阻塞：
-            # - before_send: 2秒（消息发送前，必须快速响应）
-            # - message.received: 10秒（消息接收，平衡响应速度和处理时间）
-            # - 其他事件: 30秒（非紧急事件，允许较长处理时间）
+            #  
+            # - before_send: 2
+            # - message.received: 10
+            # - : 30
             if event_context.event_name == 'message.before_send':
-                timeout = 2.0  # 快速响应，避免阻塞API调用
+                timeout = 2.0  # API
             elif event_context.event_name == 'message.received':
-                timeout = 10.0  # 10秒超时，避免严重阻塞（从30秒优化）
+                timeout = 10.0  # 1030
             else:
-                timeout = 30.0  # 其他事件保持30秒
+                timeout = 30.0  # 30
             logger.debug(f"Waiting for event_with_context response: {event_context.event_name}, timeout={timeout}s")
             result = await asyncio.wait_for(future, timeout=timeout)
             logger.debug(f"Received event_with_context response: {event_context.event_name}, success={result.get('success', True)}")
@@ -1271,14 +1301,14 @@ class PluginRuntimeConnector:
             plugins_dir = Path(config.plugin_dir)
             plugin_path = plugins_dir / name
             
-            # 如果插件目录已存在，先检查
+            # 
             if plugin_path.exists():
                 logger.warning(f"Plugin {name} already exists at {plugin_path}")
                 return False
             
-            # 根据source类型处理
+            # source
             if source.startswith('http://') or source.startswith('https://'):
-                # URL下载（GitHub等）
+                # URLGitHub
                 logger.info(f"Downloading plugin from URL: {source}")
                 
                 try:
@@ -1286,61 +1316,61 @@ class PluginRuntimeConnector:
                     import tempfile
                     import zipfile
                     
-                    # 创建临时目录
+                    # 
                     temp_dir = Path(tempfile.gettempdir()) / f"plugin_install_{name}_{datetime.now().timestamp()}"
                     temp_dir.mkdir(exist_ok=True)
                     temp_zip = temp_dir / f"{name}.zip"
                     
-                    # 处理GitHub URL
+                    # GitHub URL
                     if 'github.com' in source:
-                        # 如果是GitHub仓库URL，转换为下载链接
+                        # GitHubURL
                         if source.endswith('.zip'):
                             download_url = source
                         elif '/archive/' in source:
                             download_url = source
                         else:
-                            # 假设是仓库URL，添加/archive/refs/heads/main.zip
+                            # URL/archive/refs/heads/main.zip
                             if source.endswith('/'):
                                 source = source[:-1]
                             if not source.endswith('.zip'):
-                                # 尝试获取main分支的zip
+                                # mainzip
                                 download_url = f"{source}/archive/refs/heads/main.zip"
                             else:
                                 download_url = source
                     else:
                         download_url = source
                     
-                    # 下载文件
+                    # 
                     async with aiohttp.ClientSession() as session:
                         async with session.get(download_url) as response:
                             if response.status != 200:
                                 logger.error(f"Failed to download plugin: HTTP {response.status}")
                                 return False
                             
-                            # 保存到临时文件
+                            # 
                             with open(temp_zip, 'wb') as f:
                                 async for chunk in response.content.iter_chunked(8192):
                                     f.write(chunk)
                     
-                    # 解压ZIP文件
+                    # ZIP
                     with zipfile.ZipFile(temp_zip, 'r') as zip_ref:
-                        # 获取解压后的根目录名
+                        # 
                         zip_names = zip_ref.namelist()
                         if zip_names:
-                            # 通常GitHub zip的第一层是 仓库名-分支名/
+                            # GitHub zip -/
                             root_dir = zip_names[0].split('/')[0]
-                            # 解压到临时目录
+                            # 
                             extract_dir = temp_dir / "extracted"
                             zip_ref.extractall(extract_dir)
                             
-                            # 找到实际的插件目录（可能有一层包装）
+                            # 
                             extracted_root = extract_dir / root_dir
                             if extracted_root.exists():
-                                # 检查是否直接就是插件目录（有plugin.json）
+                                # plugin.json
                                 if (extracted_root / "plugin.json").exists():
                                     source_path = extracted_root
                                 else:
-                                    # 查找包含plugin.json的子目录
+                                    # plugin.json
                                     plugin_dirs = [d for d in extracted_root.iterdir() if d.is_dir() and (d / "plugin.json").exists()]
                                     if plugin_dirs:
                                         source_path = plugin_dirs[0]
@@ -1355,12 +1385,12 @@ class PluginRuntimeConnector:
                                 shutil.rmtree(temp_dir, ignore_errors=True)
                                 return False
                             
-                            # 复制到插件目录
+                            # 
                             import shutil
                             shutil.copytree(source_path, plugin_path)
                             logger.info(f"Downloaded and installed plugin from {source} to {plugin_path}")
                             
-                            # 清理临时文件
+                            # 
                             shutil.rmtree(temp_dir, ignore_errors=True)
                         else:
                             logger.error("Downloaded archive is empty")
@@ -1370,7 +1400,7 @@ class PluginRuntimeConnector:
                         
                 except Exception as e:
                     logger.error(f"Failed to download plugin from URL: {e}", exc_info=True)
-                    # 清理临时文件
+                    # 
                     try:
                         import shutil
                         if 'temp_dir' in locals() and temp_dir.exists():
@@ -1379,15 +1409,15 @@ class PluginRuntimeConnector:
                         pass
                     return False
             elif Path(source).exists():
-                # 本地路径
+                # 
                 source_path = Path(source)
                 if source_path.is_dir():
-                    # 复制目录
+                    # 
                     import shutil
                     shutil.copytree(source_path, plugin_path)
                     logger.info(f"Copied plugin from {source_path} to {plugin_path}")
                 elif source_path.is_file() and source_path.suffix == '.zip':
-                    # 解压ZIP文件
+                    # ZIP
                     import zipfile
                     with zipfile.ZipFile(source_path, 'r') as zip_ref:
                         zip_ref.extractall(plugin_path)
@@ -1399,29 +1429,29 @@ class PluginRuntimeConnector:
                 logger.error(f"Source not found: {source}")
                 return False
             
-            # 验证插件（检查plugin.json）
+            # plugin.json
             plugin_json = plugin_path / "plugin.json"
             if not plugin_json.exists():
                 logger.error(f"Plugin {name} missing plugin.json, installation failed")
-                # 清理
+                # 
                 import shutil
                 if plugin_path.exists():
                     shutil.rmtree(plugin_path)
                 return False
             
-            # 读取plugin.json获取元数据
+            # plugin.json
             import json
             with open(plugin_json, 'r', encoding='utf-8') as f:
                 plugin_metadata = json.load(f)
             
-            # 自动安装依赖
+            # 
             logger.info(f"Checking dependencies for plugin: {author}/{name}")
             await install_plugin_dependencies(plugin_path, plugin_metadata)
             
-            # 在数据库中注册插件
+            # 
             if self.db_manager:
                 
-                # 检查插件设置是否已存在
+                # 
                 existing_setting = await self.db_manager.get_plugin_setting(author, name)
                 
                 default_config = plugin_metadata.get('default_config', {})
@@ -1432,7 +1462,7 @@ class PluginRuntimeConnector:
                 }
                 
                 if existing_setting:
-                    # 更新现有设置
+                    # 
                     success = await self.db_manager.update_plugin_setting(
                         author, name,
                         enabled=False,
@@ -1441,7 +1471,7 @@ class PluginRuntimeConnector:
                         install_info=install_info
                     )
                 else:
-                    # 创建新设置
+                    # 
                     try:
                         await self.db_manager.create_plugin_setting(
                             author, name,
@@ -1457,7 +1487,7 @@ class PluginRuntimeConnector:
                 
                 if success:
                     logger.info(f"Plugin {author}/{name} installed successfully")
-                    # 重新加载插件
+                    # 
                     await self.reload_plugin(f"{author}/{name}")
                     return True
                 else:
@@ -1469,7 +1499,7 @@ class PluginRuntimeConnector:
                 
         except Exception as e:
             logger.error(f"Failed to install plugin {author}/{name}: {e}", exc_info=True)
-            # 清理失败的安装
+            # 
             try:
                 if plugin_path.exists():
                     import shutil
@@ -1499,26 +1529,37 @@ class PluginRuntimeConnector:
         plugin_id = f"{author}/{name}"
         
         try:
-            # 1. 先卸载插件（从runtime中移除）
+            # 1. runtime
             await self.unload_plugin(plugin_id)
             
-            # 2. 删除插件目录
             from ...core.config import get_config
             config = get_config()
             plugins_dir = Path(config.plugin_dir)
             plugin_path = plugins_dir / name
             
-            if plugin_path.exists():
-                import shutil
+            # 2. Read manifest before deleting directory (for Web UI upload keys in default_config)
+            manifest_default_config: Optional[Dict[str, Any]] = None
+            plugin_json = plugin_path / "plugin.json"
+            if plugin_json.is_file():
                 try:
-                    shutil.rmtree(plugin_path)
-                    logger.info(f"Deleted plugin directory: {plugin_path}")
+                    with open(plugin_json, encoding="utf-8") as f:
+                        manifest_default_config = json.load(f).get("default_config") or None
                 except Exception as e:
-                    logger.warning(f"Failed to delete plugin directory: {e}")
+                    logger.warning(f"Failed to read plugin.json before uninstall: {e}")
             
-            # 3. 删除数据库中的所有插件数据
+            # 3. Database cleanup (before rmtree)
             if self.db_manager:
-                # 3.1 删除插件的所有存储数据
+                # 3.0 Web UI config-file uploads (system/plugin_config)
+                try:
+                    existing = await self.db_manager.get_plugin_setting(author, name)
+                    await self.db_manager.delete_plugin_config_upload_blobs(
+                        existing.config if existing else None,
+                        manifest_default_config,
+                    )
+                except Exception as e:
+                    logger.warning(f"Failed to delete plugin config upload blobs: {e}")
+                
+                # 3.1 Runtime plugin binary storage
                 try:
                     storage_keys = await self.db_manager.list_binary_keys('plugin', plugin_id)
                     deleted_count = 0
@@ -1534,7 +1575,7 @@ class PluginRuntimeConnector:
                 except Exception as e:
                     logger.warning(f"Failed to delete plugin storage data: {e}")
                 
-                # 3.2 删除插件设置（完全删除，不只是禁用）
+                # 3.2 Plugin settings row
                 try:
                     success = await self.db_manager.delete_plugin_setting(author, name)
                     if success:
@@ -1546,10 +1587,19 @@ class PluginRuntimeConnector:
                     return False
                 
                 logger.info(f"Plugin {author}/{name} uninstalled successfully (all data deleted)")
-                return True
             else:
-                logger.warning("Database manager not available, only deleted plugin directory")
-                return True
+                logger.warning("Database manager not available, plugin directory will still be removed")
+            
+            # 4. Delete plugin directory
+            if plugin_path.exists():
+                import shutil
+                try:
+                    shutil.rmtree(plugin_path)
+                    logger.info(f"Deleted plugin directory: {plugin_path}")
+                except Exception as e:
+                    logger.warning(f"Failed to delete plugin directory: {e}")
+            
+            return True
                 
         except Exception as e:
             logger.error(f"Failed to uninstall plugin {author}/{name}: {e}", exc_info=True)
@@ -1598,7 +1648,7 @@ class PluginRuntimeConnector:
         try:
             # Get fresh config from database to pass to runtime
             # This avoids SQLite cross-process caching issues
-            plugin_config = {}  # 初始化为空字典，而不是None
+            plugin_config = {}  # None
             
             if self.db_manager:
                 # Parse plugin name to get author/name
@@ -1635,11 +1685,11 @@ class PluginRuntimeConnector:
                     plugin_config = setting.config
                     logger.debug(f"Loaded fresh config from database for {plugin_name}: {plugin_config}")
                 else:
-                    # 如果数据库中没有配置，使用默认配置
+                    # 
                     plugin_config = {}
                     logger.debug(f"No config in database for {plugin_name}, using empty config")
             
-            # 确保plugin_config不是None
+            # plugin_configNone
             if plugin_config is None:
                 plugin_config = {}
             

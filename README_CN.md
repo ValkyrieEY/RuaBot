@@ -30,6 +30,9 @@
 curl -# -fSL https://raw.githubusercontent.com/ValkyrieEY/RuaBot/main/install.sh -o /tmp/ruabot_install.sh && bash /tmp/ruabot_install.sh
 ```
 
+安装脚本现在会为项目创建隔离的 Node.js 运行时，并通过 `npm install -g ruabot-cli` 安装新版 CLI。  
+旧版 `rcli` 维护流程已弃用。
+
 详细安装说明请查看 [安装配置文档](docs/installation_CN.md)。
 
 ---

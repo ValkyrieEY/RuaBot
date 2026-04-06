@@ -74,7 +74,7 @@ interface DockerContainerInfo {
   is_napcat: boolean
 }
 
-// 文件浏览器组件
+// 
 function PathBrowser({ 
   onSelect, 
   onClose,
@@ -355,7 +355,7 @@ export default function NapCatPage() {
   const [installing, setInstalling] = useState(false)
   const [installProgress, setInstallProgress] = useState<InstallProgress | null>(null)
   const [runtimeLogs, setRuntimeLogs] = useState<string[]>([])
-  const [showRuntimeLogs, setShowRuntimeLogs] = useState(true)
+  const [autoRefresh, setAutoRefresh] = useState(true)
   const [error, setError] = useState('')
   const [success, setSuccess] = useState('')
   const [showScript, setShowScript] = useState(false)
@@ -363,21 +363,25 @@ export default function NapCatPage() {
   const [copiedScript, setCopiedScript] = useState(false)
   const [showPathBrowser, setShowPathBrowser] = useState(false)
   const [showDockerPicker, setShowDockerPicker] = useState(false)
+  const [showSudoPasswordDialog, setShowSudoPasswordDialog] = useState(false)
+  const [sudoPassword, setSudoPassword] = useState('')
   
-  // 安装选项
+  // 
   const [selectedPlatform, setSelectedPlatform] = useState('auto')
   const [useAutoPath, setUseAutoPath] = useState(true)
   const [installPath, setInstallPath] = useState('')
   const [selectedInstallerBase, setSelectedInstallerBase] = useState('')
   const [newCustomBase, setNewCustomBase] = useState('')
   
-  // Docker 模式选项
+  // Docker 
   const [dockerQQ, setDockerQQ] = useState('')
   const [dockerMode, setDockerMode] = useState('ws')
   const [dockerProxy, setDockerProxy] = useState('')
   
   const deployLogsEndRef = useRef<HTMLDivElement>(null)
   const runtimeLogsEndRef = useRef<HTMLDivElement>(null)
+  const deployLogsContainerRef = useRef<HTMLDivElement>(null)
+  const runtimeLogsContainerRef = useRef<HTMLDivElement>(null)
   const progressIntervalRef = useRef<number | null>(null)
   const logsIntervalRef = useRef<number | null>(null)
 
@@ -390,7 +394,7 @@ export default function NapCatPage() {
   }, [])
 
   useEffect(() => {
-    if (showRuntimeLogs && status?.running) {
+    if (autoRefresh && status?.running) {
       startLogsPolling()
     } else {
       if (logsIntervalRef.current) {
@@ -398,19 +402,23 @@ export default function NapCatPage() {
         logsIntervalRef.current = null
       }
     }
-  }, [showRuntimeLogs, status?.running])
+  }, [autoRefresh, status?.running])
 
   useEffect(() => {
-    if (deployLogsEndRef.current && installProgress?.logs.length) {
-      deployLogsEndRef.current.scrollIntoView({ behavior: 'smooth' })
+    // 
+    if (deployLogsContainerRef.current && installProgress?.logs.length) {
+      const el = deployLogsContainerRef.current
+      el.scrollTop = el.scrollHeight
     }
   }, [installProgress?.logs])
 
   useEffect(() => {
-    if (runtimeLogsEndRef.current && runtimeLogs.length) {
-      runtimeLogsEndRef.current.scrollIntoView({ behavior: 'smooth' })
+    // 
+    if (autoRefresh && runtimeLogsContainerRef.current && runtimeLogs.length) {
+      const el = runtimeLogsContainerRef.current
+      el.scrollTop = el.scrollHeight
     }
-  }, [runtimeLogs])
+  }, [runtimeLogs, autoRefresh])
 
   const loadData = async () => {
     setLoading(true)
@@ -436,7 +444,7 @@ export default function NapCatPage() {
     }
   }
 
-  const startLogsPolling = () => {
+  const startLogsPolling = async () => {
     if (logsIntervalRef.current) return
     
     const fetchLogs = async () => {
@@ -448,7 +456,8 @@ export default function NapCatPage() {
       }
     }
     
-    fetchLogs()
+    // Load logs immediately when starting
+    await fetchLogs()
     logsIntervalRef.current = window.setInterval(fetchLogs, 2000)
   }
 
@@ -456,7 +465,7 @@ export default function NapCatPage() {
     setError('')
     setScriptPreview('')
     
-    // 验证 Docker 模式必填项
+    //  Docker 
     if (selectedPlatform === 'docker') {
       if (!dockerQQ || !dockerQQ.match(/^\d+$/)) {
         setError('Docker 模式需要提供有效的 QQ 号')
@@ -470,14 +479,14 @@ export default function NapCatPage() {
         action: 'script'
       }
       
-      // Docker 模式配置
+      // Docker 
       if (selectedPlatform === 'docker') {
         payload.docker = true
         payload.qq = dockerQQ
         payload.mode = dockerMode
         if (dockerProxy) payload.proxy = parseInt(dockerProxy)
       } else {
-        // 非 Docker 模式的路径配置
+        //  Docker 
         if (!useAutoPath && installPath) payload.path = installPath
       }
       
@@ -495,7 +504,7 @@ export default function NapCatPage() {
     setSuccess('')
     setInstallProgress(null)
 
-    // 验证 Docker 模式必填项
+    //  Docker 
     if (selectedPlatform === 'docker') {
       if (!dockerQQ || !dockerQQ.match(/^\d+$/)) {
         setError('Docker 模式需要提供有效的 QQ 号')
@@ -510,14 +519,14 @@ export default function NapCatPage() {
         action: 'auto'
       }
       
-      // Docker 模式配置
+      // Docker 
       if (selectedPlatform === 'docker') {
         payload.docker = true
         payload.qq = dockerQQ
         payload.mode = dockerMode
         if (dockerProxy) payload.proxy = parseInt(dockerProxy)
       } else {
-        // 非 Docker 模式的路径配置
+        //  Docker 
         if (!useAutoPath && installPath) payload.path = installPath
       }
 
@@ -565,7 +574,17 @@ export default function NapCatPage() {
           setSuccess(t('napcat.installSuccess'))
           setInstalling(false)
           if (progressIntervalRef.current) clearInterval(progressIntervalRef.current)
+          // Reload data to get the auto-saved install_path
           await loadData()
+          // Show success message with path info if available
+          const logs = data.logs || []
+          const savedPathLog = logs.find((log: string) => log.includes('[auto_saved] install_path'))
+          if (savedPathLog) {
+            const pathMatch = savedPathLog.match(/install_path = (.+)/)
+            if (pathMatch) {
+              setSuccess(`${t('napcat.installSuccess')} - ${t('napcat.pathAutoSaved')}: ${pathMatch[1]}`)
+            }
+          }
         } else if (data.status === 'error' || data.status === 'canceled') {
           setError(data.message || t('napcat.installFailed'))
           setInstalling(false)
@@ -933,6 +952,25 @@ export default function NapCatPage() {
             </div>
           )}
 
+          {/* Docker Sudo Password Settings */}
+          {systemInfo?.commands.docker && (
+            <div className="card">
+              <div className="flex items-center gap-3 mb-4">
+                <Settings className="w-5 h-5 text-primary-600" />
+                <h2 className="text-lg font-semibold text-gray-900">{t('napcat.dockerSudoSettings')}</h2>
+              </div>
+              <div className="space-y-3">
+                <p className="text-sm text-gray-600">{t('napcat.dockerSudoDesc')}</p>
+                <button
+                  onClick={() => setShowSudoPasswordDialog(true)}
+                  className="btn btn-secondary w-full"
+                >
+                  {t('napcat.configureSudoPassword')}
+                </button>
+              </div>
+            </div>
+          )}
+
           {/* Status and Control */}
           {status?.install_path && (
             <div className="card">
@@ -955,7 +993,35 @@ export default function NapCatPage() {
                 </div>
 
                 <div className="text-sm">
-                  <span className="text-gray-600">{t('napcat.installPath')}</span>
+                  <div className="flex items-center justify-between mb-1">
+                    <span className="text-gray-600">{t('napcat.installPath')}</span>
+                    <div className="flex items-center gap-1">
+                      <button
+                        onClick={() => {
+                          const currentPath = status.install_path || ''
+                          setInstallPath(currentPath)
+                          setShowPathBrowser(true)
+                        }}
+                        className="btn btn-secondary btn-xs flex items-center gap-1"
+                        title={t('napcat.selectFolder')}
+                      >
+                        <FolderOpen className="w-3 h-3" />
+                        <span className="hidden sm:inline">{t('napcat.selectFolder')}</span>
+                      </button>
+                      <button
+                        onClick={() => {
+                          const currentPath = status.install_path || ''
+                          setInstallPath(currentPath)
+                          setShowDockerPicker(true)
+                        }}
+                        className="btn btn-secondary btn-xs flex items-center gap-1"
+                        title={t('napcat.selectDockerContainer')}
+                      >
+                        <Server className="w-3 h-3" />
+                        <span className="hidden sm:inline">{t('napcat.selectDockerContainer')}</span>
+                      </button>
+                    </div>
+                  </div>
                   <div className="mt-1 bg-gray-50 p-2 rounded text-xs font-mono break-all">{status.install_path}</div>
                 </div>
 
@@ -991,7 +1057,7 @@ export default function NapCatPage() {
           )}
         </div>
 
-        {/* Right Column - 使用 flex 布局 */}
+        {/* Right Column -  flex  */}
         <div className="space-y-6 flex flex-col">
           {/* Installation Configuration */}
           <div className="card">
@@ -1021,7 +1087,7 @@ export default function NapCatPage() {
                 </select>
               </div>
 
-              {/* Docker 模式配置 */}
+              {/* Docker  */}
               {selectedPlatform === 'docker' && (
                 <div className="space-y-3 bg-blue-50 border border-blue-200 rounded-lg p-4">
                   <div className="flex items-center gap-2 text-blue-800 text-sm font-medium">
@@ -1082,7 +1148,7 @@ export default function NapCatPage() {
                 </div>
               )}
 
-              {/* Install Path - 非 Docker 模式 */}
+              {/* Install Path -  Docker  */}
               {selectedPlatform !== 'docker' && (
                 <div>
                   <label className="block text-sm font-medium text-gray-700 mb-2">
@@ -1157,7 +1223,7 @@ export default function NapCatPage() {
             </div>
           </div>
 
-          {/* Deploy Output - 始终显示，填满右列 */}
+          {/* Deploy Output -  */}
           <div className="card flex-1 flex flex-col">
             <div className="flex items-center gap-3 mb-4">
               <Terminal className="w-5 h-5 text-primary-600" />
@@ -1165,7 +1231,7 @@ export default function NapCatPage() {
             </div>
 
             {installing && installProgress ? (
-              <div className="space-y-3 flex-1 flex flex-col">
+              <div className="space-y-3">
                 <div className="flex items-center justify-between">
                   <span className="text-sm font-medium text-gray-700">{installProgress.message}</span>
                   <span className="text-sm font-medium text-primary-600">{installProgress.percent}%</span>
@@ -1177,7 +1243,10 @@ export default function NapCatPage() {
                   ></div>
                 </div>
 
-                <div className="bg-gray-900 rounded-lg p-3 flex-1 overflow-y-auto min-h-[300px]">
+                <div
+                  ref={deployLogsContainerRef}
+                  className="bg-gray-900 rounded-lg p-3 h-[400px] max-h-[400px] overflow-y-auto overflow-x-hidden"
+                >
                   {installProgress.logs.length > 0 ? (
                     <div className="space-y-1">
                       {installProgress.logs.map((log, i) => (
@@ -1185,7 +1254,7 @@ export default function NapCatPage() {
                           {log}
                         </div>
                       ))}
-                      <div ref={deployLogsEndRef} />
+                      <div ref={deployLogsEndRef} aria-hidden />
                     </div>
                   ) : (
                     <div className="flex items-center justify-center h-full">
@@ -1202,22 +1271,24 @@ export default function NapCatPage() {
                 </button>
               </div>
             ) : (
-              <div className="bg-gray-50 rounded-lg p-8 text-center flex-1 flex flex-col items-center justify-center min-h-[400px]">
-                <Terminal className="w-12 h-12 text-gray-400 mb-3" />
-                <p className="text-sm text-gray-500">{t('napcat.noDeployOutput')}</p>
+              <div className="bg-gray-50 rounded-lg p-8 text-center flex items-center justify-center h-[400px]">
+                <div className="flex flex-col items-center">
+                  <Terminal className="w-12 h-12 text-gray-400 mb-3" />
+                  <p className="text-sm text-gray-500">{t('napcat.noDeployOutput')}</p>
+                </div>
               </div>
             )}
           </div>
         </div>
       </div>
 
-      {/* Runtime Logs - 占两列，显示在最下面 */}
+      {/* Runtime Logs -  */}
       <div className="card">
         <div className="flex items-center justify-between mb-4">
           <div className="flex items-center gap-3">
             <Terminal className="w-5 h-5 text-primary-600" />
             <h2 className="text-lg font-semibold text-gray-900">{t('napcat.runtimeLogs')}</h2>
-            {status?.running && showRuntimeLogs && (
+            {status?.running && autoRefresh && (
               <span className="text-xs text-green-600 bg-green-50 px-2 py-1 rounded">
                 {t('napcat.autoRefreshing')}
               </span>
@@ -1225,38 +1296,40 @@ export default function NapCatPage() {
           </div>
           <div className="flex items-center gap-2">
             {status?.running && (
-              <>
-                <button
-                  onClick={() => {
-                    if (showRuntimeLogs) {
-                      setShowRuntimeLogs(false)
-                    } else {
-                      setShowRuntimeLogs(true)
-                      startLogsPolling()
-                    }
-                  }}
-                  className={`btn btn-sm ${showRuntimeLogs ? 'btn-secondary' : 'btn-primary'}`}
-                >
-                  {showRuntimeLogs ? t('napcat.stopRefresh') : t('napcat.startRefresh')}
-                </button>
-                <button
-                  onClick={() => {
-                    setRuntimeLogs([])
-                    if (showRuntimeLogs) {
-                      startLogsPolling()
-                    }
-                  }}
-                  className="btn btn-secondary btn-sm"
-                  disabled={!showRuntimeLogs}
-                >
-                  <RefreshCw className="w-4 h-4" />
-                </button>
-              </>
+              <label className="flex items-center gap-2 cursor-pointer select-none">
+                <span className="text-sm text-gray-600">{t('common.autoRefresh')}</span>
+                <div className="relative inline-flex items-center">
+                  <input
+                    type="checkbox"
+                    checked={autoRefresh}
+                    onChange={async (e) => {
+                      const newValue = e.target.checked
+                      setAutoRefresh(newValue)
+                      if (newValue) {
+                        // When enabling, reload all logs and start polling
+                        setRuntimeLogs([])
+                        await startLogsPolling()
+                      } else {
+                        // When disabling, stop polling but keep current logs
+                        if (logsIntervalRef.current) {
+                          clearInterval(logsIntervalRef.current)
+                          logsIntervalRef.current = null
+                        }
+                      }
+                    }}
+                    className="sr-only peer"
+                  />
+                  <div className="w-11 h-6 bg-gray-200 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-blue-600"></div>
+                </div>
+              </label>
             )}
           </div>
         </div>
 
-        <div className="bg-gray-900 rounded-lg p-3 h-[52vh] min-h-[360px] max-h-[70vh] overflow-y-auto">
+        <div
+          ref={runtimeLogsContainerRef}
+          className="bg-gray-900 rounded-lg p-3 h-[52vh] min-h-[360px] max-h-[70vh] overflow-y-auto overflow-x-hidden"
+        >
           {!status?.running ? (
             <div className="text-center py-12">
               <Terminal className="w-12 h-12 text-gray-600 mx-auto mb-3" />
@@ -1273,7 +1346,7 @@ export default function NapCatPage() {
                   {log}
                 </div>
               ))}
-              <div ref={runtimeLogsEndRef} />
+              <div ref={runtimeLogsEndRef} aria-hidden />
             </div>
           )}
         </div>
@@ -1327,6 +1400,72 @@ export default function NapCatPage() {
           onSelect={handleDockerContainerSelect}
           onClose={() => setShowDockerPicker(false)}
         />
+      )}
+
+      {/* Sudo Password Dialog */}
+      {showSudoPasswordDialog && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
+          <div className="bg-white rounded-lg max-w-md w-full">
+            <div className="flex items-center justify-between p-4 border-b border-gray-200">
+              <h3 className="text-lg font-semibold text-gray-900">{t('napcat.configureSudoPassword')}</h3>
+              <button onClick={() => setShowSudoPasswordDialog(false)} className="text-gray-400 hover:text-gray-600">
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+            
+            <div className="p-4 space-y-4">
+              <p className="text-sm text-gray-600">{t('napcat.sudoPasswordDesc')}</p>
+              
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-2">
+                  {t('napcat.sudoPassword')}
+                </label>
+                <input
+                  type="password"
+                  value={sudoPassword}
+                  onChange={(e) => setSudoPassword(e.target.value)}
+                  placeholder={t('napcat.enterSudoPassword')}
+                  className="input w-full"
+                  autoComplete="new-password"
+                />
+                <p className="text-xs text-gray-500 mt-1">{t('napcat.sudoPasswordNote')}</p>
+              </div>
+            </div>
+
+            <div className="flex justify-end gap-2 p-4 border-t border-gray-200">
+              <button
+                onClick={async () => {
+                  try {
+                    await api.setNapCatSudoPassword({ password: '' })
+                    setSuccess(t('napcat.sudoPasswordCleared'))
+                    setSudoPassword('')
+                    setShowSudoPasswordDialog(false)
+                  } catch (err: any) {
+                    setError(err.response?.data?.detail || t('napcat.sudoPasswordClearFailed'))
+                  }
+                }}
+                className="btn btn-secondary"
+              >
+                {t('napcat.clearPassword')}
+              </button>
+              <button
+                onClick={async () => {
+                  try {
+                    await api.setNapCatSudoPassword({ password: sudoPassword })
+                    setSuccess(t('napcat.sudoPasswordSet'))
+                    setSudoPassword('')
+                    setShowSudoPasswordDialog(false)
+                  } catch (err: any) {
+                    setError(err.response?.data?.detail || t('napcat.sudoPasswordSetFailed'))
+                  }
+                }}
+                className="btn btn-primary"
+              >
+                {t('common.save')}
+              </button>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   )

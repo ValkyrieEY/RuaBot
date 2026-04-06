@@ -17,7 +17,7 @@ class ApiClient {
   constructor() {
     this.client = axios.create({
       baseURL: API_BASE_URL,
-      timeout: 15000, // 15秒超时
+      timeout: 15000, // 15
       headers: {
         'Content-Type': 'application/json',
       },
@@ -195,6 +195,17 @@ class ApiClient {
     return response.data
   }
 
+  // AI Workspace
+  async getAIWorkspaceConfig(): Promise<AIWorkspaceConfig> {
+    const response = await this.client.get<AIWorkspaceConfig>('/ai/workspace-config')
+    return response.data
+  }
+
+  async updateAIWorkspaceConfig(mode: AIWorkspaceMode): Promise<AIWorkspaceConfig> {
+    const response = await this.client.post<AIWorkspaceConfig>('/ai/workspace-config', { mode })
+    return response.data
+  }
+
   // OneBot
   async getOneBotConfig(): Promise<OneBotConfig> {
     const response = await this.client.get<OneBotConfig>('/onebot/config')
@@ -217,9 +228,9 @@ class ApiClient {
   }
 
   // Messages
-  async getMessageLog(limit?: number): Promise<MessageLog[]> {
+  async getMessageLog(limit?: number, afterRowId?: number): Promise<MessageLog[]> {
     const response = await this.client.get<MessageLog[]>('/messages/log', {
-      params: { limit },
+      params: { limit, after_row_id: afterRowId },
     })
     return response.data
   }
@@ -250,179 +261,6 @@ class ApiClient {
 
   async getGroupMembers(groupId: string): Promise<{ group_id: string, members: any[], count: number }> {
     const response = await this.client.get(`/chat/groups/${groupId}/members`)
-    return response.data
-  }
-
-  // AI APIs
-  async checkAIAvailability(): Promise<{ available: boolean; message: string; module_path?: string }> {
-    const response = await this.client.get('/ai/availability')
-    return response.data
-  }
-  
-  async getAIConfig(configType: string, targetId?: string): Promise<any> {
-    const response = await this.client.get('/ai/config', { params: { config_type: configType, target_id: targetId } })
-    return response.data
-  }
-
-  async updateAIConfig(configType: string, targetId: string | undefined, updates: any): Promise<any> {
-    const response = await this.client.put('/ai/config', updates, { 
-      params: { config_type: configType, target_id: targetId },
-      headers: { 'Content-Type': 'application/json' }
-    })
-    return response.data
-  }
-
-  // AI Tools
-  async listAITools(): Promise<any[]> {
-    const response = await this.client.get('/ai/tools')
-    return response.data
-  }
-
-  async getEnabledTools(configType: string, targetId?: string): Promise<Record<string, boolean>> {
-    const response = await this.client.get('/ai/tools/enabled', {
-      params: { config_type: configType, target_id: targetId }
-    })
-    return response.data
-  }
-
-  async updateEnabledTools(configType: string, targetId: string | undefined, enabledTools: Record<string, boolean>): Promise<any> {
-    const response = await this.client.put('/ai/tools/enabled', { enabled_tools: enabledTools }, {
-      params: { config_type: configType, target_id: targetId }
-    })
-    return response.data
-  }
-
-  async listGroupConfigs(): Promise<any[]> {
-    const response = await this.client.get('/ai/groups')
-    return response.data
-  }
-
-  async batchUpdateGroups(groupIds: string[], updates: any): Promise<any> {
-    const response = await this.client.post('/ai/groups/batch', { ...updates, group_ids: groupIds })
-    return response.data
-  }
-
-  async listModels(): Promise<any[]> {
-    const response = await this.client.get('/ai/models')
-    return response.data
-  }
-
-  async getModel(modelUuid: string): Promise<any> {
-    const response = await this.client.get(`/ai/models/${modelUuid}`)
-    return response.data
-  }
-
-  async createModel(model: any): Promise<any> {
-    const response = await this.client.post('/ai/models', model)
-    return response.data
-  }
-
-  async updateModel(modelUuid: string, updates: any): Promise<any> {
-    const response = await this.client.put(`/ai/models/${modelUuid}`, updates)
-    return response.data
-  }
-
-  async deleteModel(modelUuid: string): Promise<any> {
-    const response = await this.client.delete(`/ai/models/${modelUuid}`)
-    return response.data
-  }
-
-  async listProviders(): Promise<string[]> {
-    const response = await this.client.get('/ai/models/providers/list')
-    return response.data
-  }
-
-  async listPresets(): Promise<any[]> {
-    const response = await this.client.get('/ai/presets')
-    return response.data
-  }
-
-  async getPreset(presetUuid: string): Promise<any> {
-    const response = await this.client.get(`/ai/presets/${presetUuid}`)
-    return response.data
-  }
-
-  async createPreset(preset: any): Promise<any> {
-    const response = await this.client.post('/ai/presets', preset)
-    return response.data
-  }
-
-  async updatePreset(presetUuid: string, updates: any): Promise<any> {
-    const response = await this.client.put(`/ai/presets/${presetUuid}`, updates)
-    return response.data
-  }
-
-  async deletePreset(presetUuid: string): Promise<any> {
-    const response = await this.client.delete(`/ai/presets/${presetUuid}`)
-    return response.data
-  }
-
-  async listMemories(memoryType?: string, targetId?: string): Promise<any[]> {
-    const response = await this.client.get('/ai/memories', { params: { memory_type: memoryType, target_id: targetId } })
-    return response.data
-  }
-
-  async getMemory(memoryUuid: string): Promise<any> {
-    const response = await this.client.get(`/ai/memories/${memoryUuid}`)
-    return response.data
-  }
-
-  async deleteMemory(memoryUuid: string): Promise<any> {
-    const response = await this.client.delete(`/ai/memories/${memoryUuid}`)
-    return response.data
-  }
-
-  async clearMemory(memoryType: string, targetId: string, presetUuid?: string): Promise<any> {
-    const response = await this.client.post('/ai/memories/clear', {
-      memory_type: memoryType,
-      target_id: targetId,
-      preset_uuid: presetUuid || null
-    })
-    return response.data
-  }
-
-  async listMCPServers(enabledOnly: boolean = false): Promise<any[]> {
-    const response = await this.client.get('/ai/mcp/servers', { params: { enabled_only: enabledOnly } })
-    return response.data
-  }
-
-  async getMCPServer(serverUuid: string): Promise<any> {
-    const response = await this.client.get(`/ai/mcp/servers/${serverUuid}`)
-    return response.data
-  }
-
-  async createMCPServer(server: any): Promise<any> {
-    const response = await this.client.post('/ai/mcp/servers', server)
-    return response.data
-  }
-
-  async updateMCPServer(serverUuid: string, updates: any): Promise<any> {
-    const response = await this.client.put(`/ai/mcp/servers/${serverUuid}`, updates)
-    return response.data
-  }
-
-  async deleteMCPServer(serverUuid: string): Promise<any> {
-    const response = await this.client.delete(`/ai/mcp/servers/${serverUuid}`)
-    return response.data
-  }
-
-  async connectMCPServer(serverUuid: string): Promise<any> {
-    const response = await this.client.post(`/ai/mcp/servers/${serverUuid}/connect`)
-    return response.data
-  }
-
-  async disconnectMCPServer(serverUuid: string): Promise<any> {
-    const response = await this.client.post(`/ai/mcp/servers/${serverUuid}/disconnect`)
-    return response.data
-  }
-
-  async getMCPServerTools(serverUuid: string): Promise<any[]> {
-    const response = await this.client.get(`/ai/mcp/servers/${serverUuid}/tools`)
-    return response.data
-  }
-
-  async getAllMCPTools(): Promise<any[]> {
-    const response = await this.client.get('/ai/mcp/tools')
     return response.data
   }
 
@@ -495,6 +333,11 @@ class ApiClient {
 
   async setNapCatPath(data: any): Promise<any> {
     const response = await this.client.post('/napcat/path', data)
+    return response.data
+  }
+
+  async setNapCatSudoPassword(data: any): Promise<any> {
+    const response = await this.client.post('/napcat/sudo-password', data)
     return response.data
   }
 
@@ -586,8 +429,15 @@ export interface OneBotConfigUpdate {
   onebot_access_token?: string
 }
 
+export type AIWorkspaceMode = 'agent' | 'assistant'
+
+export interface AIWorkspaceConfig {
+  mode: AIWorkspaceMode
+}
+
 export interface MessageLog {
   id?: string
+  db_row_id?: number
   time: string
   message_type: string
   user_id: string | number

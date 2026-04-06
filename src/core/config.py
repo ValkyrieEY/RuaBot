@@ -74,9 +74,20 @@ class Config(BaseSettings):
     
     # AI Thread Pool
     ai_thread_pool_enabled: bool = Field(default=True, alias="AI_THREAD_POOL_ENABLED")
+
+    # AI Workspace
+    ai_workspace_mode: str = Field(default="agent", alias="AI_WORKSPACE_MODE")
     
     # Plugin Thread Pool
     plugin_thread_pool_enabled: bool = Field(default=True, alias="PLUGIN_THREAD_POOL_ENABLED")
+
+    # Message event persistence (for WebUI history recovery)
+    message_event_retention_days: int = Field(default=7, alias="MESSAGE_EVENT_RETENTION_DAYS")
+    message_event_max_rows: int = Field(default=50000, alias="MESSAGE_EVENT_MAX_ROWS")
+    message_event_cleanup_interval_seconds: int = Field(
+        default=3600,
+        alias="MESSAGE_EVENT_CLEANUP_INTERVAL_SECONDS"
+    )
     
     # Auto Reload (for development)
     auto_reload: bool = Field(default=False, alias="AUTO_RELOAD")
@@ -155,9 +166,22 @@ def _flatten_toml(data: Dict[str, Any], result: Dict[str, str], prefix: str = ""
             # [app].log_level -> LOG_LEVEL (not APP_LOG_LEVEL)
             elif env_key == "APP_LOG_LEVEL":
                 result["LOG_LEVEL"] = value
+            # [plugins].dir -> PLUGIN_DIR (not PLUGINS_DIR)
+            elif env_key == "PLUGINS_DIR":
+                result["PLUGIN_DIR"] = value
+            # [plugins].auto_load -> PLUGIN_AUTO_LOAD (not PLUGINS_AUTO_LOAD)
+            elif env_key == "PLUGINS_AUTO_LOAD":
+                result["PLUGIN_AUTO_LOAD"] = value
+            # [plugins].thread_pool_enabled -> PLUGIN_THREAD_POOL_ENABLED (not PLUGINS_THREAD_POOL_ENABLED)
+            elif env_key == "PLUGINS_THREAD_POOL_ENABLED":
+                result["PLUGIN_THREAD_POOL_ENABLED"] = value
+            # [plugins].auto_reload -> AUTO_RELOAD (not PLUGINS_AUTO_RELOAD)
+            elif env_key == "PLUGINS_AUTO_RELOAD":
+                result["AUTO_RELOAD"] = value
             
             # Always set the original key too (for backwards compatibility)
             result[env_key] = value
+
 
 
 class ConfigManager:

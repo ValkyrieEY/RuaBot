@@ -1,0 +1,144 @@
+[app]
+name = "XQNEXT Framework"
+version = "0.1"
+
+# 环境模式："development"（开发）或 "production"（生产）
+environment = "development"
+
+log_level = "INFO"
+
+# 服务器配置
+[server]
+
+# 服务器主机地址（0.0.0.0 表示监听所有网络接口）
+host = "0.0.0.0"
+
+# 服务器端口号
+port = 8000
+
+[onebot]
+# OneBot 协议版本："v11" 或 "v12"
+version = "v11"
+
+# 连接类型："http"（HTTP）、"ws"/"ws_forward"（正向WebSocket）、"ws_reverse"（反向WebSocket）
+connection_type = "ws_forward"
+
+# HTTP API 端点地址
+http_url = "http://localhost:5700"
+
+# WebSocket 连接地址（用于正向 WebSocket）
+ws_url = "ws://127.0.0.1:3001"
+
+# 反向 WebSocket 服务器主机地址（用于反向 WebSocket）
+ws_reverse_host = "0.0.0.0"
+
+# 反向 WebSocket 服务器端口（用于反向 WebSocket）
+ws_reverse_port = 8080
+
+# 反向 WebSocket 服务器路径（用于反向 WebSocket）
+ws_reverse_path = "/onebot/v11/ws"
+
+# 访问令牌用于身份验证（如果不需要则留空）
+access_token = ""
+
+# 用于消息签名验证的密钥（如果不需要则留空）
+secret = ""
+
+# HTTP 请求超时时间（秒）
+http_timeout = 120.0
+
+# WebSocket API 调用超时时间（秒）
+ws_api_timeout = 60.0
+
+[database]
+# 数据库连接 URL（SQLite 示例：sqlite+aiosqlite:///./data/framework.db）
+url = "sqlite+aiosqlite:///./data/framework.db"
+
+# 安全配置
+[security]
+
+# 用于 JWT 令牌签名的密钥（生产环境请修改！）
+secret_key = "your-secret-key-change-this-in-production"
+
+# 访问令牌过期时间（分钟）
+access_token_expire_minutes = 30
+
+[logging]
+# 日志级别："DEBUG"（调试）、"INFO"（信息）、"WARNING"（警告）、"ERROR"（错误）、"CRITICAL"（严重）
+level = "DEBUG"
+
+# 日志文件路径
+file = "logs/onebot_framework.log"
+
+# 日志文件轮转前的最大大小（字节，默认：10MB）
+max_bytes = 10485760  # 10MB
+
+# 保留的备份日志文件数量
+backup_count = 5  # 保留 5 个备份文件
+
+[plugins]
+# 插件目录路径
+dir = "./plugins"
+
+# 启动时自动加载插件
+auto_load = true
+
+# 为插件执行启用线程池
+thread_pool_enabled = true
+
+# 是否文件改动自动重启
+auto_reload = false
+
+[plugins.interceptor]
+# 拦截器执行模式: "serial"(串行), "parallel"(并行), "hybrid"(混合，推荐)
+# - serial: 拦截器按优先级依次执行（安全但慢）
+# - parallel: 所有拦截器同时并发执行（快但可能有冲突）
+# - hybrid: 按优先级分组，同组并发执行（推荐，平衡性能和一致性）
+execution_mode = "hybrid"
+
+# 熔断器配置：连续失败指定次数后自动隔离故障拦截器
+circuit_breaker_threshold = 3    # 连续失败次数阈值
+
+# 熔断器隔离时长（秒）：故障拦截器被隔离的时间，之后自动尝试恢复
+circuit_breaker_duration = 30.0
+
+# 拦截器基础超时时间（秒）
+base_timeout = 3.0
+
+# 拦截器最大自适应超时时间（秒）：系统会根据历史执行时间动态调整
+max_timeout = 10.0
+
+[web_ui]
+# 启用 Web 界面
+enabled = true
+
+# Web 界面登录用户名
+username = "admin"
+
+# Web 界面登录密码
+password = "admin123"
+
+[tencent_cloud]
+# 腾讯云 API 密钥 ID
+secret_id = ""
+
+# 腾讯云 API 密钥
+secret_key = ""
+
+[ai]
+# 为 AI 操作启用线程池
+thread_pool_enabled = true
+
+[ai_workspace]
+# AI 页面默认模式："agent" 或 "assistant"
+mode = "agent"
+
+[napcat]
+# NapCat 安装路径（安装后自动配置）
+install_path = ""
+
+# NapCat 安装程序基础 URL（留空以使用默认值）
+installer_base = ""
+
+# 自定义安装程序基础（URL 列表）
+installer_bases = []

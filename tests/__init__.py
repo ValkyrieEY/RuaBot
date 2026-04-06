@@ -1,2 +1,1 @@
-"""Test suite for Xiaoyi_QQ Framework."""
-
+# Test suite for Xiaoyi_QQ Framework

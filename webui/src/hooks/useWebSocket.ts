@@ -3,6 +3,7 @@ import { useEffect, useRef, useState } from 'react'
 export interface WebSocketMessage {
   type: 'message' | 'notice' | 'request'
   id: string
+  db_row_id?: number
   timestamp: string
   time: string
   event_type: string
@@ -44,8 +45,18 @@ export function useWebSocket(options: UseWebSocketOptions = {}) {
   const [isConnected, setIsConnected] = useState(false)
   const wsRef = useRef<WebSocket | null>(null)
   const reconnectTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const pingIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const reconnectAttemptsRef = useRef(0)
   const shouldConnectRef = useRef(true)
+  const onMessageRef = useRef(onMessage)
+  const onConnectedRef = useRef(onConnected)
+  const onDisconnectedRef = useRef(onDisconnected)
+
+  useEffect(() => {
+    onMessageRef.current = onMessage
+    onConnectedRef.current = onConnected
+    onDisconnectedRef.current = onDisconnected
+  }, [onMessage, onConnected, onDisconnected])
 
   const connect = () => {
     if (!shouldConnectRef.current) return
@@ -63,14 +74,20 @@ export function useWebSocket(options: UseWebSocketOptions = {}) {
         console.log('[WebSocket] Connected')
         setIsConnected(true)
         reconnectAttemptsRef.current = 0
-        onConnected?.()
+        onConnectedRef.current?.()
 
         // Send ping every 30 seconds to keep connection alive
-        const pingInterval = setInterval(() => {
+        if (pingIntervalRef.current) {
+          clearInterval(pingIntervalRef.current)
+        }
+        pingIntervalRef.current = setInterval(() => {
           if (ws.readyState === WebSocket.OPEN) {
             ws.send('ping')
           } else {
-            clearInterval(pingInterval)
+            if (pingIntervalRef.current) {
+              clearInterval(pingIntervalRef.current)
+              pingIntervalRef.current = null
+            }
           }
         }, 30000)
       }
@@ -79,7 +96,7 @@ export function useWebSocket(options: UseWebSocketOptions = {}) {
         try {
           const data = JSON.parse(event.data)
           console.log('[WebSocket] Received message:', data)
-          onMessage?.(data)
+          onMessageRef.current?.(data)
         } catch (error) {
           console.error('[WebSocket] Failed to parse message:', error)
         }
@@ -93,7 +110,11 @@ export function useWebSocket(options: UseWebSocketOptions = {}) {
         console.log('[WebSocket] Disconnected')
         setIsConnected(false)
         wsRef.current = null
-        onDisconnected?.()
+        if (pingIntervalRef.current) {
+          clearInterval(pingIntervalRef.current)
+          pingIntervalRef.current = null
+        }
+        onDisconnectedRef.current?.()
 
         // Attempt to reconnect
         if (
@@ -118,6 +139,10 @@ export function useWebSocket(options: UseWebSocketOptions = {}) {
 
   const disconnect = () => {
     shouldConnectRef.current = false
+    if (pingIntervalRef.current) {
+      clearInterval(pingIntervalRef.current)
+      pingIntervalRef.current = null
+    }
     if (reconnectTimeoutRef.current) {
       clearTimeout(reconnectTimeoutRef.current)
       reconnectTimeoutRef.current = null

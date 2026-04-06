@@ -68,7 +68,7 @@ export default function ChatPage() {
         
         // Group message matching
         if (wsMessage.message_type === 'group' && selectedContact.type === 'group') {
-          isForCurrentChat = wsMessage.group_id === selectedContact.id
+          isForCurrentChat = String(wsMessage.group_id || '') === String(selectedContact.id)
         }
         // Private message matching
         else if (wsMessage.message_type === 'private' && selectedContact.type === 'private') {
@@ -76,10 +76,10 @@ export default function ChatPage() {
           // For received messages, check if user_id matches the selected contact
           if (wsMessage.is_self && wsMessage.target_id) {
             // Bot sent to this contact - match by target_id
-            isForCurrentChat = wsMessage.target_id === selectedContact.id
+            isForCurrentChat = String(wsMessage.target_id) === String(selectedContact.id)
           } else {
             // Message from contact - match by sender ID
-            isForCurrentChat = wsMessage.user_id === selectedContact.id
+            isForCurrentChat = String(wsMessage.user_id || '') === String(selectedContact.id)
           }
         }
 
@@ -856,4 +856,3 @@ export default function ChatPage() {
     </div>
   )
 }
-

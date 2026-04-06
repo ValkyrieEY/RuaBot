@@ -36,18 +36,18 @@ export default function AboutPage() {
     return () => clearInterval(interval)
   }, [])
 
-  // 图片加载超时处理
+  // 
   useEffect(() => {
-    // 清除之前的超时
+    // 
     if (logoTimeoutRef.current) {
       clearTimeout(logoTimeoutRef.current)
       logoTimeoutRef.current = null
     }
 
     if (logoSrc.startsWith('http://') || logoSrc.startsWith('https://')) {
-      // 设置2秒超时
+      // 2
       logoTimeoutRef.current = setTimeout(() => {
-        // 如果2秒内图片还没加载完成，切换到本地图片
+        // 2
         if (!logoError) {
           setLogoSrc('/logo.jpg')
         }
@@ -96,7 +96,7 @@ export default function AboutPage() {
         <div className="flex justify-center mb-6">
           <div className="w-48 h-48 rounded-3xl shadow-2xl transform hover:scale-105 transition-transform duration-300 overflow-hidden bg-gray-100 flex items-center justify-center">
             {logoError ? (
-              // 如果所有图片都加载失败，显示占位符
+              // 
               <div className="w-full h-full flex items-center justify-center bg-gradient-to-br from-primary-400 to-primary-600">
                 <span className="text-white text-6xl font-bold">R</span>
               </div>
@@ -106,7 +106,7 @@ export default function AboutPage() {
                 alt="RuaBot Logo"
                 className="w-full h-full object-cover"
                 onLoad={() => {
-                  // 图片加载成功，清除超时
+                  // 
                   if (logoTimeoutRef.current) {
                     clearTimeout(logoTimeoutRef.current)
                     logoTimeoutRef.current = null
@@ -114,16 +114,16 @@ export default function AboutPage() {
                 }}
                 onError={(e) => {
                   const target = e.currentTarget
-                  // 清除超时
+                  // 
                   if (logoTimeoutRef.current) {
                     clearTimeout(logoTimeoutRef.current)
                     logoTimeoutRef.current = null
                   }
-                  // 如果当前是网络图片，尝试加载本地图片
+                  // 
                   if (logoSrc.startsWith('http://') || logoSrc.startsWith('https://')) {
                     setLogoSrc('/logo.jpg')
                   } else {
-                    // 如果本地图片也加载失败，显示占位符
+                    // 
                     setLogoError(true)
                     target.style.display = 'none'
                   }

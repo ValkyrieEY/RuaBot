@@ -34,18 +34,11 @@ from ..security.permissions import get_permission_manager, Permission
 from ..security.audit import get_audit_logger, AuditEventType, AuditEvent
 from ..security.device_keys import get_device_key_manager, DeviceKeyStatus
 from ..core.logger import get_logger
-from ..core.ai_detector import is_ai_available, get_ai_detector
 from ..core.version import get_version
 from datetime import datetime
 
 logger = get_logger(__name__)
 security = HTTPBearer()
-
-# Global AI managers (module-level) - Only initialized if AI is available
-_model_manager = None
-_ai_manager = None
-_mcp_manager = None
-_ai_available = None
 
 # Plugin installation progress tracking
 _plugin_install_progress: Dict[str, Dict[str, Any]] = {}
@@ -94,6 +87,10 @@ class PluginAction(BaseModel):
 class ConfigUpdate(BaseModel):
     config: Dict[str, Any]
     priority: Optional[int] = None  # Plugin priority (lower = earlier execution, default: 100)
+
+
+class AIWorkspaceConfigUpdate(BaseModel):
+    mode: str
 
 # Global auth manager instance
 _auth_manager = None
@@ -643,7 +640,7 @@ def create_app() -> FastAPI:
                 detail="User not available for login",
             )
 
-        # 记录审计日志（与普通登录保持一致风格）
+        # 
         await get_audit_logger().log(
             AuditEvent(
                 event_type=AuditEventType.AUTH_LOGIN,
@@ -886,10 +883,11 @@ def create_app() -> FastAPI:
             if not plugin_dir.exists():
                 raise HTTPException(status_code=404, detail=f"Plugin {plugin_name} not found")
             
-            # Load plugin.json to get author
+            # Load plugin.json to get author and default_config (for cleaning upload blobs)
             plugin_json = plugin_dir / "plugin.json"
             author = "Unknown"
             name = plugin_name
+            manifest_default_config: Optional[Dict[str, Any]] = None
             
             if plugin_json.exists():
                 try:
@@ -907,11 +905,22 @@ def create_app() -> FastAPI:
                             metadata = json.load(f)
                     author = metadata.get('author', 'Unknown')
                     name = metadata.get('name', plugin_name)
+                    manifest_default_config = metadata.get("default_config") or None
                 except Exception as e:
                     logger.warning(f"Failed to read plugin.json: {e}")
             
-            # Delete from database
+            # Delete from database (order: config-file uploads -> settings -> plugin-scoped binaries)
             if db_manager:
+                # 0. Web UI uploaded config files (system/plugin_config) referenced in DB config and plugin.json
+                try:
+                    existing = await db_manager.get_plugin_setting(author, name)
+                    await db_manager.delete_plugin_config_upload_blobs(
+                        existing.config if existing else None,
+                        manifest_default_config,
+                    )
+                except Exception as e:
+                    logger.warning(f"Failed to delete plugin config upload blobs: {e}")
+                
                 # 1. Delete plugin settings
                 deleted = await db_manager.delete_plugin_setting(author, name)
                 if deleted:
@@ -919,7 +928,7 @@ def create_app() -> FastAPI:
                 else:
                     logger.warning(f"Plugin {author}/{name} settings not found in database")
                 
-                # 2. Delete all binary storage data for this plugin
+                # 2. Delete all binary storage data for this plugin (runtime plugin API storage)
                 try:
                     # Get all storage keys for this plugin
                     storage_keys = await db_manager.list_binary_keys('plugin', f"{author}/{name}")
@@ -1423,12 +1432,12 @@ def create_app() -> FastAPI:
             else:
                 saved_priority = priority
             
-            # Reload plugin in runtime if it's running
+            # Reload only this plugin in runtime (avoids full subprocess restart)
             if plugin_connector:
                 try:
-                    await plugin_connector.reload_plugins()
+                    await plugin_connector.reload_plugin(f"{author}/{name}")
                 except Exception as e:
-                    logger.warning(f"Failed to reload plugins after config update: {e}")
+                    logger.warning(f"Failed to reload plugin after config update: {e}")
             
         except Exception as e:
             logger.error(f"Failed to save plugin config: {e}")
@@ -1742,9 +1751,16 @@ def create_app() -> FastAPI:
     async def _install_plugin_from_zip(zip_path: Path, config, db_manager, plugin_connector, user):
         """Helper function to install plugin from ZIP file.
         
-        Supports both nested and non-nested folder structures:
-        - Non-nested: plugin_name/plugin.json
-        - Nested: repo-main/plugin_name/plugin.json (GitHub format)
+        Standard plugin repository structure:
+          repo/
+            main/         <- plugin content always lives here
+              plugin.json
+              main.py
+              ...
+            README.md     <- anything else can go outside main/
+        
+        GitHub ZIP extracts to: repo-name-branch/main/plugin.json
+        Plain ZIP should contain: main/plugin.json (or wrap in one folder: folder/main/plugin.json)
         """
         extract_dir = zip_path.parent / "extracted"
         extract_dir.mkdir(exist_ok=True)
@@ -1755,49 +1771,41 @@ def create_app() -> FastAPI:
         except zipfile.BadZipFile:
             raise HTTPException(status_code=400, detail="Invalid ZIP file")
         
-        # Find plugin directory - support both nested and non-nested structures
+        # Find plugin directory: always located in a `main/` subdirectory.
+        # GitHub ZIP format: extracted/repo-branch/main/plugin.json
+        # Plain ZIP format:  extracted/main/plugin.json
+        #                or  extracted/any-folder/main/plugin.json
         plugin_dir = None
         plugin_json_path = None
         
-        # Strategy 1: Check if plugin.json exists directly in extract_dir (non-nested)
-        direct_plugin_json = extract_dir / "plugin.json"
-        if direct_plugin_json.exists():
-            plugin_dir = extract_dir
-            plugin_json_path = direct_plugin_json
-            logger.info("Found plugin.json directly in root (non-nested structure)")
+        # Check direct: extracted/main/plugin.json
+        candidate = extract_dir / "main" / "plugin.json"
+        if candidate.exists():
+            plugin_dir = extract_dir / "main"
+            plugin_json_path = candidate
+            logger.info("Found plugin in main/ (direct structure)")
         else:
-            # Strategy 2: Look for plugin.json in first-level directories
-            first_level_dirs = [d for d in extract_dir.iterdir() if d.is_dir() and not d.name.startswith("_")]
-            
+            # Check one level deep: extracted/repo-branch/main/plugin.json
+            first_level_dirs = [d for d in extract_dir.iterdir() if d.is_dir()]
             for first_dir in first_level_dirs:
-                # Check if plugin.json is directly in this directory
-                plugin_json = first_dir / "plugin.json"
-                if plugin_json.exists():
-                    plugin_dir = first_dir
-                    plugin_json_path = plugin_json
-                    logger.info(f"Found plugin.json in first-level directory: {first_dir.name}")
-                    break
-                
-                # Strategy 3: Check nested structure (e.g., repo-main/plugin_name/plugin.json)
-                nested_dirs = [d for d in first_dir.iterdir() if d.is_dir() and not d.name.startswith("_")]
-                for nested_dir in nested_dirs:
-                    nested_plugin_json = nested_dir / "plugin.json"
-                    if nested_plugin_json.exists():
-                        plugin_dir = nested_dir
-                        plugin_json_path = nested_plugin_json
-                        logger.info(f"Found plugin.json in nested directory: {first_dir.name}/{nested_dir.name}")
-                        break
-                
-                if plugin_dir:
+                candidate = first_dir / "main" / "plugin.json"
+                if candidate.exists():
+                    plugin_dir = first_dir / "main"
+                    plugin_json_path = candidate
+                    logger.info(f"Found plugin in {first_dir.name}/main/ (GitHub ZIP structure)")
                     break
         
         if not plugin_dir or not plugin_json_path:
             raise HTTPException(
-                status_code=400, 
-                detail="No plugin.json found in ZIP. Please ensure the ZIP contains a plugin.json file either in the root or in a subdirectory."
+                status_code=400,
+                detail=(
+                    "未找到插件内容。插件仓库必须将所有插件文件放在 main/ 子目录中，"
+                    "例如：仓库根/main/plugin.json、仓库根/main/main.py。"
+                    "GitHub ZIP 格式：repo-branch/main/plugin.json。"
+                )
             )
         
-        plugin_folder_name = plugin_dir.name
+        plugin_folder_name = plugin_dir.name  # always "main"
         
         # Validate and parse plugin.json using thread pool
         try:
@@ -1981,135 +1989,6 @@ def create_app() -> FastAPI:
         }
 
 
-    @app.get("/api/ai/health")
-    async def get_ai_health_status(user: Dict[str, Any] = Depends(get_current_user)):
-        """Get comprehensive AI system health status."""
-        from ..core.app import get_app
-        from ..ai.dream import get_dream_scheduler
-        
-        app = get_app()
-        health_status = {
-            "overall_status": "healthy",
-            "timestamp": datetime.now().isoformat(),
-            "systems": {}
-        }
-        
-        # 1. AI Message Handler
-        if hasattr(app, 'ai_message_handler') and app.ai_message_handler:
-            try:
-                health_status["systems"]["ai_message_handler"] = {
-                    "status": "running",
-                    "initialized": True,
-                    "error": None
-                }
-            except Exception as e:
-                health_status["systems"]["ai_message_handler"] = {
-                    "status": "error",
-                    "initialized": False,
-                    "error": str(e)
-                }
-                health_status["overall_status"] = "degraded"
-        else:
-            health_status["systems"]["ai_message_handler"] = {
-                "status": "disabled",
-                "initialized": False,
-                "error": "Not initialized"
-            }
-        
-        # 2. Dream Scheduler
-        dream_scheduler = get_dream_scheduler()
-        if dream_scheduler:
-            stats = dream_scheduler.get_statistics()
-            health_status["systems"]["dream_scheduler"] = {
-                "status": "running" if stats['is_running'] else "stopped",
-                "enabled": stats['enabled'],
-                "total_cycles": stats['total_cycles'],
-                "successful_cycles": stats['successful_cycles'],
-                "failed_cycles": stats['failed_cycles'],
-                "avg_iterations": round(stats['avg_iterations'], 2),
-                "avg_cost_seconds": round(stats['avg_cost_seconds'], 2),
-                "last_cycle_time": stats['last_cycle_time'],
-                "error": None
-            }
-        else:
-            health_status["systems"]["dream_scheduler"] = {
-                "status": "not_initialized",
-                "enabled": False,
-                "error": "Scheduler not initialized"
-            }
-            health_status["overall_status"] = "degraded"
-        
-        # 3. Model Manager
-        try:
-            from ..ai.model_manager import ModelManager
-            model_manager = ModelManager()
-            await model_manager.initialize()
-            
-            models = await model_manager.list_models()
-            default_model = await model_manager.get_default_model()
-            
-            health_status["systems"]["model_manager"] = {
-                "status": "running",
-                "total_models": len(models),
-                "has_default_model": default_model is not None,
-                "default_model": default_model.get('name') if default_model else None,
-                "error": None
-            }
-        except Exception as e:
-            health_status["systems"]["model_manager"] = {
-                "status": "error",
-                "error": str(e)
-            }
-            health_status["overall_status"] = "degraded"
-        
-        # 4. Expression Systems
-        health_status["systems"]["expression_systems"] = {
-            "auto_checker": {"status": "running", "note": "Checks expressions hourly"},
-            "reflector": {"status": "running", "note": "Reflects every 2 hours"},
-            "selector": {"status": "available"},
-            "learner": {"status": "available"}
-        }
-        
-        # 5. Knowledge Graph
-        try:
-            from ..ai.knowledge import kg_manager
-            health_status["systems"]["knowledge_graph"] = {
-                "status": "available",
-                "note": "OpenIE-based knowledge extraction"
-            }
-        except Exception as e:
-            health_status["systems"]["knowledge_graph"] = {
-                "status": "error",
-                "error": str(e)
-            }
-        
-        # 6. Memory Systems
-        health_status["systems"]["memory_systems"] = {
-            "chat_history": {"status": "available"},
-            "jargon_miner": {"status": "available"},
-            "person_profiler": {"status": "available"},
-            "group_profiler": {"status": "available"}
-        }
-        
-        # 7. Sticker System
-        health_status["systems"]["sticker_system"] = {
-            "manager": {"status": "available"},
-            "learner": {"status": "available"},
-            "selector": {"status": "available"},
-            "integration": {"status": "available"}
-        }
-        
-        # 8. Other AI Components
-        health_status["systems"]["other_components"] = {
-            "brain_planner": {"status": "available"},
-            "chat_summarizer": {"status": "available"},
-            "frequency_control": {"status": "available"},
-            "thread_pool": {"status": "available"},
-            "mcp_manager": {"status": "available"}
-        }
-        
-        return health_status
-    
     @app.get("/api/onebot/status")
     async def get_onebot_status(user: Dict[str, Any] = Depends(get_current_user)):
         """Get OneBot adapter status and connection info."""
@@ -2130,7 +2009,7 @@ def create_app() -> FastAPI:
             adapter = application.onebot_adapter
             status["connected"] = getattr(adapter, '_running', False)
             
-            # 根据连接类型提供详细信息
+            # 
             if config.onebot_connection_type == "http":
                 status["details"] = {
                     "url": config.onebot_http_url,
@@ -2199,10 +2078,10 @@ def create_app() -> FastAPI:
         if "ws_reverse_path" in config_update:
             update_data["onebot_ws_reverse_path"] = config_update["ws_reverse_path"]
         if "access_token" in config_update:
-            # 如果 access_token 是空字符串，表示不需要 token 认证，允许设置为空
+            #  access_token  token 
             update_data["onebot_access_token"] = config_update["access_token"]
         if "secret" in config_update:
-            # 如果 secret 是空字符串，表示不需要签名验证，允许设置为空
+            #  secret 
             update_data["onebot_secret"] = config_update["secret"]
         if "version" in config_update:
             update_data["onebot_version"] = config_update["version"]
@@ -2415,29 +2294,36 @@ def create_app() -> FastAPI:
     @app.get("/api/messages/log")
     async def get_message_log(
         limit: int = 100,
+        after_row_id: Optional[int] = None,
         include_notices: bool = True,
         include_requests: bool = True,
         user: Dict[str, Any] = Depends(get_current_user)
     ):
-        """Get message log from event bus, including messages, notices, and requests."""
-        event_bus = get_event_bus()
-        events = event_bus.get_event_history(limit * 3)  # Get more to filter
-        
-        # Filter for all events (messages, notices, requests)
+        """Get message log from persistent DB, including messages, notices, and requests."""
+        limit = max(1, min(int(limit or 100), 500))
+        db_manager = get_database_manager()
+        rows = await db_manager.list_message_events(
+            limit=limit,
+            after_row_id=after_row_id,
+            include_notices=include_notices,
+            include_requests=include_requests,
+        )
+
         all_events = []
-        for event in events:
-            payload = event.payload
+        for row in rows:
+            payload = row.payload
             if not isinstance(payload, dict):
                 continue
             
             event_data = None
             
             # Message events
-            if event.name == "onebot.message":
+            if row.event_name == "onebot.message":
                 event_data = {
-                    "id": event.event_id,
-                    "timestamp": event.timestamp.isoformat(),
-                    "time": event.timestamp.isoformat(),
+                    "id": row.event_id,
+                    "db_row_id": row.id,
+                    "timestamp": row.event_time.isoformat(),
+                    "time": row.event_time.isoformat(),
                     "event_type": "message",
                     "post_type": "message",
                     "message_id": str(payload.get("message_id", "")),
@@ -2451,15 +2337,16 @@ def create_app() -> FastAPI:
                 }
             
             # Notice events
-            elif event.name == "onebot.notice" and include_notices:
+            elif row.event_name == "onebot.notice" and include_notices:
                 # Debug log to see what we're receiving
                 logger.debug(f"Formatting notice event: {payload.get('notice_type', 'NO_TYPE')} | payload keys: {list(payload.keys())}")
                 
                 formatted_text = _format_notice_event(payload)
                 event_data = {
-                    "id": event.event_id,
-                    "timestamp": event.timestamp.isoformat(),
-                    "time": event.timestamp.isoformat(),
+                    "id": row.event_id,
+                    "db_row_id": row.id,
+                    "timestamp": row.event_time.isoformat(),
+                    "time": row.event_time.isoformat(),
                     "event_type": "notice",
                     "post_type": "notice",
                     "notice_type": payload.get("notice_type", ""),
@@ -2474,12 +2361,13 @@ def create_app() -> FastAPI:
                 }
             
             # Request events
-            elif event.name == "onebot.request" and include_requests:
+            elif row.event_name == "onebot.request" and include_requests:
                 formatted_text = _format_request_event(payload)
                 event_data = {
-                    "id": event.event_id,
-                    "timestamp": event.timestamp.isoformat(),
-                    "time": event.timestamp.isoformat(),
+                    "id": row.event_id,
+                    "db_row_id": row.id,
+                    "timestamp": row.event_time.isoformat(),
+                    "time": row.event_time.isoformat(),
                     "event_type": "request",
                     "post_type": "request",
                     "request_type": payload.get("request_type", ""),
@@ -2495,13 +2383,8 @@ def create_app() -> FastAPI:
             
             if event_data:
                 all_events.append(event_data)
-                if len(all_events) >= limit:
-                    break
-        
-        # Sort by timestamp (newest first)
-        all_events.sort(key=lambda x: x["timestamp"], reverse=True)
-        
-        return all_events[:limit]
+
+        return all_events
     
     @app.websocket("/ws/messages")
     async def websocket_messages(websocket: WebSocket):
@@ -2708,8 +2591,80 @@ def create_app() -> FastAPI:
         
         if not hasattr(app_instance, 'onebot_adapter') or not app_instance.onebot_adapter:
             raise HTTPException(status_code=503, detail="OneBot adapter not available")
+
+        async def rewrite_media_cq_to_local(raw_message: str) -> str:
+            """Rewrite CQ media URL/file refs to local file:// cache paths for better QQ compatibility."""
+            if not isinstance(raw_message, str) or "[CQ:" not in raw_message:
+                return raw_message
+
+            from ..ui.image_cache import get_image_cache_manager
+            import re
+
+            image_cache = get_image_cache_manager()
+            cq_pattern = re.compile(r"\[CQ:(image|video|record|file),([^\]]+)\]")
+
+            def parse_params(params_str: str) -> Dict[str, str]:
+                params: Dict[str, str] = {}
+                key_pattern = re.compile(r"([^=,]+)=")
+                key_matches = list(key_pattern.finditer(params_str))
+                for idx, m in enumerate(key_matches):
+                    key = m.group(1).strip()
+                    value_start = m.end()
+                    value_end = key_matches[idx + 1].start() - 1 if idx + 1 < len(key_matches) else len(params_str)
+                    value = params_str[value_start:value_end].strip()
+                    if value.endswith(","):
+                        value = value[:-1]
+                    if key and value:
+                        params[key] = value
+                return params
+
+            def build_cq(cq_type: str, params: Dict[str, str]) -> str:
+                parts = [f"{k}={v}" for k, v in params.items() if v is not None and str(v).strip() != ""]
+                return f"[CQ:{cq_type}{',' + ','.join(parts) if parts else ''}]"
+
+            out: List[str] = []
+            last = 0
+            for match in cq_pattern.finditer(raw_message):
+                out.append(raw_message[last:match.start()])
+                cq_type = match.group(1)
+                params_str = match.group(2)
+                params = parse_params(params_str)
+
+                media_ref = (params.get("url") or params.get("file") or "").strip()
+                if not media_ref or media_ref.startswith("data:"):
+                    out.append(match.group(0))
+                    last = match.end()
+                    continue
+
+                media_kind_map = {
+                    "image": "image",
+                    "video": "video",
+                    "record": "record",
+                    "file": "file",
+                }
+                media_kind = media_kind_map.get(cq_type, "file")
+
+                cached_path = await image_cache.download_and_cache_media(
+                    media_ref,
+                    onebot_adapter=app_instance.onebot_adapter,
+                    media_kind=media_kind,
+                )
+                if cached_path and Path(cached_path).exists():
+                    params["file"] = Path(cached_path).resolve().as_uri()
+                    if "url" in params:
+                        params.pop("url", None)
+                    out.append(build_cq(cq_type, params))
+                else:
+                    out.append(match.group(0))
+                last = match.end()
+
+            out.append(raw_message[last:])
+            return "".join(out)
         
         try:
+            # Rewrite media CQ segments to local cached file:// paths (QQ compatibility)
+            message = await rewrite_media_cq_to_local(message)
+
             # Get bot's self_id first
             login_info = await app_instance.onebot_adapter.call_api("get_login_info", {})
             self_id = login_info.get("data", {}).get("user_id") if isinstance(login_info, dict) else None
@@ -2767,15 +2722,28 @@ def create_app() -> FastAPI:
                 
                 # Publish to event bus for message history
                 event_bus = get_event_bus()
-                await event_bus.publish(
+                published_event_id = await event_bus.publish(
                     "onebot.message",
                     simulated_event,
                     source="self"  # Mark source as "self" so plugins can filter if needed
                 )
+                # Persist self-sent message to DB so WebUI can recover history after reconnect.
+                try:
+                    db_manager = get_database_manager()
+                    persisted_row = await db_manager.create_message_event(
+                        event_id=published_event_id,
+                        event_name="onebot.message",
+                        payload=simulated_event,
+                        source="self",
+                    )
+                except Exception as e:
+                    logger.warning(f"Failed to persist self-sent message event: {e}")
+                    persisted_row = None
                 
                 # Prepare message object for immediate display
                 message_obj = {
-                    "id": str(uuid.uuid4()),
+                    "id": published_event_id,
+                    "db_row_id": persisted_row.id if persisted_row else None,
                     "timestamp": datetime.now().isoformat(),
                     "message_id": str(message_id),
                     "user_id": str(self_id),
@@ -2798,103 +2766,137 @@ def create_app() -> FastAPI:
             logger.error(f"Failed to send message: {e}", exc_info=True)
             raise HTTPException(status_code=500, detail=f"Failed to send message: {str(e)}")
     
+    @app.get("/api/chat/media-proxy")
+    async def proxy_chat_media(
+        kind: str = "image",
+        url: str = None,
+        file: str = None,
+    ):
+        """Proxy chat media (image/video/record/file) via local cache for stable display."""
+        from ..ui.image_cache import get_image_cache_manager
+        from fastapi.responses import FileResponse, Response
+        import httpx
+        import mimetypes
+        from urllib.parse import unquote, urlparse
+
+        def _media_type_for_path(path: str) -> str:
+            suffix = Path(path).suffix.lower()
+            if suffix == ".amr":
+                return "audio/amr"
+            if suffix == ".silk":
+                return "audio/x-silk"
+            guessed, _ = mimetypes.guess_type(path)
+            return guessed or "application/octet-stream"
+        
+        try:
+            media_ref = file if (kind or "image").strip().lower() == "record" and file else (url or file)
+            if not media_ref:
+                raise HTTPException(status_code=400, detail="Missing 'url' or 'file' parameter")
+
+            media_kind = (kind or "image").strip().lower()
+            if media_kind not in {"image", "video", "record", "file"}:
+                media_kind = "image"
+
+            image_cache = get_image_cache_manager()
+
+            # URL decode if needed
+            if media_ref.startswith("http%3A") or media_ref.startswith("https%3A") or media_ref.startswith("file%3A"):
+                media_ref = unquote(media_ref)
+
+            # Serve local file:// path directly
+            if media_ref.startswith("file://"):
+                local_path = Path(urlparse(media_ref).path)
+                if not local_path.exists() and media_ref.startswith("file:///") and len(media_ref) > 8:
+                    # Windows compatibility: /C:/...
+                    local_path = Path(media_ref.replace("file:///", "", 1))
+                if local_path.exists() and local_path.is_file():
+                    serve_path = str(local_path)
+                    if media_kind == "record":
+                        serve_path = await image_cache.ensure_browser_playable_record(serve_path)
+                    return FileResponse(serve_path, media_type=_media_type_for_path(serve_path))
+
+            onebot_adapter = None
+            app = get_app()
+            if app and hasattr(app, "onebot_adapter"):
+                onebot_adapter = app.onebot_adapter
+
+            # For QQ voice, prefer OneBot-side conversion (no local ffmpeg required).
+            if media_kind == "record" and file and onebot_adapter:
+                try:
+                    converted = await onebot_adapter.call_api(
+                        "get_record",
+                        {"file": file, "out_format": "wav"},
+                    )
+                    converted_ref = None
+                    if isinstance(converted, dict):
+                        converted_ref = (
+                            converted.get("file")
+                            or converted.get("url")
+                            or (converted.get("data", {}) or {}).get("file")
+                            or (converted.get("data", {}) or {}).get("url")
+                        )
+                    if isinstance(converted_ref, str) and converted_ref.strip():
+                        converted_ref = converted_ref.strip()
+                        if converted_ref.startswith("http://") or converted_ref.startswith("https://") or converted_ref.startswith("file://"):
+                            media_ref = converted_ref
+                        else:
+                            local_candidate = Path(converted_ref)
+                            if local_candidate.exists() and local_candidate.is_file():
+                                media_ref = local_candidate.resolve().as_uri()
+                    logger.debug(f"get_record conversion attempted for {file}, using ref: {media_ref[:120]}")
+                except asyncio.CancelledError as e:
+                    # OneBot WS reconnect can cancel pending get_record request.
+                    # Degrade gracefully to original media ref instead of failing entire HTTP request.
+                    logger.warning(f"get_record conversion cancelled for {file}, fallback to original ref: {e}")
+                except Exception as e:
+                    logger.debug(f"get_record conversion unavailable for {file}: {e}")
+
+            # Try cache
+            cached_path = await image_cache.get_cached_media_path(media_ref, media_kind=media_kind)
+            if cached_path and Path(cached_path).exists():
+                serve_path = cached_path
+                if media_kind == "record":
+                    serve_path = await image_cache.ensure_browser_playable_record(serve_path)
+                return FileResponse(serve_path, media_type=_media_type_for_path(serve_path))
+
+            # Download and cache
+            cached_path = await image_cache.download_and_cache_media(
+                media_ref,
+                onebot_adapter=onebot_adapter,
+                media_kind=media_kind,
+            )
+            if cached_path and Path(cached_path).exists():
+                serve_path = cached_path
+                if media_kind == "record":
+                    serve_path = await image_cache.ensure_browser_playable_record(serve_path)
+                return FileResponse(serve_path, media_type=_media_type_for_path(serve_path))
+
+            # Fallback direct proxy (HTTP/HTTPS only)
+            if not (media_ref.startswith("http://") or media_ref.startswith("https://")):
+                raise HTTPException(status_code=404, detail="Media unavailable")
+
+            headers = {
+                "Referer": "https://qzone.qq.com/",
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+            }
+            async with httpx.AsyncClient(follow_redirects=True, timeout=10.0) as client:
+                response = await client.get(media_ref, headers=headers)
+                response.raise_for_status()
+                return Response(
+                    content=response.content,
+                    media_type=response.headers.get("content-type", "application/octet-stream")
+                )
+        except Exception as e:
+            logger.error(f"Failed to proxy media: {e}", exc_info=True)
+            raise HTTPException(status_code=500, detail=f"Failed to load media: {str(e)}")
+
     @app.get("/api/chat/image-proxy")
     async def proxy_chat_image(
         url: str = None,
         file: str = None,
-        user: Dict[str, Any] = Depends(get_current_user)
     ):
-        """Proxy chat images to bypass CORS and referer restrictions.
-        
-        First tries to serve from local cache, then downloads if not cached.
-        
-        Args:
-            url: Image URL (if available)
-            file: CQ image file reference (if URL not available, will call get_image API)
-        """
-        from ..ui.image_cache import get_image_cache_manager
-        from fastapi.responses import FileResponse, Response
-        import httpx
-        
-        try:
-            # 优先使用 url 参数，如果没有则使用 file 参数
-            image_url = url or file
-            if not image_url:
-                raise HTTPException(status_code=400, detail="Missing 'url' or 'file' parameter")
-            
-            # 解码 URL（前端可能进行了编码）
-            if image_url.startswith('http%3A') or image_url.startswith('https%3A'):
-                from urllib.parse import unquote
-                image_url = unquote(image_url)
-            
-            # If it's a file reference (not a URL), get URL from OneBot first
-            onebot_adapter = None
-            original_file_ref = None
-            if not image_url.startswith('http://') and not image_url.startswith('https://'):
-                # This is a file reference, need to get URL from OneBot
-                original_file_ref = image_url
-                app = get_app()
-                if app and hasattr(app, 'onebot_adapter'):
-                    onebot_adapter = app.onebot_adapter
-                    try:
-                        image_info = await onebot_adapter.call_api('get_image', {'file': image_url})
-                        if image_info and isinstance(image_info, dict):
-                            image_url = image_info.get('url', '')
-                            if not image_url:
-                                logger.warning(f"get_image API returned no URL for file: {original_file_ref}")
-                                raise HTTPException(status_code=404, detail="Could not get image URL from OneBot")
-                        else:
-                            logger.warning(f"get_image API returned invalid response: {image_info}")
-                            raise HTTPException(status_code=404, detail="Invalid response from get_image API")
-                    except HTTPException:
-                        raise
-                    except Exception as e:
-                        logger.error(f"Failed to get image URL from OneBot for file {original_file_ref}: {e}", exc_info=True)
-                        raise HTTPException(status_code=500, detail=f"Failed to get image URL: {str(e)}")
-                else:
-                    raise HTTPException(status_code=503, detail="OneBot adapter not available to get image URL")
-            
-            # Try to get from cache first (using the resolved URL)
-            image_cache = get_image_cache_manager()
-            cached_path = await image_cache.get_cached_image_path(image_url)
-            
-            if cached_path and Path(cached_path).exists():
-                # Serve from cache
-                logger.debug(f"Serving image from cache: {cached_path}")
-                return FileResponse(
-                    cached_path,
-                    media_type="image/jpeg"  # Default, browser will detect actual type
-                )
-            
-            # Not in cache, download and cache
-            cached_path = await image_cache.download_and_cache_image(image_url, onebot_adapter)
-            
-            if cached_path and Path(cached_path).exists():
-                # Serve from newly cached file
-                logger.debug(f"Serving newly cached image: {cached_path}")
-                return FileResponse(
-                    cached_path,
-                    media_type="image/jpeg"
-                )
-            
-            # Fallback: download and return directly (if caching failed)
-            headers = {
-                'Referer': 'https://qzone.qq.com/',
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
-            }
-            
-            async with httpx.AsyncClient(follow_redirects=True, timeout=10.0) as client:
-                response = await client.get(image_url, headers=headers)
-                response.raise_for_status()
-                
-                # Return image content
-                return Response(
-                    content=response.content,
-                    media_type=response.headers.get('content-type', 'image/jpeg')
-                )
-        except Exception as e:
-            logger.error(f"Failed to proxy image: {e}", exc_info=True)
-            raise HTTPException(status_code=500, detail=f"Failed to load image: {str(e)}")
+        """Backward-compatible image proxy endpoint."""
+        return await proxy_chat_media(kind="image", url=url, file=file)
     
     @app.get("/api/chat/history/{chat_type}/{chat_id}")
     async def get_chat_history(
@@ -2903,65 +2905,47 @@ def create_app() -> FastAPI:
         limit: int = 50,
         user: Dict[str, Any] = Depends(get_current_user)
     ):
-        """Get chat history for a specific group or friend."""
-        event_bus = get_event_bus()
-        events = event_bus.get_event_history(500)  # Get more to filter
-        
-        logger.debug(f"Getting chat history for {chat_type} {chat_id}, total events: {len(events)}")
-        
+        """Get chat history for a specific group or friend from persisted DB."""
+        if chat_type not in ("group", "private"):
+            raise HTTPException(status_code=400, detail="Invalid chat type")
+
+        db_manager = get_database_manager()
+        rows = await db_manager.list_chat_message_events(chat_type, chat_id, limit=limit)
+
+        logger.debug(f"Getting chat history for {chat_type} {chat_id}, total rows: {len(rows)}")
+
         messages = []
-        for event in events:
-            if event.name == "onebot.message":
-                payload = event.payload
-                if isinstance(payload, dict):
-                    # Add is_self flag from event source if not already present
-                    if "is_self" not in payload and event.source == "self":
-                        payload_is_self = True
-                    else:
-                        payload_is_self = payload.get("is_self", False)
-                    
-                    logger.debug(f"Event payload: message_type={payload.get('message_type')}, group_id={payload.get('group_id')}, user_id={payload.get('user_id')}, is_self={payload_is_self}, target_id={payload.get('target_id')}, source={event.source}")
-                    
-                    # Filter by chat type and ID
-                    if chat_type == "group" and str(payload.get("group_id")) == str(chat_id):
-                        logger.debug(f"Adding group message to history: {payload.get('raw_message', '')[:50]}")
-                        messages.append({
-                            "id": event.event_id,
-                            "timestamp": event.timestamp.isoformat(),
-                            "message_id": str(payload.get("message_id", "")),
-                            "user_id": str(payload.get("user_id", "")),
-                            "message": payload.get("raw_message", ""),
-                            "sender": payload.get("sender", {}),
-                            "is_self": payload_is_self
-                        })
-                    elif chat_type == "private" and payload.get("message_type") == "private":
-                        # For private messages, include both:
-                        # 1. Messages FROM this user (user_id == chat_id)
-                        # 2. Messages TO this user (target_id == chat_id, sent by bot)
-                        is_from_user = str(payload.get("user_id")) == str(chat_id)
-                        is_to_user = str(payload.get("target_id")) == str(chat_id) and payload_is_self
-                        
-                        if is_from_user or is_to_user:
-                            logger.debug(f"Adding private message to history: {payload.get('raw_message', '')[:50]}")
-                            messages.append({
-                                "id": event.event_id,
-                                "timestamp": event.timestamp.isoformat(),
-                                "message_id": str(payload.get("message_id", "")),
-                                "user_id": str(payload.get("user_id", "")),
-                                "message": payload.get("raw_message", ""),
-                                "sender": payload.get("sender", {}),
-                                "is_self": payload_is_self
-                            })
-                    
-                    if len(messages) >= limit:
-                        break
-        
+        for row in rows:
+            payload = row.payload
+            if not isinstance(payload, dict):
+                continue
+
+            payload_is_self = payload.get("is_self", row.source == "self")
+
+            # Double-check filters in Python for type-safety across mixed JSON numeric/string values.
+            if chat_type == "group":
+                if str(payload.get("group_id", "")) != str(chat_id):
+                    continue
+            else:
+                if payload.get("message_type") != "private":
+                    continue
+                is_from_user = str(payload.get("user_id", "")) == str(chat_id)
+                is_to_user = str(payload.get("target_id", "")) == str(chat_id) and payload_is_self
+                if not (is_from_user or is_to_user):
+                    continue
+
+            messages.append({
+                "id": row.event_id,
+                "timestamp": row.event_time.isoformat(),
+                "message_id": str(payload.get("message_id", "")),
+                "user_id": str(payload.get("user_id", "")),
+                "message": payload.get("raw_message", ""),
+                "sender": payload.get("sender", {}),
+                "is_self": payload_is_self
+            })
+
         logger.debug(f"Returning {len(messages)} messages for {chat_type} {chat_id}")
-        
-        # Sort by timestamp (oldest first for chat display)
-        messages.sort(key=lambda x: x["timestamp"])
-        
-        return messages[-limit:]  # Return last N messages
+        return messages[-limit:]
     
     @app.get("/api/chat/groups/{group_id}/members")
     async def get_group_members(
@@ -3356,7 +3340,83 @@ def create_app() -> FastAPI:
             "disk_io": disk_io_info,
             "versions": versions_info
         }
-    
+
+    @app.get("/api/ai/workspace-config")
+    async def get_ai_workspace_config(
+        user: Dict[str, Any] = Depends(get_current_user)
+    ):
+        """Get AI workspace configuration."""
+        config = get_config()
+        mode = str(getattr(config, "ai_workspace_mode", "agent")).strip().lower()
+        if mode not in {"agent", "assistant"}:
+            mode = "agent"
+        return {"mode": mode}
+
+    @app.post("/api/ai/workspace-config")
+    async def update_ai_workspace_config(
+        config_update: AIWorkspaceConfigUpdate,
+        user: Dict[str, Any] = Depends(require_permission(Permission.SYSTEM_CONFIG_EDIT))
+    ):
+        """Update AI workspace configuration."""
+        mode = str(config_update.mode).strip().lower()
+        if mode not in {"agent", "assistant"}:
+            raise HTTPException(status_code=400, detail="Invalid mode, must be 'agent' or 'assistant'")
+
+        project_root = Path(__file__).parent.parent.parent
+        toml_file = project_root / "config.toml"
+
+        try:
+            import tomlkit
+        except ImportError:
+            raise HTTPException(
+                status_code=500,
+                detail="TOML support not available. Please install tomlkit to preserve comments."
+            )
+
+        app = get_app()
+        thread_pool = getattr(app, 'plugin_thread_pool', None)
+
+        if toml_file.exists():
+            if thread_pool:
+                def read_toml_file():
+                    with open(toml_file, "r", encoding="utf-8") as f:
+                        return tomlkit.load(f)
+                toml_data = await thread_pool.run_in_executor(read_toml_file)
+            else:
+                with open(toml_file, "r", encoding="utf-8") as f:
+                    toml_data = tomlkit.load(f)
+        else:
+            toml_data = tomlkit.document()
+
+        if "ai_workspace" not in toml_data:
+            toml_data["ai_workspace"] = {}
+        toml_data["ai_workspace"]["mode"] = mode
+
+        try:
+            if thread_pool:
+                def write_toml_file():
+                    with open(toml_file, "w", encoding="utf-8") as f:
+                        tomlkit.dump(toml_data, f)
+                await thread_pool.run_in_executor(write_toml_file)
+            else:
+                with open(toml_file, "w", encoding="utf-8") as f:
+                    tomlkit.dump(toml_data, f)
+        except Exception as e:
+            logger.error(f"Failed to write AI workspace config: {e}", exc_info=True)
+            raise HTTPException(
+                status_code=500,
+                detail=f"Failed to save AI workspace configuration: {str(e)}"
+            )
+
+        try:
+            config_manager = get_config_manager()
+            config_manager.update(ai_workspace_mode=mode)
+            reload_config()
+        except Exception as e:
+            logger.warning(f"Failed to reload config after AI workspace update: {e}")
+
+        return {"message": "AI workspace configuration updated successfully", "mode": mode}
+
     @app.get("/api/system/config")
     async def get_system_config(
         user: Dict[str, Any] = Depends(require_permission(Permission.SYSTEM_CONFIG_VIEW))
@@ -3368,11 +3428,9 @@ def create_app() -> FastAPI:
             "app_name": config.app_name,
             "app_version": config.app_version,
             "environment": config.environment,
-            "debug": config.debug,
             "log_level": config.log_level,
             "plugin_auto_load": config.plugin_auto_load,
             "web_ui_enabled": config.web_ui_enabled,
-            "ai_thread_pool_enabled": getattr(config, 'ai_thread_pool_enabled', True),
             "plugin_thread_pool_enabled": getattr(config, 'plugin_thread_pool_enabled', True),
         }
         # Add Tencent Cloud TTS config if exists
@@ -3410,10 +3468,6 @@ def create_app() -> FastAPI:
                         "secret_id": tencent_cloud.get("secret_id", ""),
                         "secret_key_set": bool(tencent_cloud.get("secret_key", ""))  # Don't expose actual key
                     }
-            # Load thread pool config
-            if "ai" in toml_data:
-                ai_config = toml_data["ai"]
-                safe_config["ai_thread_pool_enabled"] = ai_config.get("thread_pool_enabled", True)
             if "plugins" in toml_data:
                 plugins_config = toml_data["plugins"]
                 safe_config["plugin_thread_pool_enabled"] = plugins_config.get("thread_pool_enabled", True)
@@ -3425,18 +3479,9 @@ def create_app() -> FastAPI:
     async def get_threadpool_stats(user: Dict[str, Any] = Depends(get_current_user)):
         """Get thread pool statistics."""
         stats = {
-            "ai_threadpool": None,
             "plugin_threadpool": None
         }
-        
-        # Try to get AI thread pool stats
-        try:
-            from ..ai.thread_pool import _thread_pool_manager
-            if _thread_pool_manager:
-                stats["ai_threadpool"] = _thread_pool_manager.get_stats()
-        except Exception as e:
-            logger.warning(f"Failed to get AI thread pool stats: {e}")
-        
+
         # Try to get plugin thread pool stats  
         try:
             from ..plugins.thread_pool import _plugin_thread_pool_manager
@@ -3458,7 +3503,7 @@ def create_app() -> FastAPI:
         
         # Update allowed config values
         update_data = {}
-        allowed_keys = ["web_ui_enabled", "debug", "log_level", "plugin_auto_load", "ai_thread_pool_enabled", "plugin_thread_pool_enabled"]
+        allowed_keys = ["web_ui_enabled", "log_level", "plugin_auto_load", "plugin_thread_pool_enabled"]
         for key in allowed_keys:
             if key in config_update:
                 update_data[key] = config_update[key]
@@ -3514,7 +3559,6 @@ def create_app() -> FastAPI:
         # Let's check what the actual mapping should be. For now, save to match the existing structure:
         # - log_level: save to both [app].log_level AND [logging].level (to be safe)
         # - web_ui_enabled: save to [web_ui].enabled
-        # - debug: save to [app].debug
         # - plugin_auto_load: save to [plugins].auto_load
         
         for key, value in update_data.items():
@@ -3539,68 +3583,16 @@ def create_app() -> FastAPI:
                 # Update update_data with normalized value for hot reload
                 update_data["log_level"] = log_level_upper
                 
-                # When log_level is set, automatically sync debug mode:
-                # - log_level = DEBUG -> debug = True
-                # - log_level != DEBUG -> debug = False
-                # BUT: if user explicitly set debug in the same request, debug takes priority
-                if "debug" not in update_data:
-                    # User didn't explicitly set debug, so auto-adjust based on log_level
-                    if "app" not in toml_data:
-                        toml_data["app"] = {}
-                    debug_value = (log_level_upper == "DEBUG")
-                    toml_data["app"]["debug"] = debug_value
-                    # Add debug to update_data to trigger hot reload
-                    update_data["debug"] = debug_value
-                # If user explicitly set debug, we don't override it here
-                # The debug handler will handle the sync
             elif key == "web_ui_enabled":
                 # Save to [web_ui].enabled
                 if "web_ui" not in toml_data:
                     toml_data["web_ui"] = {}
                 toml_data["web_ui"]["enabled"] = value
-            elif key == "debug":
-                # Save to [app].debug
-                if "app" not in toml_data:
-                    toml_data["app"] = {}
-                toml_data["app"]["debug"] = value
-                # When debug mode is manually set, sync log_level (debug takes priority):
-                # - debug = True -> log_level = DEBUG
-                # - debug = False -> log_level = INFO (if current is DEBUG)
-                # debug takes priority over log_level setting
-                if value:  # debug = True
-                    # Enable debug mode: set log_level to DEBUG
-                    if "logging" not in toml_data:
-                        toml_data["logging"] = {}
-                    toml_data["logging"]["level"] = "DEBUG"
-                    # Also save to [app].log_level for compatibility
-                    toml_data["app"]["log_level"] = "DEBUG"
-                    # Always update log_level in update_data (debug takes priority)
-                    update_data["log_level"] = "DEBUG"
-                else:  # debug = False
-                    # Disable debug mode: if log_level is DEBUG, change to INFO
-                    current_log_level = None
-                    if "logging" in toml_data and "level" in toml_data["logging"]:
-                        current_log_level = toml_data["logging"]["level"]
-                    elif "app" in toml_data and "log_level" in toml_data["app"]:
-                        current_log_level = toml_data["app"]["log_level"]
-                    
-                    if current_log_level == "DEBUG":
-                        if "logging" not in toml_data:
-                            toml_data["logging"] = {}
-                        toml_data["logging"]["level"] = "INFO"
-                        toml_data["app"]["log_level"] = "INFO"
-                        # Always update log_level in update_data (debug takes priority)
-                        update_data["log_level"] = "INFO"
             elif key == "plugin_auto_load":
                 # Save to [plugins].auto_load
                 if "plugins" not in toml_data:
                     toml_data["plugins"] = {}
                 toml_data["plugins"]["auto_load"] = value
-            elif key == "ai_thread_pool_enabled":
-                # Save to [ai].thread_pool_enabled
-                if "ai" not in toml_data:
-                    toml_data["ai"] = {}
-                toml_data["ai"]["thread_pool_enabled"] = value
             elif key == "plugin_thread_pool_enabled":
                 # Save to [plugins].thread_pool_enabled
                 if "plugins" not in toml_data:
@@ -3800,17 +3792,17 @@ def create_app() -> FastAPI:
         """Check if splash screen should be shown."""
         try:
             config = get_config()
-            # 如果 WebUI 未启用，直接返回不显示
+            #  WebUI 
             if not config.web_ui_enabled:
                 return {"should_show": False, "reason": "webui_disabled"}
             
-            # 使用项目根目录下的 data 目录存储标记文件（支持分离部署）
-            # 这样即使删除了 webui 源码目录，标记文件也不会丢失
+            #  data 
+            #  webui 
             project_root = Path(__file__).parent.parent.parent
             data_dir = project_root / "data"
             data_dir.mkdir(parents=True, exist_ok=True)
             
-            # 检查标记文件是否存在
+            # 
             marker_file = data_dir / ".splash_shown"
             if marker_file.exists():
                 return {"should_show": False, "reason": "already_shown"}
@@ -3818,7 +3810,7 @@ def create_app() -> FastAPI:
             return {"should_show": True}
         except Exception as e:
             logger.error(f"Failed to check splash screen: {e}", exc_info=True)
-            # 出错时默认不显示
+            # 
             return {"should_show": False, "reason": "error", "error": str(e)}
     
     @app.post("/api/splash/mark-shown")
@@ -3826,35 +3818,35 @@ def create_app() -> FastAPI:
         """Mark splash screen as shown. No authentication required."""
         try:
             config = get_config()
-            # 如果 WebUI 未启用，直接返回成功（静默处理）
+            #  WebUI 
             if not config.web_ui_enabled:
                 return {"success": True, "message": "WebUI disabled, splash screen skipped"}
             
-            # 使用项目根目录下的 data 目录存储标记文件（支持分离部署）
+            #  data 
             project_root = Path(__file__).parent.parent.parent
             data_dir = project_root / "data"
             
-            # 创建 data 目录（如果不存在）
+            #  data 
             try:
                 data_dir.mkdir(parents=True, exist_ok=True)
             except Exception as mkdir_error:
-                # 如果无法创建目录，记录错误但返回成功（避免影响用户体验）
+                # 
                 logger.debug(f"Cannot create data directory: {mkdir_error}")
                 return {"success": True, "message": "Cannot create data directory, splash screen skipped"}
             
-            # 创建标记文件
+            # 
             try:
                 marker_file = data_dir / ".splash_shown"
                 marker_file.touch()
                 logger.info(f"Splash screen marked as shown. Marker file: {marker_file}")
                 return {"success": True, "message": "Splash screen marked as shown"}
             except Exception as touch_error:
-                # 如果无法创建标记文件，记录错误但返回成功
+                # 
                 logger.debug(f"Cannot create splash screen marker file: {touch_error}")
                 return {"success": True, "message": "Cannot create marker file, but operation completed"}
         except Exception as e:
             logger.error(f"Failed to mark splash screen as shown: {e}", exc_info=True)
-            # 即使出错也返回成功，避免影响主程序运行
+            # 
             return {"success": True, "message": "Error occurred but operation completed", "error": str(e)}
     
     # Health check
@@ -3863,1928 +3855,336 @@ def create_app() -> FastAPI:
         """Health check endpoint."""
         return {"status": "healthy"}
     
-    # ==================== AI System API ====================
-    
-    # Check if AI is available
-    global _ai_available
-    _ai_available = is_ai_available()
-    
-    if _ai_available:
-        logger.info("AI系统已检测到，正在加载AI模块...")
+    # ==================== Sandbox (Web UI testing) ====================
+
+    def _sandbox_norm_opt(s: Optional[str]) -> Optional[str]:
+        if s is None or (isinstance(s, str) and s.strip() == ""):
+            return None
+        return s
+
+    @app.get("/api/sandbox/list")
+    async def sandbox_list(user: Dict[str, Any] = Depends(get_current_user)):
+        """List all sandboxes."""
+        db = get_database_manager()
+        rows = await db.list_sandboxes()
+        return {"ok": True, "sandboxes": [r.to_dict() for r in rows]}
+
+    @app.post("/api/sandbox/create")
+    async def sandbox_create(
+        body: Dict[str, Any] = Body(...),
+        user: Dict[str, Any] = Depends(get_current_user),
+    ):
+        """Create a new sandbox."""
+        from ..core.sandbox.sandbox_manager import get_sandbox_manager
+
+        name = (body.get("name") or "").strip()
+        mock_user_id = (body.get("mock_user_id") or "").strip()
+        if not name or not mock_user_id:
+            raise HTTPException(status_code=400, detail="name and mock_user_id are required")
+
+        mgr = get_sandbox_manager()
         try:
-            from ..ai import ModelManager, AIManager, MCPManager
-        except ImportError as e:
-            logger.error(f"AI模块导入失败: {e}")
-            _ai_available = False
-    else:
-        logger.info("AI系统未检测到，AI功能将不可用")
-    
-    def check_ai_available():
-        """Check if AI is available, raise 503 if not."""
-        if not _ai_available:
-            raise HTTPException(
-                status_code=503,
-                detail="AI系统未安装或不可用"
+            sandbox = await mgr.create_sandbox(
+                name=name,
+                mock_user_id=mock_user_id,
+                description=_sandbox_norm_opt(body.get("description")),
+                mock_user_nickname=(body.get("mock_user_nickname") or "") or "",
+                mock_group_id=_sandbox_norm_opt(body.get("mock_group_id")),
+                mock_group_name=_sandbox_norm_opt(body.get("mock_group_name")),
+                use_plugins=bool(body.get("use_plugins", True)),
+                use_ai=bool(body.get("use_ai", True)),
+                ai_model_uuid=_sandbox_norm_opt(body.get("ai_model_uuid")),
+                ai_preset_uuid=_sandbox_norm_opt(body.get("ai_preset_uuid")),
             )
-    
-    def get_model_manager():
-        """Get model manager instance."""
-        check_ai_available()
-        global _model_manager
-        if _model_manager is None:
-            from ..ai import ModelManager
-            _model_manager = ModelManager()
-        return _model_manager
-    
-    def get_ai_manager():
-        """Get AI manager instance."""
-        check_ai_available()
-        global _ai_manager
-        if _ai_manager is None:
-            from ..ai import AIManager
-            _ai_manager = AIManager()
-        return _ai_manager
-    
-    def get_mcp_manager():
-        """Get MCP manager instance."""
-        check_ai_available()
-        global _mcp_manager
-        if _mcp_manager is None:
-            from ..ai import MCPManager
-            _mcp_manager = MCPManager()
-        return _mcp_manager
-    
-    # Initialize managers on startup (only if AI is available)
-    @app.on_event("startup")
-    async def init_ai_managers():
-        """Initialize AI managers."""
-        if _ai_available:
-            try:
-                await get_model_manager().initialize()
-                await get_ai_manager().initialize()
-                await get_mcp_manager().initialize()
-                logger.info("AI管理器初始化成功")
-            except Exception as e:
-                logger.error(f"AI管理器初始化失败: {e}", exc_info=True)
-        else:
-            logger.info("AI系统不可用，跳过AI管理器初始化")
-    
-    # ==================== AI Availability Check ====================
-    
-    @app.get("/api/ai/availability")
-    async def check_ai_availability():
-        """检测AI系统是否可用。"""
-        detector = get_ai_detector()
-        available = detector.is_ai_available()
-        
-        result = {
-            "available": available,
-            "message": "AI系统可用" if available else "AI系统未安装或不可用"
-        }
-        
-        if available:
-            result["module_path"] = str(detector.get_ai_module_path())
-        
-        return result
-    
-    # ==================== AI Configuration ====================
-    
-    @app.get("/api/ai/config")
-    async def get_ai_config(
-        config_type: str,
-        target_id: Optional[str] = None,
-        user: Dict[str, Any] = Depends(require_permission(Permission.SYSTEM_CONFIG_VIEW))
-    ):
-        """Get AI configuration."""
-        ai_manager = get_ai_manager()
-        config = await ai_manager.get_config(config_type, target_id)
-        return config
-    
-    class AIConfigUpdate(BaseModel):
-        enabled: Optional[bool] = None
-        model_uuid: Optional[str] = None
-        preset_uuid: Optional[str] = None
-        config: Optional[Dict[str, Any]] = None
-    
-    @app.put("/api/ai/config")
-    async def update_ai_config(
-        config_type: str,
-        target_id: Optional[str] = None,
-        updates: AIConfigUpdate = None,
-        user: Dict[str, Any] = Depends(require_permission(Permission.SYSTEM_CONFIG_EDIT))
-    ):
-        """Update AI configuration."""
-        ai_manager = get_ai_manager()
-        update_dict = {}
-        if updates:
-            if updates.enabled is not None:
-                update_dict['enabled'] = updates.enabled
-            if updates.model_uuid is not None:
-                update_dict['model_uuid'] = updates.model_uuid
-            if updates.preset_uuid is not None:
-                update_dict['preset_uuid'] = updates.preset_uuid
-            if updates.config is not None:
-                update_dict['config'] = updates.config
-        
-        success = await ai_manager.update_config(config_type, target_id, **update_dict)
-        if not success:
-            raise HTTPException(status_code=500, detail="Failed to update config")
-        return {"success": True}
-    
-    @app.get("/api/ai/groups")
-    async def list_group_configs(
-        user: Dict[str, Any] = Depends(require_permission(Permission.SYSTEM_CONFIG_VIEW))
-    ):
-        """List all group configurations."""
-        ai_manager = get_ai_manager()
-        configs = await ai_manager.list_group_configs()
-        return configs
-    
-    class BatchGroupUpdate(BaseModel):
-        group_ids: List[str]
-        enabled: Optional[bool] = None
-        model_uuid: Optional[str] = None
-        preset_uuid: Optional[str] = None
-    
-    @app.post("/api/ai/groups/batch")
-    async def batch_update_groups(
-        request: BatchGroupUpdate,
-        user: Dict[str, Any] = Depends(require_permission(Permission.SYSTEM_CONFIG_EDIT))
-    ):
-        """Batch update group configurations."""
-        ai_manager = get_ai_manager()
-        count = await ai_manager.batch_update_groups(
-            request.group_ids,
-            enabled=request.enabled,
-            model_uuid=request.model_uuid,
-            preset_uuid=request.preset_uuid
-        )
-        return {"success": True, "updated_count": count}
-    
-    @app.post("/api/ai/groups/{group_id}/mark-left")
-    async def mark_group_left(
-        group_id: str,
-        user: Dict[str, Any] = Depends(require_permission(Permission.SYSTEM_CONFIG_EDIT))
-    ):
-        """Mark a group as left (exited). Group settings will be kept for 30 days."""
-        db_manager = get_database_manager()
-        success = await db_manager.mark_group_left(group_id)
-        
-        if not success:
-            raise HTTPException(status_code=404, detail="Group configuration not found")
-        
-        logger.info(f"Group {group_id} marked as left, data will be kept for 30 days")
-        
-        await get_audit_logger().log_plugin_action(
-            "mark_group_left",
-            group_id,
-            user.get("username"),
-            True
-        )
-        
-        return {
-            "success": True,
-            "message": "Group marked as left. Settings will be automatically deleted after 30 days."
-        }
-    
-    @app.post("/api/ai/groups/cleanup-expired")
-    async def cleanup_expired_left_groups(
-        user: Dict[str, Any] = Depends(require_permission(Permission.SYSTEM_CONFIG_EDIT))
-    ):
-        """Manually trigger cleanup of expired left group data (>30 days)."""
-        db_manager = get_database_manager()
-        count = await db_manager.cleanup_expired_left_groups(days=30)
-        
-        logger.info(f"Cleaned up {count} expired left group configurations")
-        
-        await get_audit_logger().log_plugin_action(
-            "cleanup_expired_groups",
-            "all",
-            user.get("username"),
-            True,
-            {"deleted_count": count}
-        )
-        
-        return {
-            "success": True,
-            "deleted_count": count,
-            "message": f"Cleaned up {count} expired group configurations"
-        }
-    
-    class CleanupOldGroupsRequest(BaseModel):
-        days: Optional[int] = None  # 删除指定天数前的数据
-        only_disabled: bool = False  # 仅删除未启用的
-        max_message_count: Optional[int] = None  # 消息数少于此值
-        group_ids: Optional[List[str]] = None  # 指定群号列表
-    
-    @app.post("/api/ai/groups/cleanup-old")
-    async def cleanup_old_groups(
-        request: CleanupOldGroupsRequest,
-        user: Dict[str, Any] = Depends(require_permission(Permission.SYSTEM_CONFIG_EDIT))
-    ):
-        """批量清理旧群组数据（提供多种清理选项）"""
-        from datetime import datetime, timedelta
-        db_manager = get_database_manager()
-        
-        deleted_count = 0
-        
-        try:
-            # 选项1: 删除指定群号
-            if request.group_ids:
-                for group_id in request.group_ids:
-                    success = await db_manager.delete_ai_config('group', group_id)
-                    if success:
-                        deleted_count += 1
-                
-                logger.info(f"Deleted {deleted_count} specified group configurations")
-            
-            # 选项2: 删除所有未启用的群组
-            elif request.only_disabled:
-                configs = await db_manager.list_ai_configs('group', exclude_left=False)
-                for config in configs:
-                    if not config.enabled:
-                        success = await db_manager.delete_ai_config('group', config.target_id)
-                        if success:
-                            deleted_count += 1
-                
-                logger.info(f"Deleted {deleted_count} disabled group configurations")
-            
-            # 选项3: 按天数和消息数清理不活跃群组
-            elif request.days is not None:
-                cutoff_date = datetime.utcnow() - timedelta(days=request.days)
-                configs = await db_manager.list_ai_configs('group', exclude_left=False)
-                
-                for config in configs:
-                    # 检查更新时间
-                    if config.updated_at < cutoff_date:
-                        # 如果指定了消息数限制，检查消息数
-                        if request.max_message_count is not None:
-                            if config.message_count <= request.max_message_count:
-                                success = await db_manager.delete_ai_config('group', config.target_id)
-                                if success:
-                                    deleted_count += 1
-                        else:
-                            success = await db_manager.delete_ai_config('group', config.target_id)
-                            if success:
-                                deleted_count += 1
-                
-                logger.info(f"Deleted {deleted_count} inactive group configurations")
-            
-            else:
-                raise HTTPException(
-                    status_code=400,
-                    detail="Please specify cleanup criteria: group_ids, only_disabled, or days"
-                )
-            
-            await get_audit_logger().log_plugin_action(
-                "cleanup_old_groups",
-                "all",
-                user.get("username"),
-                True,
-                {
-                    "deleted_count": deleted_count,
-                    "criteria": request.dict()
-                }
-            )
-            
-            return {
-                "success": True,
-                "deleted_count": deleted_count,
-                "message": f"Successfully cleaned up {deleted_count} group configurations"
-            }
-        
-        except HTTPException:
-            raise
+            return {"ok": True, "sandbox": sandbox.to_dict()}
         except Exception as e:
-            logger.error(f"Failed to cleanup old groups: {e}", exc_info=True)
-            raise HTTPException(status_code=500, detail=f"Failed to cleanup: {str(e)}")
-    
-    # ==================== AI Tools Management ====================
-    
-    @app.get("/api/ai/tools")
-    async def list_ai_tools(
-        user: Dict[str, Any] = Depends(require_permission(Permission.SYSTEM_CONFIG_VIEW))
+            logger.error(f"sandbox_create failed: {e}", exc_info=True)
+            raise HTTPException(status_code=500, detail=str(e))
+
+    @app.post("/api/sandbox/{sandbox_uuid}/update")
+    async def sandbox_update(
+        sandbox_uuid: str,
+        body: Dict[str, Any] = Body(...),
+        user: Dict[str, Any] = Depends(get_current_user),
     ):
-        """Get all available AI tools metadata."""
-        from ..ai.tools import AITools
-        tools = AITools.get_all_tools_metadata()
-        return tools
-    
-    @app.get("/api/ai/tools/enabled")
-    async def get_enabled_tools(
-        config_type: str,
-        target_id: Optional[str] = None,
-        user: Dict[str, Any] = Depends(require_permission(Permission.SYSTEM_CONFIG_VIEW))
-    ):
-        """Get enabled tools for a config."""
-        ai_manager = get_ai_manager()
-        config = await ai_manager.get_config(config_type, target_id)
-        enabled_tools = config.get('config', {}).get('enabled_tools', {})
-        return enabled_tools
-    
-    class ToolsUpdate(BaseModel):
-        enabled_tools: Dict[str, bool]
-    
-    @app.put("/api/ai/tools/enabled")
-    async def update_enabled_tools(
-        config_type: str,
-        target_id: Optional[str] = None,
-        updates: ToolsUpdate = None,
-        user: Dict[str, Any] = Depends(require_permission(Permission.SYSTEM_CONFIG_EDIT))
-    ):
-        """Update enabled tools for a config."""
-        ai_manager = get_ai_manager()
-        config = await ai_manager.get_config(config_type, target_id)
-        current_config = config.get('config', {})
-        current_config['enabled_tools'] = updates.enabled_tools if updates else {}
-        
-        success = await ai_manager.update_config(config_type, target_id, config=current_config)
-        if not success:
-            raise HTTPException(status_code=500, detail="Failed to update tools")
-        return {"success": True}
-    
-    # ==================== Model Management ====================
-    
-    @app.get("/api/ai/models")
-    async def list_models(
-        user: Dict[str, Any] = Depends(require_permission(Permission.SYSTEM_CONFIG_VIEW))
-    ):
-        """List all models."""
-        model_manager = get_model_manager()
-        models = await model_manager.list_models()
-        return models
-    
-    @app.get("/api/ai/models/{model_uuid}")
-    async def get_model(
-        model_uuid: str,
-        user: Dict[str, Any] = Depends(require_permission(Permission.SYSTEM_CONFIG_VIEW))
-    ):
-        """Get model by UUID."""
-        model_manager = get_model_manager()
-        model = await model_manager.get_model(model_uuid)
-        if not model:
-            raise HTTPException(status_code=404, detail="Model not found")
-        return model
-    
-    class ModelCreate(BaseModel):
-        name: str
-        provider: str
-        model_name: str
-        api_key: Optional[str] = None
-        base_url: Optional[str] = None
-        is_default: bool = False
-        supports_tools: bool = False
-        supports_vision: bool = False
-        description: Optional[str] = None
-        config: Optional[Dict[str, Any]] = None
-    
-    @app.post("/api/ai/models")
-    async def create_model(
-        model: ModelCreate,
-        user: Dict[str, Any] = Depends(require_permission(Permission.SYSTEM_CONFIG_EDIT))
-    ):
-        """Create a new model."""
-        model_manager = get_model_manager()
-        created_model = await model_manager.create_model(
-            name=model.name,
-            provider=model.provider,
-            model_name=model.model_name,
-            api_key=model.api_key,
-            base_url=model.base_url,
-            is_default=model.is_default,
-            supports_tools=model.supports_tools,
-            supports_vision=model.supports_vision,
-            description=model.description,
-            config=model.config or {}
-        )
-        return created_model
-    
-    class ModelUpdate(BaseModel):
-        name: Optional[str] = None
-        provider: Optional[str] = None
-        model_name: Optional[str] = None
-        api_key: Optional[str] = None
-        base_url: Optional[str] = None
-        is_default: Optional[bool] = None
-        supports_tools: Optional[bool] = None
-        supports_vision: Optional[bool] = None
-        description: Optional[str] = None
-        config: Optional[Dict[str, Any]] = None
-    
-    @app.put("/api/ai/models/{model_uuid}")
-    async def update_model(
-        model_uuid: str,
-        updates: ModelUpdate,
-        user: Dict[str, Any] = Depends(require_permission(Permission.SYSTEM_CONFIG_EDIT))
-    ):
-        """Update model."""
-        model_manager = get_model_manager()
-        update_dict = updates.dict(exclude_unset=True)
-        
-        # 如果 api_key 是空字符串，移除它（保持原有值不变）
-        if 'api_key' in update_dict and update_dict['api_key'] == '':
-            del update_dict['api_key']
-        
-        # 如果 base_url 是空字符串，移除它（保持原有值不变）
-        if 'base_url' in update_dict and update_dict['base_url'] == '':
-            del update_dict['base_url']
-        
-        success = await model_manager.update_model(model_uuid, **update_dict)
-        if not success:
-            raise HTTPException(status_code=404, detail="Model not found")
-        return {"success": True}
-    
-    @app.delete("/api/ai/models/{model_uuid}")
-    async def delete_model(
-        model_uuid: str,
-        user: Dict[str, Any] = Depends(require_permission(Permission.SYSTEM_CONFIG_EDIT))
-    ):
-        """Delete model."""
-        model_manager = get_model_manager()
-        success = await model_manager.delete_model(model_uuid)
-        if not success:
-            raise HTTPException(status_code=404, detail="Model not found")
-        return {"success": True}
-    
-    @app.get("/api/ai/models/providers/list")
-    async def list_providers(
-        user: Dict[str, Any] = Depends(require_permission(Permission.SYSTEM_CONFIG_VIEW))
-    ):
-        """List available providers."""
-        model_manager = get_model_manager()
-        providers = await model_manager.get_providers()
-        return providers
-    
-    # ==================== Preset Management ====================
-    
-    @app.get("/api/ai/presets")
-    async def list_presets(
-        user: Dict[str, Any] = Depends(require_permission(Permission.SYSTEM_CONFIG_VIEW))
-    ):
-        """List all presets."""
         from ..core.database import get_database_manager
-        db_manager = get_database_manager()
-        presets = await db_manager.list_ai_presets()
-        return [preset.to_dict() for preset in presets]
-    
-    @app.get("/api/ai/presets/{preset_uuid}")
-    async def get_preset(
-        preset_uuid: str,
-        user: Dict[str, Any] = Depends(require_permission(Permission.SYSTEM_CONFIG_VIEW))
+
+        db = get_database_manager()
+        row = await db.get_sandbox(sandbox_uuid)
+        if not row:
+            raise HTTPException(status_code=404, detail="Sandbox not found")
+
+        fields: Dict[str, Any] = {}
+        if "name" in body:
+            fields["name"] = (body.get("name") or "").strip() or row.name
+        if "description" in body:
+            fields["description"] = body.get("description")
+        if "mock_user_id" in body:
+            fields["mock_user_id"] = (body.get("mock_user_id") or "").strip() or row.mock_user_id
+        if "mock_user_nickname" in body:
+            fields["mock_user_nickname"] = body.get("mock_user_nickname") or ""
+        if "mock_group_id" in body:
+            fields["mock_group_id"] = _sandbox_norm_opt(body.get("mock_group_id"))
+        if "mock_group_name" in body:
+            fields["mock_group_name"] = _sandbox_norm_opt(body.get("mock_group_name"))
+        if "use_plugins" in body:
+            fields["use_plugins"] = bool(body.get("use_plugins"))
+        if "use_ai" in body:
+            fields["use_ai"] = bool(body.get("use_ai"))
+        if "ai_model_uuid" in body:
+            fields["ai_model_uuid"] = _sandbox_norm_opt(body.get("ai_model_uuid"))
+        if "ai_preset_uuid" in body:
+            fields["ai_preset_uuid"] = _sandbox_norm_opt(body.get("ai_preset_uuid"))
+        if "enabled" in body:
+            fields["enabled"] = bool(body.get("enabled"))
+
+        updated = await db.update_sandbox(sandbox_uuid, **fields)
+        if not updated:
+            raise HTTPException(status_code=404, detail="Sandbox not found")
+        return {"ok": True, "sandbox": updated.to_dict()}
+
+    @app.delete("/api/sandbox/{sandbox_uuid}")
+    async def sandbox_delete(
+        sandbox_uuid: str,
+        user: Dict[str, Any] = Depends(get_current_user),
     ):
-        """Get preset by UUID."""
-        from ..core.database import get_database_manager
-        db_manager = get_database_manager()
-        preset = await db_manager.get_ai_preset(preset_uuid)
-        if not preset:
-            raise HTTPException(status_code=404, detail="Preset not found")
-        return preset.to_dict()
-    
-    class PresetCreate(BaseModel):
-        name: str
-        system_prompt: str
-        temperature: float = 1.0
-        max_tokens: int = 2000
-        description: Optional[str] = None
-        top_p: Optional[float] = None
-        top_k: Optional[int] = None
-        repetition_penalty: Optional[float] = None
-        config: Optional[Dict[str, Any]] = None
-    
-    @app.post("/api/ai/presets")
-    async def create_preset(
-        preset: PresetCreate,
-        user: Dict[str, Any] = Depends(require_permission(Permission.SYSTEM_CONFIG_EDIT))
-    ):
-        """Create a new preset."""
-        import uuid
-        from ..core.database import get_database_manager
-        db_manager = get_database_manager()
-        preset_uuid = str(uuid.uuid4())
-        created_preset = await db_manager.create_ai_preset(
-            uuid=preset_uuid,
-            name=preset.name,
-            system_prompt=preset.system_prompt,
-            temperature=preset.temperature,
-            max_tokens=preset.max_tokens,
-            description=preset.description,
-            top_p=preset.top_p,
-            top_k=preset.top_k,
-            repetition_penalty=preset.repetition_penalty,
-            config=preset.config or {}
-        )
-        return created_preset.to_dict()
-    
-    class PresetUpdate(BaseModel):
-        name: Optional[str] = None
-        system_prompt: Optional[str] = None
-        temperature: Optional[float] = None
-        max_tokens: Optional[int] = None
-        description: Optional[str] = None
-        top_p: Optional[float] = None
-        top_k: Optional[int] = None
-        repetition_penalty: Optional[float] = None
-        config: Optional[Dict[str, Any]] = None
-    
-    @app.put("/api/ai/presets/{preset_uuid}")
-    async def update_preset(
-        preset_uuid: str,
-        updates: PresetUpdate,
-        user: Dict[str, Any] = Depends(require_permission(Permission.SYSTEM_CONFIG_EDIT))
-    ):
-        """Update preset."""
-        from ..core.database import get_database_manager
-        db_manager = get_database_manager()
-        update_dict = updates.dict(exclude_unset=True)
-        
-        success = await db_manager.update_ai_preset(preset_uuid, **update_dict)
-        if not success:
-            raise HTTPException(status_code=404, detail="Preset not found")
-        return {"success": True}
-    
-    @app.delete("/api/ai/presets/{preset_uuid}")
-    async def delete_preset(
-        preset_uuid: str,
-        user: Dict[str, Any] = Depends(require_permission(Permission.SYSTEM_CONFIG_EDIT))
-    ):
-        """Delete preset."""
-        from ..core.database import get_database_manager
-        db_manager = get_database_manager()
-        success = await db_manager.delete_ai_preset(preset_uuid)
-        if not success:
-            raise HTTPException(status_code=404, detail="Preset not found")
-        return {"success": True}
-    
-    # ==================== Memory Management ====================
-    
-    @app.get("/api/ai/memories")
-    async def list_memories(
-        memory_type: Optional[str] = None,
-        target_id: Optional[str] = None,
-        user: Dict[str, Any] = Depends(require_permission(Permission.SYSTEM_CONFIG_VIEW))
-    ):
-        """List AI memories."""
-        ai_manager = get_ai_manager()
-        memories = await ai_manager.list_memories(memory_type, target_id)
-        return memories
-    
-    @app.get("/api/ai/memories/{memory_uuid}")
-    async def get_memory(
-        memory_uuid: str,
-        user: Dict[str, Any] = Depends(require_permission(Permission.SYSTEM_CONFIG_VIEW))
-    ):
-        """Get memory by UUID."""
-        from ..core.database import get_database_manager
-        db_manager = get_database_manager()
-        memories = await db_manager.list_ai_memories()
-        memory = next((m for m in memories if m.uuid == memory_uuid), None)
-        if not memory:
-            raise HTTPException(status_code=404, detail="Memory not found")
-        return memory.to_dict()
-    
-    @app.delete("/api/ai/memories/{memory_uuid}")
-    async def delete_memory(
-        memory_uuid: str,
-        user: Dict[str, Any] = Depends(require_permission(Permission.SYSTEM_CONFIG_EDIT))
-    ):
-        """Delete memory."""
-        ai_manager = get_ai_manager()
-        success = await ai_manager.delete_memory(memory_uuid)
-        if not success:
-            raise HTTPException(status_code=404, detail="Memory not found")
-        return {"success": True}
-    
-    class ClearMemoryRequest(BaseModel):
-        memory_type: str
-        target_id: str
-        preset_uuid: Optional[str] = None
-    
-    @app.post("/api/ai/memories/clear")
-    async def clear_memory(
-        request: ClearMemoryRequest,
-        user: Dict[str, Any] = Depends(require_permission(Permission.SYSTEM_CONFIG_EDIT))
-    ):
-        """Clear memory."""
-        ai_manager = get_ai_manager()
-        success = await ai_manager.clear_memory(request.memory_type, request.target_id, request.preset_uuid)
-        return {"success": success}
-    
-    # ==================== MCP Management ====================
-    
-    @app.get("/api/ai/mcp/servers")
-    async def list_mcp_servers(
-        enabled_only: bool = False,
-        user: Dict[str, Any] = Depends(require_permission(Permission.SYSTEM_CONFIG_VIEW))
-    ):
-        """List MCP servers."""
-        mcp_manager = get_mcp_manager()
-        servers = await mcp_manager.list_servers(enabled_only)
-        return servers
-    
-    @app.get("/api/ai/mcp/servers/{server_uuid}")
-    async def get_mcp_server(
-        server_uuid: str,
-        user: Dict[str, Any] = Depends(require_permission(Permission.SYSTEM_CONFIG_VIEW))
-    ):
-        """Get MCP server by UUID."""
-        mcp_manager = get_mcp_manager()
-        server = await mcp_manager.get_server(server_uuid)
-        if not server:
-            raise HTTPException(status_code=404, detail="MCP server not found")
-        return server
-    
-    class MCPServerCreate(BaseModel):
-        name: str
-        mode: str
-        enabled: bool = False
-        description: Optional[str] = None
-        command: Optional[str] = None
-        args: Optional[List[str]] = None
-        env: Optional[Dict[str, str]] = None
-        url: Optional[str] = None
-        headers: Optional[Dict[str, str]] = None
-        timeout: Optional[int] = None
-        config: Optional[Dict[str, Any]] = None
-    
-    @app.post("/api/ai/mcp/servers")
-    async def create_mcp_server(
-        server: MCPServerCreate,
-        user: Dict[str, Any] = Depends(require_permission(Permission.SYSTEM_CONFIG_EDIT))
-    ):
-        """Create MCP server."""
-        mcp_manager = get_mcp_manager()
-        created_server = await mcp_manager.create_server(
-            name=server.name,
-            mode=server.mode,
-            enabled=server.enabled,
-            description=server.description,
-            command=server.command,
-            args=server.args or [],
-            env=server.env or {},
-            url=server.url,
-            headers=server.headers or {},
-            timeout=server.timeout,
-            config=server.config or {}
-        )
-        return created_server
-    
-    class MCPServerUpdate(BaseModel):
-        name: Optional[str] = None
-        mode: Optional[str] = None
-        enabled: Optional[bool] = None
-        description: Optional[str] = None
-        command: Optional[str] = None
-        args: Optional[List[str]] = None
-        env: Optional[Dict[str, str]] = None
-        url: Optional[str] = None
-        headers: Optional[Dict[str, str]] = None
-        timeout: Optional[int] = None
-        config: Optional[Dict[str, Any]] = None
-    
-    @app.put("/api/ai/mcp/servers/{server_uuid}")
-    async def update_mcp_server(
-        server_uuid: str,
-        updates: MCPServerUpdate,
-        user: Dict[str, Any] = Depends(require_permission(Permission.SYSTEM_CONFIG_EDIT))
-    ):
-        """Update MCP server."""
-        mcp_manager = get_mcp_manager()
-        update_dict = updates.dict(exclude_unset=True)
-        
-        success = await mcp_manager.update_server(server_uuid, **update_dict)
-        if not success:
-            raise HTTPException(status_code=404, detail="MCP server not found")
-        return {"success": True}
-    
-    @app.delete("/api/ai/mcp/servers/{server_uuid}")
-    async def delete_mcp_server(
-        server_uuid: str,
-        user: Dict[str, Any] = Depends(require_permission(Permission.SYSTEM_CONFIG_EDIT))
-    ):
-        """Delete MCP server."""
-        mcp_manager = get_mcp_manager()
-        success = await mcp_manager.delete_server(server_uuid)
-        if not success:
-            raise HTTPException(status_code=404, detail="MCP server not found")
-        return {"success": True}
-    
-    @app.post("/api/ai/mcp/servers/{server_uuid}/connect")
-    async def connect_mcp_server(
-        server_uuid: str,
-        user: Dict[str, Any] = Depends(require_permission(Permission.SYSTEM_CONFIG_EDIT))
-    ):
-        """Connect to MCP server."""
-        mcp_manager = get_mcp_manager()
-        success = await mcp_manager.connect_server(server_uuid)
-        if not success:
-            raise HTTPException(status_code=500, detail="Failed to connect to MCP server")
-        return {"success": True}
-    
-    @app.post("/api/ai/mcp/servers/{server_uuid}/disconnect")
-    async def disconnect_mcp_server(
-        server_uuid: str,
-        user: Dict[str, Any] = Depends(require_permission(Permission.SYSTEM_CONFIG_EDIT))
-    ):
-        """Disconnect from MCP server."""
-        mcp_manager = get_mcp_manager()
-        success = await mcp_manager.disconnect_server(server_uuid)
-        return {"success": success}
-    
-    @app.get("/api/ai/mcp/servers/{server_uuid}/tools")
-    async def get_mcp_server_tools(
-        server_uuid: str,
-        user: Dict[str, Any] = Depends(require_permission(Permission.SYSTEM_CONFIG_VIEW))
-    ):
-        """Get tools from MCP server."""
-        mcp_manager = get_mcp_manager()
-        tools = await mcp_manager.get_server_tools(server_uuid)
-        return tools
-    
-    @app.get("/api/ai/mcp/tools")
-    async def get_all_mcp_tools(
-        user: Dict[str, Any] = Depends(require_permission(Permission.SYSTEM_CONFIG_VIEW))
-    ):
-        """Get all tools from all connected MCP servers."""
-        mcp_manager = get_mcp_manager()
-        tools = await mcp_manager.get_all_tools()
-        return tools
-    
-    # ==================== AI Learning Data ====================
-    
-    @app.get("/api/ai/learning/expressions")
-    async def get_expressions(
-        chat_id: Optional[str] = None,
+        from ..core.sandbox.sandbox_manager import get_sandbox_manager
+
+        mgr = get_sandbox_manager()
+        try:
+            await mgr.delete_sandbox(sandbox_uuid)
+            return {"ok": True}
+        except Exception as e:
+            logger.error(f"sandbox_delete failed: {e}", exc_info=True)
+            raise HTTPException(status_code=500, detail=str(e))
+
+    @app.get("/api/sandbox/{sandbox_uuid}/messages")
+    async def sandbox_messages(
+        sandbox_uuid: str,
         limit: int = 100,
-        offset: int = 0,
-        user: Dict[str, Any] = Depends(require_permission(Permission.SYSTEM_CONFIG_VIEW))
+        user: Dict[str, Any] = Depends(get_current_user),
     ):
-        """Get learned expressions."""
-        from ..ai.ai_database import get_ai_database
-        from ..ai.ai_database_models import Expression
-        
-        db = get_ai_database()
-        session = db.get_session()
-        
-        try:
-            query = session.query(Expression)
-            if chat_id:
-                query = query.filter(Expression.chat_id == chat_id)
-            query = query.order_by(Expression.count.desc(), Expression.updated_at.desc())
-            
-            total = query.count()
-            expressions = query.offset(offset).limit(limit).all()
-            
-            return {
-                "total": total,
-                "items": [expr.to_dict() for expr in expressions]
-            }
-        finally:
-            session.close()
-    
-    @app.get("/api/ai/learning/jargons")
-    async def get_jargons(
-        chat_id: Optional[str] = None,
-        limit: int = 100,
-        offset: int = 0,
-        user: Dict[str, Any] = Depends(require_permission(Permission.SYSTEM_CONFIG_VIEW))
+        db = get_database_manager()
+        row = await db.get_sandbox(sandbox_uuid)
+        if not row:
+            raise HTTPException(status_code=404, detail="Sandbox not found")
+        msgs = await db.list_sandbox_messages(sandbox_uuid, limit=limit)
+        return {"ok": True, "messages": [m.to_dict() for m in msgs]}
+
+    @app.delete("/api/sandbox/{sandbox_uuid}/messages")
+    async def sandbox_clear_messages(
+        sandbox_uuid: str,
+        user: Dict[str, Any] = Depends(get_current_user),
     ):
-        """Get learned jargon/slang."""
-        from ..ai.ai_database import get_ai_database
-        from ..ai.ai_database_models import Jargon
-        
-        db = get_ai_database()
-        session = db.get_session()
-        
-        try:
-            query = session.query(Jargon)
-            if chat_id:
-                query = query.filter(Jargon.chat_id == chat_id)
-            query = query.order_by(Jargon.count.desc(), Jargon.updated_at.desc())
-            
-            total = query.count()
-            jargons = query.offset(offset).limit(limit).all()
-            
-            return {
-                "total": total,
-                "items": [jargon.to_dict() for jargon in jargons]
-            }
-        finally:
-            session.close()
-    
-    @app.get("/api/ai/learning/chat-history")
-    async def get_chat_history_api(
-        chat_id: Optional[str] = None,
-        limit: int = 50,
-        offset: int = 0,
-        user: Dict[str, Any] = Depends(require_permission(Permission.SYSTEM_CONFIG_VIEW))
+        db = get_database_manager()
+        row = await db.get_sandbox(sandbox_uuid)
+        if not row:
+            raise HTTPException(status_code=404, detail="Sandbox not found")
+        await db.clear_sandbox_messages(sandbox_uuid)
+        return {"ok": True}
+
+    @app.post("/api/sandbox/{sandbox_uuid}/send")
+    async def sandbox_send(
+        sandbox_uuid: str,
+        body: Dict[str, Any] = Body(...),
+        user: Dict[str, Any] = Depends(get_current_user),
     ):
-        """Get chat history summaries."""
-        from ..ai.ai_database import get_ai_database
-        from ..ai.ai_database_models import ChatHistory
-        
-        db = get_ai_database()
-        session = db.get_session()
-        
+        from ..core.sandbox.sandbox_manager import get_sandbox_manager
+
+        msg = (body.get("message") or "").strip()
+        if not msg:
+            raise HTTPException(status_code=400, detail="message is required")
+        mtype = body.get("message_type") or "private"
+        mgr = get_sandbox_manager()
         try:
-            query = session.query(ChatHistory)
-            if chat_id:
-                query = query.filter(ChatHistory.chat_id == chat_id)
-            query = query.order_by(ChatHistory.end_time.desc())
-            
-            total = query.count()
-            histories = query.offset(offset).limit(limit).all()
-            
-            return {
-                "total": total,
-                "items": [hist.to_dict() for hist in histories]
-            }
-        finally:
-            session.close()
-    
-    @app.get("/api/ai/learning/message-records")
-    async def get_message_records_api(
-        chat_id: Optional[str] = None,
-        user_id: Optional[str] = None,
-        limit: int = 100,
-        offset: int = 0,
-        user: Dict[str, Any] = Depends(require_permission(Permission.SYSTEM_CONFIG_VIEW))
+            result = await mgr.send_message_to_sandbox(sandbox_uuid, msg, message_type=mtype)
+            return {"ok": True, **result}
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+        except Exception as e:
+            logger.error(f"sandbox_send failed: {e}", exc_info=True)
+            raise HTTPException(status_code=500, detail=str(e))
+
+    @app.post("/api/sandbox/{sandbox_uuid}/shell")
+    async def sandbox_shell(
+        sandbox_uuid: str,
+        body: Dict[str, Any] = Body(...),
+        user: Dict[str, Any] = Depends(get_current_user),
     ):
-        """Get message records."""
-        from ..ai.ai_database import get_ai_database
-        from ..ai.ai_database_models import MessageRecord
-        
-        db = get_ai_database()
-        session = db.get_session()
-        
+        from ..core.sandbox.sandbox_manager import get_sandbox_manager
+
+        cmd = body.get("command") or ""
+        timeout = int(body.get("timeout") or 30)
+        cwd = body.get("cwd")
+        mgr = get_sandbox_manager()
         try:
-            query = session.query(MessageRecord)
-            if chat_id:
-                query = query.filter(MessageRecord.chat_id == chat_id)
-            if user_id:
-                query = query.filter(MessageRecord.user_id == user_id)
-            query = query.order_by(MessageRecord.time.desc())
-            
-            total = query.count()
-            records = query.offset(offset).limit(limit).all()
-            
-            return {
-                "total": total,
-                "items": [rec.to_dict() for rec in records]
-            }
-        finally:
-            session.close()
-    
-    @app.get("/api/ai/learning/persons")
-    async def get_persons_api(
-        limit: int = 100,
-        offset: int = 0,
-        user: Dict[str, Any] = Depends(require_permission(Permission.SYSTEM_CONFIG_VIEW))
+            result = await mgr.execute_shell(sandbox_uuid, cmd, cwd=cwd, timeout=timeout)
+            return {"ok": True, "result": result}
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+        except Exception as e:
+            logger.error(f"sandbox_shell failed: {e}", exc_info=True)
+            raise HTTPException(status_code=500, detail=str(e))
+
+    @app.post("/api/sandbox/{sandbox_uuid}/python")
+    async def sandbox_python(
+        sandbox_uuid: str,
+        body: Dict[str, Any] = Body(...),
+        user: Dict[str, Any] = Depends(get_current_user),
     ):
-        """Get person information."""
-        from ..ai.ai_database import get_ai_database
-        from ..ai.ai_database_models import PersonInfo
-        
-        db = get_ai_database()
-        session = db.get_session()
-        
+        from ..core.sandbox.sandbox_manager import get_sandbox_manager
+
+        code = body.get("code") or ""
+        kernel_id = body.get("kernel_id")
+        timeout = int(body.get("timeout") or 30)
+        mgr = get_sandbox_manager()
         try:
-            query = session.query(PersonInfo).order_by(PersonInfo.updated_at.desc())
-            
-            total = query.count()
-            persons = query.offset(offset).limit(limit).all()
-            
-            return {
-                "total": total,
-                "items": [person.to_dict() for person in persons]
-            }
-        finally:
-            session.close()
-    
-    @app.get("/api/ai/learning/groups")
-    async def get_groups_info_api(
-        limit: int = 100,
-        offset: int = 0,
-        user: Dict[str, Any] = Depends(require_permission(Permission.SYSTEM_CONFIG_VIEW))
+            result = await mgr.execute_python(sandbox_uuid, code, kernel_id=kernel_id, timeout=timeout)
+            return {"ok": True, "result": result}
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+        except Exception as e:
+            logger.error(f"sandbox_python failed: {e}", exc_info=True)
+            raise HTTPException(status_code=500, detail=str(e))
+
+    @app.get("/api/sandbox/{sandbox_uuid}/files")
+    async def sandbox_files_list(
+        sandbox_uuid: str,
+        path: str = ".",
+        show_hidden: bool = False,
+        user: Dict[str, Any] = Depends(get_current_user),
     ):
-        """Get group information."""
-        from ..ai.ai_database import get_ai_database
-        from ..ai.ai_database_models import GroupInfo
-        
-        db = get_ai_database()
-        session = db.get_session()
-        
+        from ..core.sandbox.sandbox_manager import get_sandbox_manager
+
+        mgr = get_sandbox_manager()
         try:
-            query = session.query(GroupInfo).order_by(GroupInfo.updated_at.desc())
-            
-            total = query.count()
-            groups = query.offset(offset).limit(limit).all()
-            
-            return {
-                "total": total,
-                "items": [group.to_dict() for group in groups]
-            }
-        finally:
-            session.close()
-    
-    @app.get("/api/ai/learning/stats")
-    async def get_learning_stats(
-        user: Dict[str, Any] = Depends(require_permission(Permission.SYSTEM_CONFIG_VIEW))
+            result = await mgr.list_files(sandbox_uuid, path=path, show_hidden=show_hidden)
+            return {"ok": True, "result": result}
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+        except Exception as e:
+            logger.error(f"sandbox_files_list failed: {e}", exc_info=True)
+            raise HTTPException(status_code=500, detail=str(e))
+
+    @app.get("/api/sandbox/{sandbox_uuid}/files/read")
+    async def sandbox_files_read(
+        sandbox_uuid: str,
+        path: str,
+        user: Dict[str, Any] = Depends(get_current_user),
     ):
-        """Get overall learning statistics."""
-        from ..ai.ai_database import get_ai_database
-        from ..ai.ai_database_models import Expression, Jargon, ChatHistory, MessageRecord, PersonInfo, GroupInfo, Sticker
-        
-        db = get_ai_database()
-        session = db.get_session()
-        
+        from ..core.sandbox.sandbox_manager import get_sandbox_manager
+
+        mgr = get_sandbox_manager()
         try:
-            stats = {
-                "expressions_count": session.query(Expression).count(),
-                "jargons_count": session.query(Jargon).count(),
-                "chat_history_count": session.query(ChatHistory).count(),
-                "message_records_count": session.query(MessageRecord).count(),
-                "persons_count": session.query(PersonInfo).count(),
-                "groups_count": session.query(GroupInfo).count(),
-                "known_persons_count": session.query(PersonInfo).filter(PersonInfo.is_known == True).count(),
-                "stickers_count": session.query(Sticker).count(),
-            }
-            return stats
-        finally:
-            session.close()
-    
-    @app.get("/api/ai/learning/stickers")
-    async def get_stickers_api(
-        chat_id: Optional[str] = None,
-        rejected: Optional[bool] = None,
-        limit: int = 100,
-        offset: int = 0,
-        user: Dict[str, Any] = Depends(require_permission(Permission.SYSTEM_CONFIG_VIEW))
+            result = await mgr.read_file(sandbox_uuid, path=path)
+            return {"ok": True, "result": result}
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+        except Exception as e:
+            logger.error(f"sandbox_files_read failed: {e}", exc_info=True)
+            raise HTTPException(status_code=500, detail=str(e))
+
+    @app.post("/api/sandbox/{sandbox_uuid}/files/write")
+    async def sandbox_files_write(
+        sandbox_uuid: str,
+        body: Dict[str, Any] = Body(...),
+        user: Dict[str, Any] = Depends(get_current_user),
     ):
-        """Get learned stickers."""
-        from ..ai.ai_database import get_ai_database
-        from ..ai.ai_database_models import Sticker
-        
-        db = get_ai_database()
-        session = db.get_session()
-        
+        from ..core.sandbox.sandbox_manager import get_sandbox_manager
+
+        path = body.get("path") or ""
+        content = body.get("content")
+        if content is None:
+            content = ""
+        mgr = get_sandbox_manager()
         try:
-            query = session.query(Sticker)
-            if chat_id:
-                query = query.filter(Sticker.chat_id == chat_id)
-            if rejected is not None:
-                query = query.filter(Sticker.rejected == rejected)
-            query = query.order_by(Sticker.count.desc(), Sticker.last_active_time.desc())
-            
-            total = query.count()
-            stickers = query.offset(offset).limit(limit).all()
-            
-            return {
-                "total": total,
-                "items": [sticker.to_dict() for sticker in stickers]
-            }
-        finally:
-            session.close()
-    
-    @app.delete("/api/ai/learning/clear-all")
-    async def clear_all_learning_data(
-        user: Dict[str, Any] = Depends(require_permission(Permission.SYSTEM_CONFIG_EDIT))
+            result = await mgr.write_file(sandbox_uuid, path=path, content=content)
+            return {"ok": True, "result": result}
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+        except Exception as e:
+            logger.error(f"sandbox_files_write failed: {e}", exc_info=True)
+            raise HTTPException(status_code=500, detail=str(e))
+
+    @app.post("/api/sandbox/{sandbox_uuid}/files/mkdir")
+    async def sandbox_files_mkdir(
+        sandbox_uuid: str,
+        body: Dict[str, Any] = Body(...),
+        user: Dict[str, Any] = Depends(get_current_user),
     ):
-        """Clear all AI learning data (reset RuaBot memory)."""
-        from ..ai.ai_database import get_ai_database
-        from ..ai.knowledge import get_kg_storage
-        from sqlalchemy import text
-        import os
-        
-        db = get_ai_database()
-        session = db.get_session()
-        
-        cleared_tables = []
-        
+        from ..core.sandbox.sandbox_manager import get_sandbox_manager
+
+        path = body.get("path") or ""
+        mgr = get_sandbox_manager()
         try:
-            # Clear AI learning database tables
-            session.execute(text("DELETE FROM ai_message_records"))
-            cleared_tables.append("ai_message_records")
-            
-            session.execute(text("DELETE FROM ai_chat_history"))
-            cleared_tables.append("ai_chat_history")
-            
-            session.execute(text("DELETE FROM ai_person_info"))
-            cleared_tables.append("ai_person_info")
-            
-            session.execute(text("DELETE FROM ai_group_info"))
-            cleared_tables.append("ai_group_info")
-            
-            session.execute(text("DELETE FROM ai_expressions"))
-            cleared_tables.append("ai_expressions")
-            
-            session.execute(text("DELETE FROM ai_jargons"))
-            cleared_tables.append("ai_jargons")
-            
-            session.execute(text("DELETE FROM ai_stickers"))
-            cleared_tables.append("ai_stickers")
-            
-            # Clear expression usage tracking (if table exists)
+            result = await mgr.create_directory(sandbox_uuid, path=path)
+            return {"ok": True, "result": result}
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+        except Exception as e:
+            logger.error(f"sandbox_files_mkdir failed: {e}", exc_info=True)
+            raise HTTPException(status_code=500, detail=str(e))
+
+    @app.delete("/api/sandbox/{sandbox_uuid}/files")
+    async def sandbox_files_delete(
+        sandbox_uuid: str,
+        path: str,
+        user: Dict[str, Any] = Depends(get_current_user),
+    ):
+        from ..core.sandbox.sandbox_manager import get_sandbox_manager
+
+        mgr = get_sandbox_manager()
+        try:
+            result = await mgr.delete_file(sandbox_uuid, path=path)
+            return {"ok": True, "result": result}
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+        except Exception as e:
+            logger.error(f"sandbox_files_delete failed: {e}", exc_info=True)
+            raise HTTPException(status_code=500, detail=str(e))
+
+    @app.websocket("/api/sandbox/{sandbox_uuid}/ws")
+    async def sandbox_websocket(websocket: WebSocket, sandbox_uuid: str):
+        """Realtime sandbox messages (requires token in query string)."""
+        from ..core.sandbox.sandbox_manager import get_sandbox_manager
+
+        token = websocket.query_params.get("token") or ""
+        auth_manager = get_auth_manager()
+        session_info = await auth_manager.verify_session(token)
+        if not session_info:
+            await websocket.close(code=4401)
+            return
+
+        db = get_database_manager()
+        row = await db.get_sandbox(sandbox_uuid)
+        if not row:
+            await websocket.close(code=4404)
+            return
+
+        await websocket.accept()
+        mgr = get_sandbox_manager()
+
+        async def forward(msg: Dict[str, Any]):
             try:
-                session.execute(text("DELETE FROM ai_expression_usage"))
-                cleared_tables.append("ai_expression_usage")
+                await websocket.send_json({"type": "message", "data": msg})
             except Exception:
-                pass  # Table might not exist yet
-            
-            session.commit()
-            
-            # Clear Knowledge Graph data
-            try:
-                kg_storage = get_kg_storage()
-                kg_session = kg_storage.get_session()
+                pass
+
+        mgr.register_message_callback(sandbox_uuid, forward)
+        try:
+            await websocket.send_json(
+                {"type": "connected", "sandbox": row.to_dict()}
+            )
+            while True:
                 try:
-                    kg_session.execute(text("DELETE FROM kg_triples"))
-                    kg_session.execute(text("DELETE FROM kg_entities"))
-                    kg_session.commit()
-                    cleared_tables.append("kg_triples")
-                    cleared_tables.append("kg_entities")
-                    logger.info("Knowledge Graph data cleared")
-                except Exception as e:
-                    kg_session.rollback()
-                    logger.warning(f"Failed to clear KG data: {e}")
-                finally:
-                    kg_session.close()
-            except Exception as e:
-                logger.warning(f"Failed to access KG storage: {e}")
-            
-            # Reset HeartFlow data (in-memory, no database)
-            try:
-                from ..ai.heartflow_enhanced import get_heartflow_enhanced
-                heartflow = get_heartflow_enhanced()
-                # Get all chat IDs and reset them
-                chat_ids = list(set(
-                    list(heartflow.message_count.keys()) +
-                    list(heartflow.emotion_states.keys())
-                ))
-                for chat_id in chat_ids:
-                    heartflow.reset_chat(chat_id)
-                cleared_tables.append("heartflow (in-memory)")
-                logger.info("HeartFlow data reset")
-            except Exception as e:
-                logger.warning(f"Failed to reset HeartFlow: {e}")
-            
-            logger.info(f"All AI learning data cleared: {', '.join(cleared_tables)}")
-            return {
-                "success": True,
-                "message": "所有学习数据已清除",
-                "cleared_tables": cleared_tables
-            }
-        except Exception as e:
-            session.rollback()
-            logger.error(f"Failed to clear learning data: {e}", exc_info=True)
-            raise HTTPException(status_code=500, detail=f"清除失败: {str(e)}")
+                    raw = await websocket.receive_text()
+                    if raw == "ping":
+                        await websocket.send_text("pong")
+                except WebSocketDisconnect:
+                    break
         finally:
-            session.close()
-    
-    # ==================== AI Maintenance APIs ====================
-    
-    # Dream System APIs
-    @app.get("/api/ai/maintenance/dream/config")
-    async def get_dream_config(
-        user: Dict[str, Any] = Depends(require_permission(Permission.SYSTEM_CONFIG_VIEW))
-    ):
-        """Get Dream system configuration."""
-        try:
-            from ..ai.dream import get_dream_scheduler
-            scheduler = get_dream_scheduler()
-            if scheduler:
-                return {
-                    "enabled": scheduler.enabled,
-                    "first_delay_seconds": scheduler.first_delay_seconds,
-                    "interval_minutes": scheduler.interval_seconds // 60,
-                    "max_iterations": 15,  # Default from dream_agent
-                    "dream_start_hour": scheduler.dream_start_hour,
-                    "dream_end_hour": scheduler.dream_end_hour
-                }
-            else:
-                return {
-                    "enabled": False,
-                    "first_delay_seconds": 300,
-                    "interval_minutes": 30,
-                    "max_iterations": 15,
-                    "dream_start_hour": 0,
-                    "dream_end_hour": 6
-                }
-        except Exception as e:
-            logger.error(f"Failed to get dream config: {e}")
-            raise HTTPException(status_code=500, detail=str(e))
-    
-    @app.put("/api/ai/maintenance/dream/config")
-    async def update_dream_config(
-        config: Dict[str, Any],
-        user: Dict[str, Any] = Depends(require_permission(Permission.SYSTEM_CONFIG_EDIT))
-    ):
-        """Update Dream system configuration."""
-        try:
-            # Save to config file
-            # TODO: Implement config file update
-            logger.info(f"Dream config updated: {config}")
-            return {"success": True, "message": "配置已保存（需要重启生效）"}
-        except Exception as e:
-            logger.error(f"Failed to update dream config: {e}")
-            raise HTTPException(status_code=500, detail=str(e))
-    
-    @app.get("/api/ai/maintenance/dream/stats")
-    async def get_dream_stats(
-        user: Dict[str, Any] = Depends(require_permission(Permission.SYSTEM_CONFIG_VIEW))
-    ):
-        """Get Dream system statistics."""
-        try:
-            from ..ai.dream import get_dream_scheduler
-            scheduler = get_dream_scheduler()
-            if scheduler:
-                return scheduler.get_statistics()
-            else:
-                return {
-                    "enabled": False,
-                    "total_cycles": 0,
-                    "successful_cycles": 0,
-                    "failed_cycles": 0,
-                    "total_iterations": 0,
-                    "avg_iterations": 0,
-                    "total_cost_seconds": 0,
-                    "avg_cost_seconds": 0,
-                    "last_cycle_time": None,
-                    "is_running": False
-                }
-        except Exception as e:
-            logger.error(f"Failed to get dream stats: {e}")
-            raise HTTPException(status_code=500, detail=str(e))
-    
-    @app.post("/api/ai/maintenance/dream/run")
-    async def trigger_dream_run(
-        user: Dict[str, Any] = Depends(require_permission(Permission.SYSTEM_CONFIG_EDIT))
-    ):
-        """Manually trigger a dream maintenance cycle."""
-        try:
-            from ..ai.dream import get_dream_scheduler
-            scheduler = get_dream_scheduler()
-            if scheduler:
-                # Run once in background
-                import asyncio
-                asyncio.create_task(scheduler.run_once())
-                return {"success": True, "message": "Dream 维护已启动"}
-            else:
-                raise HTTPException(status_code=400, detail="Dream scheduler not initialized")
-        except Exception as e:
-            logger.error(f"Failed to trigger dream run: {e}")
-            raise HTTPException(status_code=500, detail=str(e))
-    
-    # Expression Auto Check APIs
-    @app.get("/api/ai/maintenance/expression-check/config")
-    async def get_expression_check_config(
-        user: Dict[str, Any] = Depends(require_permission(Permission.SYSTEM_CONFIG_VIEW))
-    ):
-        """Get Expression Auto Check configuration."""
-        return {
-            "enabled": True,
-            "interval_minutes": 60,
-            "batch_size": 10,
-            "limit": 50
-        }
-    
-    @app.put("/api/ai/maintenance/expression-check/config")
-    async def update_expression_check_config(
-        config: Dict[str, Any],
-        user: Dict[str, Any] = Depends(require_permission(Permission.SYSTEM_CONFIG_EDIT))
-    ):
-        """Update Expression Auto Check configuration."""
-        logger.info(f"Expression check config updated: {config}")
-        return {"success": True, "message": "配置已保存（需要重启生效）"}
-    
-    @app.get("/api/ai/maintenance/expression-check/stats")
-    async def get_expression_check_stats(
-        user: Dict[str, Any] = Depends(require_permission(Permission.SYSTEM_CONFIG_VIEW))
-    ):
-        """Get Expression Auto Check statistics."""
-        try:
-            from ..ai.expression_auto_checker import get_expression_auto_checker
-            checker = get_expression_auto_checker()
-            return checker.get_statistics()
-        except Exception as e:
-            logger.error(f"Failed to get expression check stats: {e}")
-            return {
-                "total_checked": 0,
-                "total_accepted": 0,
-                "total_rejected": 0,
-                "acceptance_rate": 0,
-                "last_check_time": None
-            }
-    
-    @app.post("/api/ai/maintenance/expression-check/run")
-    async def trigger_expression_check(
-        user: Dict[str, Any] = Depends(require_permission(Permission.SYSTEM_CONFIG_EDIT))
-    ):
-        """Manually trigger expression auto check."""
-        try:
-            from ..ai.expression_auto_checker import get_expression_auto_checker
-            from ..ai.llm_client import LLMClient
-            
-            # Get default model for LLM client
-            model_manager = get_model_manager()
-            default_model = await model_manager.get_default_model()
-            if not default_model:
-                raise HTTPException(status_code=400, detail="未配置默认LLM模型，请先在AI模型管理中设置默认模型")
-            
-            # Get model with API key
-            model_with_secret = await model_manager.get_model_with_secret(default_model['uuid'])
-            if not model_with_secret:
-                raise HTTPException(status_code=404, detail="默认模型不存在")
-            
-            # Initialize LLM client with model configuration
-            api_format = model_with_secret.get('config', {}).get('api_format', 'openai')
-            llm_client = LLMClient(
-                api_key=model_with_secret.get('api_key', ''),
-                base_url=model_with_secret.get('base_url', ''),
-                model_name=model_with_secret.get('model_name', ''),
-                provider=model_with_secret.get('provider', 'openai'),
-                api_format=api_format
-            )
-            
-            checker = get_expression_auto_checker()
-            
-            # Run in background
-            import asyncio
-            asyncio.create_task(checker.check_unchecked_expressions(llm_client, limit=50))
-            
-            return {"success": True, "message": "表达方式检查已启动"}
-        except HTTPException:
-            raise
-        except Exception as e:
-            logger.error(f"Failed to trigger expression check: {e}")
-            raise HTTPException(status_code=500, detail=str(e))
-    
-    # Expression Reflect APIs
-    @app.get("/api/ai/maintenance/expression-reflect/config")
-    async def get_expression_reflect_config(
-        user: Dict[str, Any] = Depends(require_permission(Permission.SYSTEM_CONFIG_VIEW))
-    ):
-        """Get Expression Reflect configuration."""
-        return {
-            "enabled": True,
-            "interval_minutes": 120,
-            "min_usage_count": 5,
-            "limit": 30
-        }
-    
-    @app.put("/api/ai/maintenance/expression-reflect/config")
-    async def update_expression_reflect_config(
-        config: Dict[str, Any],
-        user: Dict[str, Any] = Depends(require_permission(Permission.SYSTEM_CONFIG_EDIT))
-    ):
-        """Update Expression Reflect configuration."""
-        logger.info(f"Expression reflect config updated: {config}")
-        return {"success": True, "message": "配置已保存（需要重启生效）"}
-    
-    @app.get("/api/ai/maintenance/expression-reflect/stats")
-    async def get_expression_reflect_stats(
-        user: Dict[str, Any] = Depends(require_permission(Permission.SYSTEM_CONFIG_VIEW))
-    ):
-        """Get Expression Auto Check statistics (expression_reflector removed, using auto_checker instead)."""
-        try:
-            from ..ai.expression_auto_checker import get_expression_auto_checker
-            checker = get_expression_auto_checker()
-            stats = checker.get_statistics()
-            return {
-                "total_reflections": stats.get('total_checked', 0),
-                "total_analyzed": stats.get('total_checked', 0),
-                "total_recommendations": stats.get('total_accepted', 0),
-                "last_reflection_time": stats.get('last_check_time'),
-                "tracked_expressions": stats.get('total_checked', 0)
-            }
-        except Exception as e:
-            logger.error(f"Failed to get expression auto check stats: {e}")
-            return {
-                "total_reflections": 0,
-                "total_analyzed": 0,
-                "total_recommendations": 0,
-                "last_reflection_time": None,
-                "tracked_expressions": 0
-            }
-    
-    @app.post("/api/ai/maintenance/expression-reflect/run")
-    async def trigger_expression_reflect(
-        user: Dict[str, Any] = Depends(require_permission(Permission.SYSTEM_CONFIG_EDIT))
-    ):
-        """Manually trigger expression auto check (expression_reflector removed, using auto_checker instead)."""
-        try:
-            from ..ai.expression_auto_checker import get_expression_auto_checker
-            from ..ai.llm_client import LLMClient
-            
-            # Get default model for LLM client
-            model_manager = get_model_manager()
-            default_model = await model_manager.get_default_model()
-            if not default_model:
-                raise HTTPException(status_code=400, detail="未配置默认LLM模型，请先在AI模型管理中设置默认模型")
-            
-            # Get model with API key
-            model_with_secret = await model_manager.get_model_with_secret(default_model['uuid'])
-            if not model_with_secret:
-                raise HTTPException(status_code=404, detail="默认模型不存在")
-            
-            # Initialize LLM client with model configuration
-            api_format = model_with_secret.get('config', {}).get('api_format', 'openai')
-            llm_client = LLMClient(
-                api_key=model_with_secret.get('api_key', ''),
-                base_url=model_with_secret.get('base_url', ''),
-                model_name=model_with_secret.get('model_name', ''),
-                provider=model_with_secret.get('provider', 'openai'),
-                api_format=api_format
-            )
-            
-            checker = get_expression_auto_checker()
-            
-            # Run in background
-            import asyncio
-            asyncio.create_task(checker.check_unchecked_expressions(llm_client, limit=50, batch_size=10))
-            
-            return {"success": True, "message": "表达方式自动检查已启动"}
-        except HTTPException:
-            raise
-        except Exception as e:
-            logger.error(f"Failed to trigger expression auto check: {e}")
-            raise HTTPException(status_code=500, detail=str(e))
-    
-    # Knowledge Graph APIs
-    @app.get("/api/ai/knowledge/stats")
-    async def get_knowledge_graph_stats(
-        user: Dict[str, Any] = Depends(require_permission(Permission.SYSTEM_CONFIG_VIEW))
-    ):
-        """Get Knowledge Graph statistics."""
-        try:
-            from ..ai.knowledge import get_kg_manager
-            manager = get_kg_manager()
-            stats = manager.get_statistics()
-            # Ensure avg_confidence is included
-            if 'avg_confidence' not in stats:
-                stats['avg_confidence'] = 0.0
-            return stats
-        except Exception as e:
-            logger.error(f"Failed to get KG stats: {e}", exc_info=True)
-            # Return default stats instead of raising error
-            return {
-                'triples': 0,
-                'entities': 0,
-                'relationships': 0,
-                'avg_confidence': 0.0
-            }
-    
-    @app.get("/api/ai/knowledge/triples")
-    async def get_knowledge_triples(
-        subject: Optional[str] = None,
-        predicate: Optional[str] = None,
-        obj: Optional[str] = None,
-        limit: int = 100,
-        offset: int = 0,
-        user: Dict[str, Any] = Depends(require_permission(Permission.SYSTEM_CONFIG_VIEW))
-    ):
-        """Get knowledge triples."""
-        try:
-            from ..ai.knowledge import get_kg_manager
-            from sqlalchemy import func
-            
-            manager = get_kg_manager()
-            storage = manager.storage
-            
-            # Get total count first
-            from ..ai.knowledge.kg_storage import KnowledgeTriple
-            session = storage.get_session()
-            try:
-                count_query = session.query(func.count(KnowledgeTriple.id))
-                
-                if subject:
-                    count_query = count_query.filter(KnowledgeTriple.subject == subject)
-                if predicate:
-                    count_query = count_query.filter(KnowledgeTriple.predicate == predicate)
-                if obj:
-                    count_query = count_query.filter(KnowledgeTriple.object == obj)
-                
-                total = count_query.scalar() or 0
-            finally:
-                session.close()
-            
-            # Get triples with offset support
-            # Note: query_triples doesn't support offset, so we need to get more and slice
-            actual_limit = limit + offset
-            triples = storage.query_triples(
-                subject=subject,
-                predicate=predicate,
-                object=obj,  # Use 'object' not 'obj'
-                limit=actual_limit
-            )
-            
-            # Apply offset manually
-            if offset > 0:
-                triples = triples[offset:]
-            
-            # Limit to requested amount
-            triples = triples[:limit]
-            
-            return {
-                "total": total,
-                "items": [t.to_dict() for t in triples]
-            }
-        except Exception as e:
-            logger.error(f"Failed to get triples: {e}", exc_info=True)
-            raise HTTPException(status_code=500, detail=str(e))
-    
-    @app.get("/api/ai/knowledge/entities")
-    async def get_knowledge_entities(
-        entity_type: Optional[str] = None,
-        limit: int = 100,
-        offset: int = 0,
-        user: Dict[str, Any] = Depends(require_permission(Permission.SYSTEM_CONFIG_VIEW))
-    ):
-        """Get knowledge entities."""
-        try:
-            from ..ai.knowledge import get_kg_manager
-            from sqlalchemy import func
-            
-            manager = get_kg_manager()
-            storage = manager.storage
-            
-            # Get total count
-            from ..ai.knowledge.kg_storage import Entity
-            session = storage.get_session()
-            try:
-                count_query = session.query(func.count(Entity.id))
-                if entity_type:
-                    count_query = count_query.filter(Entity.entity_type == entity_type)
-                total = count_query.scalar() or 0
-            finally:
-                session.close()
-            
-            # Get entities
-            entities = storage.get_entities(
-                entity_type=entity_type,
-                limit=limit,
-                offset=offset
-            )
-            
-            return {
-                "total": total,
-                "items": [e.to_dict() for e in entities]
-            }
-        except Exception as e:
-            logger.error(f"Failed to get entities: {e}", exc_info=True)
-            raise HTTPException(status_code=500, detail=str(e))
-    
-    @app.get("/api/ai/knowledge/entity/{entity_name}")
-    async def get_entity_knowledge(
-        entity_name: str,
-        user: Dict[str, Any] = Depends(require_permission(Permission.SYSTEM_CONFIG_VIEW))
-    ):
-        """Get all knowledge about an entity."""
-        try:
-            from ..ai.knowledge import get_kg_manager
-            manager = get_kg_manager()
-            return manager.get_entity_knowledge(entity_name, limit=100)
-        except Exception as e:
-            logger.error(f"Failed to get entity knowledge: {e}")
-            raise HTTPException(status_code=500, detail=str(e))
-    
-    @app.post("/api/ai/knowledge/query")
-    async def query_knowledge(
-        request: Dict[str, Any] = Body(...),
-        user: Dict[str, Any] = Depends(require_permission(Permission.SYSTEM_CONFIG_VIEW))
-    ):
-        """Query knowledge graph using natural language."""
-        try:
-            from ..ai.knowledge import get_kg_manager
-            from ..ai.llm_client import LLMClient
-            
-            query_text = request.get('query', '')
-            limit = request.get('limit', 10)
-            
-            if not query_text:
-                raise HTTPException(status_code=400, detail="查询文本不能为空")
-            
-            # Get default model for LLM client
-            model_manager = get_model_manager()
-            default_model = await model_manager.get_default_model()
-            if not default_model:
-                raise HTTPException(status_code=400, detail="未配置默认LLM模型，请先在AI模型管理中设置默认模型")
-            
-            # Get model with API key
-            model_with_secret = await model_manager.get_model_with_secret(default_model['uuid'])
-            if not model_with_secret:
-                raise HTTPException(status_code=404, detail="默认模型不存在")
-            
-            # Initialize LLM client with model configuration
-            api_format = model_with_secret.get('config', {}).get('api_format', 'openai')
-            llm_client = LLMClient(
-                api_key=model_with_secret.get('api_key', ''),
-                base_url=model_with_secret.get('base_url', ''),
-                model_name=model_with_secret.get('model_name', ''),
-                provider=model_with_secret.get('provider', 'openai'),
-                api_format=api_format
-            )
-            
-            manager = get_kg_manager()
-            results = await manager.query_knowledge(query_text, llm_client, limit=limit)
-            return {"results": results}
-        except HTTPException:
-            raise
-        except Exception as e:
-            logger.error(f"Failed to query knowledge: {e}", exc_info=True)
-            raise HTTPException(status_code=500, detail=str(e))
-    
-    # Learning Features Configuration APIs
-    @app.get("/api/ai/learning/config")
-    async def get_learning_config_api(
-        config_type: str = 'global',
-        target_id: Optional[str] = None,
-        user: Dict[str, Any] = Depends(require_permission(Permission.SYSTEM_CONFIG_VIEW))
-    ):
-        """Get learning features configuration."""
-        try:
-            from ..ai.learning_config import get_learning_config
-            config_manager = get_learning_config()
-            config = await config_manager.get_config(config_type, target_id)
-            return config
-        except Exception as e:
-            logger.error(f"Failed to get learning config: {e}")
-            raise HTTPException(status_code=500, detail=str(e))
-    
-    @app.put("/api/ai/learning/config")
-    async def update_learning_config_api(
-        learning_config: Dict[str, Any],
-        config_type: str = 'global',
-        target_id: Optional[str] = None,
-        user: Dict[str, Any] = Depends(require_permission(Permission.SYSTEM_CONFIG_EDIT))
-    ):
-        """Update learning features configuration."""
-        try:
-            from ..ai.learning_config import get_learning_config
-            config_manager = get_learning_config()
-            success = await config_manager.update_config(learning_config, config_type, target_id)
-            if success:
-                return {"success": True, "message": "配置已更新"}
-            else:
-                raise HTTPException(status_code=500, detail="更新配置失败")
-        except Exception as e:
-            logger.error(f"Failed to update learning config: {e}")
-            raise HTTPException(status_code=500, detail=str(e))
-    
-    # HeartFlow APIs
-    @app.get("/api/ai/heartflow/stats/{chat_id}")
-    async def get_heartflow_stats(
-        chat_id: str,
-        user: Dict[str, Any] = Depends(require_permission(Permission.SYSTEM_CONFIG_VIEW))
-    ):
-        """Get HeartFlow statistics for a chat."""
-        try:
-            from ..ai.heartflow_enhanced import get_heartflow_enhanced
-            heartflow = get_heartflow_enhanced()
-            return heartflow.get_flow_metrics(chat_id)
-        except Exception as e:
-            logger.error(f"Failed to get heartflow stats: {e}")
-            raise HTTPException(status_code=500, detail=str(e))
-    
-    @app.get("/api/ai/heartflow/chats")
-    async def get_heartflow_chats(
-        user: Dict[str, Any] = Depends(require_permission(Permission.SYSTEM_CONFIG_VIEW))
-    ):
-        """Get all chats with HeartFlow data."""
-        try:
-            from ..ai.heartflow_enhanced import get_heartflow_enhanced
-            heartflow = get_heartflow_enhanced()
-            
-            # Get all tracked chat IDs
-            chat_ids = list(set(
-                list(heartflow.message_count.keys()) +
-                list(heartflow.emotion_states.keys())
-            ))
-            
-            chats = []
-            for chat_id in chat_ids:
-                metrics = heartflow.get_flow_metrics(chat_id)
-                chats.append({
-                    "chat_id": chat_id,
-                    **metrics
-                })
-            
-            return {"chats": chats}
-        except Exception as e:
-            logger.error(f"Failed to get heartflow chats: {e}")
-            raise HTTPException(status_code=500, detail=str(e))
-    
-    # ==================== Tool Permission Management APIs ====================
-    
-    @app.get("/api/ai/tool-permissions")
-    async def get_tool_permissions(
-        user: Dict[str, Any] = Depends(require_permission(Permission.SYSTEM_CONFIG_VIEW))
-    ):
-        """Get all tool permission configurations."""
-        from ..core.models.tool_permission import ToolPermission
-        from sqlalchemy import select
-        
-        app_instance = get_app()
-        db_manager = app_instance.db_manager if hasattr(app_instance, 'db_manager') and app_instance.db_manager else None
-        if not db_manager:
-            raise HTTPException(status_code=500, detail="Database manager not available")
-        
-        async with db_manager.session() as session:
-            result = await session.execute(select(ToolPermission))
-            permissions = result.scalars().all()
-            return {"permissions": [perm.to_dict() for perm in permissions]}
-    
-    @app.post("/api/ai/tool-permissions")
-    async def create_or_update_tool_permission(
-        permission_data: Dict[str, Any] = Body(...),
-        user: Dict[str, Any] = Depends(require_permission(Permission.SYSTEM_CONFIG_EDIT))
-    ):
-        """Create or update a tool permission configuration."""
-        from ..core.models.tool_permission import ToolPermission
-        from sqlalchemy import select
-        
-        app_instance = get_app()
-        db_manager = app_instance.db_manager if hasattr(app_instance, 'db_manager') and app_instance.db_manager else None
-        if not db_manager:
-            raise HTTPException(status_code=500, detail="Database manager not available")
-        
-        tool_name = permission_data.get('tool_name')
-        if not tool_name:
-            raise HTTPException(status_code=400, detail="tool_name is required")
-        
-        # Validate and normalize data
-        requires_permission = bool(permission_data.get('requires_permission', False))
-        requires_admin_approval = bool(permission_data.get('requires_admin_approval', False))
-        requires_ai_approval = bool(permission_data.get('requires_ai_approval', True))
-        
-        # Ensure allowed_users is a list
-        allowed_users = permission_data.get('allowed_users', [])
-        if not isinstance(allowed_users, list):
-            if isinstance(allowed_users, str):
-                # Handle comma-separated string
-                allowed_users = [q.strip() for q in allowed_users.split(',') if q.strip()]
-            else:
-                allowed_users = []
-        
-        tool_category = permission_data.get('tool_category') or None
-        tool_description = permission_data.get('tool_description') or None
-        danger_level = int(permission_data.get('danger_level', 0))
-        
-        try:
-            async with db_manager.session() as session:
-                # Check if exists
-                result = await session.execute(
-                    select(ToolPermission).where(ToolPermission.tool_name == tool_name)
-                )
-                existing = result.scalar_one_or_none()
-                
-                if existing:
-                    # Update existing
-                    existing.requires_permission = requires_permission
-                    existing.requires_admin_approval = requires_admin_approval
-                    existing.requires_ai_approval = requires_ai_approval
-                    existing.allowed_users = allowed_users
-                    existing.tool_category = tool_category
-                    existing.tool_description = tool_description
-                    existing.danger_level = danger_level
-                    existing.updated_at = datetime.utcnow()
-                else:
-                    # Create new
-                    perm = ToolPermission(
-                        tool_name=tool_name,
-                        requires_permission=requires_permission,
-                        requires_admin_approval=requires_admin_approval,
-                        requires_ai_approval=requires_ai_approval,
-                        allowed_users=allowed_users,
-                        tool_category=tool_category,
-                        tool_description=tool_description,
-                        danger_level=danger_level
-                    )
-                    session.add(perm)
-                
-                await session.commit()
-                
-                # Fetch and return the updated permission
-                result = await session.execute(
-                    select(ToolPermission).where(ToolPermission.tool_name == tool_name)
-                )
-                perm = result.scalar_one()
-                return {"success": True, "permission": perm.to_dict()}
-        except Exception as e:
-            logger.error(f"Failed to save tool permission: {e}", exc_info=True)
-            raise HTTPException(status_code=500, detail=str(e))
-    
-    @app.delete("/api/ai/tool-permissions/{tool_name}")
-    async def delete_tool_permission(
-        tool_name: str,
-        user: Dict[str, Any] = Depends(require_permission(Permission.SYSTEM_CONFIG_EDIT))
-    ):
-        """Delete a tool permission configuration."""
-        from ..core.models.tool_permission import ToolPermission
-        from sqlalchemy import delete
-        
-        app_instance = get_app()
-        db_manager = app_instance.db_manager if hasattr(app_instance, 'db_manager') and app_instance.db_manager else None
-        if not db_manager:
-            raise HTTPException(status_code=500, detail="Database manager not available")
-        
-        try:
-            async with db_manager.session() as session:
-                await session.execute(
-                    delete(ToolPermission).where(ToolPermission.tool_name == tool_name)
-                )
-                await session.commit()
-                return {"success": True, "message": "工具权限已删除"}
-        except Exception as e:
-            logger.error(f"Failed to delete tool permission: {e}", exc_info=True)
-            raise HTTPException(status_code=500, detail=str(e))
-    
-    @app.get("/api/ai/admin-users")
-    async def get_admin_users(
-        user: Dict[str, Any] = Depends(require_permission(Permission.SYSTEM_CONFIG_VIEW))
-    ):
-        """Get all admin users."""
-        from ..core.models.tool_permission import AdminUser
-        from sqlalchemy import select
-        
-        app_instance = get_app()
-        db_manager = app_instance.db_manager if hasattr(app_instance, 'db_manager') and app_instance.db_manager else None
-        if not db_manager:
-            raise HTTPException(status_code=500, detail="Database manager not available")
-        
-        async with db_manager.session() as session:
-            result = await session.execute(select(AdminUser))
-            admins = result.scalars().all()
-            return {"admins": [admin.to_dict() for admin in admins]}
-    
-    @app.post("/api/ai/admin-users")
-    async def create_or_update_admin_user(
-        admin_data: Dict[str, Any] = Body(...),
-        user: Dict[str, Any] = Depends(require_permission(Permission.SYSTEM_CONFIG_EDIT))
-    ):
-        """Create or update an admin user."""
-        from ..core.models.tool_permission import AdminUser
-        from sqlalchemy import select
-        
-        app_instance = get_app()
-        db_manager = app_instance.db_manager if hasattr(app_instance, 'db_manager') and app_instance.db_manager else None
-        if not db_manager:
-            raise HTTPException(status_code=500, detail="Database manager not available")
-        
-        qq_number = admin_data.get('qq_number')
-        if not qq_number:
-            raise HTTPException(status_code=400, detail="qq_number is required")
-        
-        try:
-            async with db_manager.session() as session:
-                # Check if exists
-                result = await session.execute(
-                    select(AdminUser).where(AdminUser.qq_number == qq_number)
-                )
-                existing = result.scalar_one_or_none()
-                
-                if existing:
-                    # Update existing - only update allowed fields
-                    # Fields that should NOT be updated: qq_number, created_at, total_approvals, total_rejections, last_active_at
-                    allowed_update_fields = ['nickname', 'permission_level', 'is_active', 'can_approve_all_tools', 'approved_tools']
-                    
-                    for key, value in admin_data.items():
-                        if key in allowed_update_fields:
-                            # Handle special cases
-                            if key == 'approved_tools':
-                                # Ensure approved_tools is a list
-                                if not isinstance(value, list):
-                                    value = []
-                            elif key == 'permission_level':
-                                # Ensure permission_level is int
-                                value = int(value) if value is not None else 1
-                            elif key in ['is_active', 'can_approve_all_tools']:
-                                # Ensure boolean fields are bool
-                                value = bool(value) if value is not None else False
-                            
-                            setattr(existing, key, value)
-                    
-                    # Use datetime.now(timezone.utc) for Python 3.12+ compatibility
-                    from datetime import timezone
-                    existing.updated_at = datetime.now(timezone.utc)
-                else:
-                    # Create new
-                    # Ensure approved_tools is a list
-                    approved_tools = admin_data.get('approved_tools', [])
-                    if not isinstance(approved_tools, list):
-                        approved_tools = []
-                    
-                    admin = AdminUser(
-                        qq_number=qq_number,
-                        nickname=admin_data.get('nickname'),
-                        permission_level=int(admin_data.get('permission_level', 1)),
-                        is_active=bool(admin_data.get('is_active', True)),
-                        can_approve_all_tools=bool(admin_data.get('can_approve_all_tools', False)),
-                        approved_tools=approved_tools
-                    )
-                    session.add(admin)
-                
-                await session.commit()
-                
-                # Fetch and return the updated admin
-                result = await session.execute(
-                    select(AdminUser).where(AdminUser.qq_number == qq_number)
-                )
-                admin = result.scalar_one()
-                return {"success": True, "admin": admin.to_dict()}
-        except Exception as e:
-            logger.error(f"Failed to save admin user: {e}", exc_info=True)
-            raise HTTPException(status_code=500, detail=str(e))
-    
-    @app.delete("/api/ai/admin-users/{qq_number}")
-    async def delete_admin_user(
-        qq_number: str,
-        user: Dict[str, Any] = Depends(require_permission(Permission.SYSTEM_CONFIG_EDIT))
-    ):
-        """Delete an admin user."""
-        from ..core.models.tool_permission import AdminUser
-        from sqlalchemy import delete
-        
-        app_instance = get_app()
-        db_manager = app_instance.db_manager if hasattr(app_instance, 'db_manager') and app_instance.db_manager else None
-        if not db_manager:
-            raise HTTPException(status_code=500, detail="Database manager not available")
-        
-        try:
-            async with db_manager.session() as session:
-                await session.execute(
-                    delete(AdminUser).where(AdminUser.qq_number == qq_number)
-                )
-                await session.commit()
-                return {"success": True, "message": "管理员已删除"}
-        except Exception as e:
-            logger.error(f"Failed to delete admin user: {e}", exc_info=True)
-            raise HTTPException(status_code=500, detail=str(e))
-    
-    @app.get("/api/ai/approval-logs")
-    async def get_approval_logs(
-        limit: int = 10,
-        tool_name: Optional[str] = None,
-        user_qq: Optional[str] = None,
-        user: Dict[str, Any] = Depends(require_permission(Permission.AUDIT_VIEW))
-    ):
-        """Get tool approval audit logs."""
-        from ..core.models.tool_permission import ToolApprovalLog
-        from sqlalchemy import select, desc
-        
-        app_instance = get_app()
-        db_manager = app_instance.db_manager if hasattr(app_instance, 'db_manager') and app_instance.db_manager else None
-        if not db_manager:
-            raise HTTPException(status_code=500, detail="Database manager not available")
-        
-        try:
-            async with db_manager.session() as session:
-                query = select(ToolApprovalLog).order_by(desc(ToolApprovalLog.created_at)).limit(limit)
-                
-                if tool_name:
-                    query = query.where(ToolApprovalLog.tool_name == tool_name)
-                if user_qq:
-                    query = query.where(ToolApprovalLog.user_qq == user_qq)
-                
-                result = await session.execute(query)
-                logs = result.scalars().all()
-                return {"logs": [log.to_dict() for log in logs]}
-        except Exception as e:
-            logger.error(f"Failed to get approval logs: {e}", exc_info=True)
-            raise HTTPException(status_code=500, detail=str(e))
-    
-    @app.post("/api/ai/approval-logs/{log_id}/approve")
-    async def admin_approve_tool_usage(
-        log_id: int,
-        approval_data: Dict[str, Any],
-        user: Dict[str, Any] = Depends(require_permission(Permission.SYSTEM_CONFIG_EDIT))
-    ):
-        """Admin approve or reject a tool usage request."""
-        from ..ai.tool_permission_manager import get_tool_permission_manager
-        
-        admin_qq = approval_data.get('admin_qq')
-        approved = approval_data.get('approved', False)
-        reason = approval_data.get('reason')
-        
-        if not admin_qq:
-            raise HTTPException(status_code=400, detail="admin_qq is required")
-        
-        try:
-            tool_perm_mgr = get_tool_permission_manager()
-            success = await tool_perm_mgr.admin_approve_tool(
-                log_id=log_id,
-                admin_qq=admin_qq,
-                approved=approved,
-                reason=reason
-            )
-            
-            if success:
-                return {"success": True, "message": "审批成功"}
-            else:
-                raise HTTPException(status_code=400, detail="审批失败，请检查管理员权限")
-        except Exception as e:
-            logger.error(f"Failed to approve tool: {e}", exc_info=True)
-            raise HTTPException(status_code=500, detail=str(e))
-    
+            mgr.unregister_message_callback(sandbox_uuid, forward)
+
     # ===== NapCat Management Routes =====
     
     @app.post("/api/system/open-dialog")
@@ -6256,85 +4656,30 @@ def create_app() -> FastAPI:
             response.headers["Expires"] = "0"
             return response
         else:
-            # Fallback HTML if index.html doesn't exist
-            # Different messages based on whether webui build output exists
+            # Return JSON guidance instead of HTML fallback page.
             if not webui_built:
-                # WebUI build output doesn't exist
-                title = "WebUI 未构建"
-                message = """
-                        <h1>WebUI 未构建</h1>
-                        <p>配置文件中已启用 WebUI，但构建产物不存在（<code>src/ui/static</code>）。</p>
-                        <p style="margin-top: 1.5rem;"><strong>解决方案：</strong></p>
-                        <ul style="text-align: left; display: inline-block; margin: 1rem 0;">
-                            <li>如果您不需要 WebUI，请在 <code>config.toml</code> 中设置 <code>[web_ui].enabled = false</code></li>
-                            <li>如果需要 WebUI，请构建前端：<code>cd webui && npm run build</code></li>
-                        </ul>
-                        <p style="margin-top: 1.5rem; font-size: 0.9rem; opacity: 0.8;">
-                            构建命令：<code>cd webui && npm install && npm run build</code>
-                        </p>
-                        <p style="font-size: 0.9rem; opacity: 0.8;">
-                            或使用 <code>build.bat</code> (Windows) / <code>build.sh</code> (Linux/Mac)
-                        </p>
-                """
-            else:
-                # WebUI build output exists but index.html is missing
-                title = "WebUI 构建不完整"
-                message = """
-                        <h1>WebUI 构建不完整</h1>
-                        <p>WebUI 构建产物存在，但 <code>index.html</code> 文件缺失。</p>
-                        <p>请重新构建前端：</p>
-                        <p><code>cd webui && npm run build</code></p>
-                        <p style="font-size: 0.9rem; opacity: 0.8;">或使用 <code>build.bat</code> (Windows) / <code>build.sh</code> (Linux/Mac)</p>
-                """
-            
-            return HTMLResponse(
-                f"""
-                <!DOCTYPE html>
-                <html lang="zh-CN">
-                <head>
-                    <meta charset="UTF-8">
-                    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-                    <title>Xiaoyi_QQ Framework - {title}</title>
-                    <style>
-                        body {{
-                            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
-                            display: flex;
-                            justify-content: center;
-                            align-items: center;
-                            height: 100vh;
-                            margin: 0;
-                            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-                            color: white;
-                        }}
-                        .container {{
-                            text-align: center;
-                            padding: 2rem;
-                            background: rgba(255, 255, 255, 0.1);
-                            border-radius: 1rem;
-                            backdrop-filter: blur(10px);
-                            max-width: 600px;
-                        }}
-                        code {{
-                            background: rgba(0, 0, 0, 0.3);
-                            padding: 0.2rem 0.5rem;
-                            border-radius: 0.25rem;
-                            font-family: 'Courier New', monospace;
-                        }}
-                        ul {{
-                            list-style-position: inside;
-                        }}
-                        li {{
-                            margin: 0.5rem 0;
-                        }}
-                    </style>
-                </head>
-                <body>
-                    <div class="container">
-                        {message}
-                    </div>
-                </body>
-                </html>
-                """
+                return JSONResponse(
+                    status_code=503,
+                    content={
+                        "error": "WebUI not built",
+                        "message": "WebUI static files are missing in src/ui/static.",
+                        "suggestions": [
+                            "Disable WebUI in config.toml with [web_ui].enabled = false",
+                            "Build WebUI with: cd webui && npm install && npm run build",
+                            "Or use build.bat (Windows) / build.sh (Linux/Mac)"
+                        ]
+                    }
+                )
+            return JSONResponse(
+                status_code=503,
+                content={
+                    "error": "WebUI entry missing",
+                    "message": "WebUI assets exist but src/ui/static/index.html is missing.",
+                    "suggestions": [
+                        "Rebuild WebUI with: cd webui && npm run build",
+                        "Or use build.bat (Windows) / build.sh (Linux/Mac)"
+                    ]
+                }
             )
     
     return app

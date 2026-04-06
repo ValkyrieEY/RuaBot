@@ -16,12 +16,13 @@ import SystemPage from './pages/SystemPage'
 import AIPage from './pages/AIPage'
 import AboutPage from './pages/AboutPage'
 import NapCatPage from './pages/NapCatPage'
+import SandboxPage from './pages/SandboxPage'
 
-// 动态导入开屏动画组件，支持热插拔
-// 如果文件不存在，lazy 会在运行时捕获错误
+// 
+// lazy 
 const SplashScreen = lazy(() => 
   import('../splash_screen/SplashScreen').catch(() => {
-    // 返回一个空组件作为回退
+    // 
     return { default: () => <></> }
   })
 ) as React.LazyExoticComponent<React.ComponentType<{ onComplete: () => void }>>
@@ -34,7 +35,7 @@ function PrivateRoute({ children }: { children: React.ReactNode }) {
 function AppContent() {
   const { checkAuth } = useAuthStore()
 
-  // 检查认证状态（用于已登录用户）
+  // 
   useEffect(() => {
     checkAuth()
   }, [checkAuth])
@@ -162,6 +163,16 @@ function AppContent() {
           </PrivateRoute>
         }
       />
+      <Route
+        path="/sandbox"
+        element={
+          <PrivateRoute>
+            <Layout>
+              <SandboxPage />
+            </Layout>
+          </PrivateRoute>
+        }
+      />
     </Routes>
   )
 }
@@ -179,7 +190,7 @@ function App() {
         setSplashAvailable(result.should_show)
       } catch (error) {
         console.error('Failed to check splash screen:', error)
-        // 出错时默认不显示
+        // 
         setShowSplash(false)
         setSplashAvailable(false)
       } finally {
@@ -191,12 +202,12 @@ function App() {
   }, [])
 
   const handleSplashComplete = () => {
-    // 开屏动画结束后，直接导航到登录页（首次启动肯定未登录）
+    // 
     window.history.replaceState(null, '', '/login')
     setShowSplash(false)
   }
 
-  // 如果正在检查或需要显示开屏动画，显示开屏动画
+  // 
   if (checkingSplash || (showSplash && splashAvailable)) {
     return (
       <Suspense fallback={<div className="fixed inset-0 bg-black" />}>

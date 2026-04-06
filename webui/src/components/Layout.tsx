@@ -1,6 +1,6 @@
 import { Link, useNavigate, useLocation } from 'react-router-dom'
 import { useTranslation } from 'react-i18next'
-import { useMemo, useEffect, useState } from 'react'
+import { useMemo } from 'react'
 import { useAuthStore } from '@/store/authStore'
 import { useAppStore } from '@/store/appStore'
 import {
@@ -19,9 +19,9 @@ import {
   Bot,
   Info,
   Server,
+  FlaskConical,
 } from 'lucide-react'
 import { cn } from '@/utils/cn'
-import { api } from '@/utils/api'
 
 interface LayoutProps {
   children: React.ReactNode
@@ -33,21 +33,6 @@ export default function Layout({ children }: LayoutProps) {
   const { t, i18n } = useTranslation()
   const { logout } = useAuthStore()
   const { sidebarOpen, setSidebarOpen } = useAppStore()
-  const [aiAvailable, setAiAvailable] = useState<boolean | null>(null)
-
-  // 检测AI系统是否可用
-  useEffect(() => {
-    const checkAIAvailability = async () => {
-      try {
-        const response = await api.checkAIAvailability()
-        setAiAvailable(response.available)
-      } catch (error) {
-        console.error('Failed to check AI availability:', error)
-        setAiAvailable(false)
-      }
-    }
-    checkAIAvailability()
-  }, [])
 
   const handleLogout = () => {
     logout()
@@ -60,7 +45,7 @@ export default function Layout({ children }: LayoutProps) {
     await i18n.changeLanguage(newLang)
   }
 
-  // 使用 useMemo 确保在 i18n 准备好后才计算 navItems
+  //  useMemo  i18n  navItems
   const navItems = useMemo(() => {
     return [
       { path: '/dashboard', icon: LayoutDashboard, label: t('nav.dashboard'), enabled: true },
@@ -69,32 +54,33 @@ export default function Layout({ children }: LayoutProps) {
       { path: '/chat', icon: MessagesSquare, label: t('nav.chat'), enabled: true },
       { path: '/messages', icon: MessageSquare, label: t('nav.messages'), enabled: true },
       { path: '/plugins', icon: Puzzle, label: t('nav.plugins'), enabled: true },
-      { path: '/ai', icon: Bot, label: t('nav.ai'), enabled: aiAvailable === true },
+      { path: '/ai', icon: Bot, label: t('nav.ai'), enabled: true },
+      { path: '/sandbox', icon: FlaskConical, label: t('nav.sandbox'), enabled: true },
       { path: '/security', icon: Shield, label: t('nav.security'), enabled: true },
       { path: '/audit', icon: FileText, label: t('nav.audit'), enabled: true },
       { path: '/system', icon: Settings, label: t('nav.system'), enabled: true },
       { path: '/about', icon: Info, label: t('nav.about'), enabled: true },
     ]
-  }, [t, i18n.language, aiAvailable])
+  }, [t, i18n.language])
 
   return (
-    <div className="min-h-screen bg-gray-50 overflow-x-hidden">
+    <div className="min-h-screen bg-white overflow-x-hidden text-slate-900 font-sans">
       {/* Top Navigation */}
-      <nav className="bg-white border-b border-gray-200 shadow-sm fixed top-0 left-0 right-0 z-50">
+      <nav className="bg-white/80 backdrop-blur-md border-b border-slate-100 fixed top-0 left-0 right-0 z-50 transition-all">
         <div className="px-4 sm:px-6 lg:px-8">
           <div className="flex justify-between items-center h-16">
             <div className="flex items-center gap-4">
               <button
                 onClick={() => setSidebarOpen(!sidebarOpen)}
-                className="md:hidden p-2 rounded-lg hover:bg-gray-100"
+                className="md:hidden p-2.5 rounded-xl hover:bg-slate-50 text-slate-600 transition-colors"
               >
                 {sidebarOpen ? <X className="w-5 h-5" /> : <Menu className="w-5 h-5" />}
               </button>
-              <Link to="/dashboard" className="flex items-center gap-2">
-                <div className="w-8 h-8 bg-primary-600 rounded-lg flex items-center justify-center">
-                  <span className="text-white font-bold text-sm">XQ</span>
+              <Link to="/dashboard" className="flex items-center gap-3">
+                <div className="w-9 h-9 bg-gradient-to-br from-primary-500 to-primary-600 rounded-xl flex items-center justify-center shadow-sm">
+                  <span className="text-white font-extrabold text-sm tracking-widest">XQ</span>
                 </div>
-                <span className="font-bold text-xl text-gray-900">Xiaoyi_QQ</span>
+                <span className="font-bold text-xl tracking-tight hidden sm:block">Xiaoyi_QQ</span>
               </Link>
             </div>
 
@@ -102,7 +88,7 @@ export default function Layout({ children }: LayoutProps) {
               <button
                 onClick={toggleLanguage}
                 className="p-2 rounded-lg hover:bg-gray-100 transition-colors"
-                title={i18n.language === 'zh' ? 'Switch to English' : '切换到中文'}
+                title={i18n.language === 'zh' ? 'Switch to English' : ''}
               >
                 <Globe className="w-5 h-5 text-gray-600" />
               </button>
@@ -120,9 +106,9 @@ export default function Layout({ children }: LayoutProps) {
 
       <div className="flex relative pt-16">
         {/* Sidebar */}
-        <aside className={`fixed inset-y-0 left-0 z-40 w-64 bg-white border-r border-gray-200 transition-transform duration-300 ease-in-out top-16 h-[calc(100vh-4rem)] overflow-y-auto ${
+        <aside className={`fixed inset-y-0 left-0 z-40 w-64 bg-white/90 backdrop-blur-xl border-r border-slate-100 transition-transform duration-300 ease-out top-16 h-[calc(100vh-4rem)] overflow-y-auto ${
           sidebarOpen 
-            ? 'translate-x-0' 
+            ? 'translate-x-0 shadow-2xl md:shadow-none' 
             : 'md:translate-x-0 -translate-x-full'
         }`}>
           <nav className="p-4 space-y-1">
@@ -153,13 +139,13 @@ export default function Layout({ children }: LayoutProps) {
                   to={item.path}
                   onClick={() => setSidebarOpen(false)}
                   className={cn(
-                    'flex items-center gap-3 px-4 py-3 rounded-lg transition-colors',
+                    'flex items-center gap-3 px-4 py-3 rounded-xl transition-all font-medium',
                     isActive
-                      ? 'bg-primary-50 text-primary-700 font-medium'
-                      : 'text-gray-700 hover:bg-gray-50'
+                      ? 'bg-primary-50 text-primary-700'
+                      : 'text-slate-600 hover:bg-slate-50 hover:text-slate-900'
                   )}
                 >
-                  <Icon className="w-5 h-5" />
+                  <Icon className={cn("w-5 h-5", isActive ? "text-primary-600" : "text-slate-400")} />
                   <span>{item.label}</span>
                 </Link>
               )
@@ -177,9 +163,9 @@ export default function Layout({ children }: LayoutProps) {
         )}
 
         {/* Main Content */}
-        <main className="flex-1 md:ml-64 max-w-full w-full">
-          {/* Check if this is ChatPage (full height, no padding) or regular page (with padding) */}
-          {location.pathname === '/chat' ? (
+        <main className="flex-1 md:ml-64 max-w-full w-full bg-white">
+          {/* Check if this is ChatPage or AI (full height, no padding) or regular page (with padding) */}
+          {location.pathname === '/chat' || location.pathname.startsWith('/ai') ? (
             children
           ) : (
             <div className="p-4 sm:p-6 lg:p-8 min-h-[calc(100vh-4rem)] max-w-full overflow-x-hidden">

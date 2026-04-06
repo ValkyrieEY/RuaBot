@@ -2,6 +2,18 @@ import React from 'react'
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || '/api'
 
+function buildMediaProxyUrl(kind: 'image' | 'video' | 'record' | 'file', params: { url?: string; file?: string }): string {
+  const search = new URLSearchParams()
+  search.set('kind', kind)
+  if (params.url) {
+    search.set('url', params.url)
+  }
+  if (params.file) {
+    search.set('file', params.file)
+  }
+  return `${API_BASE_URL}/chat/media-proxy?${search.toString()}`
+}
+
 /**
  * CQ码解析工具
  */
@@ -126,23 +138,8 @@ function renderCQCode(cq: CQCode, key: number, isSelf: boolean = false): React.R
       const imageUrl = cq.params.url
       const imageFile = cq.params.file
       
-      // 构建图片源：如果有URL就用URL，否则用file参数通过代理获取
       let imgSrc = imageUrl || imageFile
-      let finalImgSrc = imgSrc
-      
-      // 如果只有file参数（不是URL），需要通过代理接口获取
-      if (imageFile && !imageUrl && (!imageFile.startsWith('http://') && !imageFile.startsWith('https://'))) {
-        // 通过代理接口，传递file参数
-        finalImgSrc = `${API_BASE_URL}/chat/image-proxy?file=${encodeURIComponent(imageFile)}`
-        imgSrc = imageFile // 保存原始file用于错误处理
-      } else if (imageUrl) {
-        // 如果有URL，对于 QQ 多媒体服务器的 URL，使用代理
-        const isQQMultimedia = imageUrl.includes('multimedia.nt.qq.com.cn')
-        finalImgSrc = isQQMultimedia 
-          ? `${API_BASE_URL}/chat/image-proxy?url=${encodeURIComponent(imageUrl)}`
-          : imageUrl
-        imgSrc = imageUrl
-      } else if (!imgSrc) {
+      if (!imgSrc) {
         // 如果既没有url也没有file，显示占位符
         return (
           <div key={`img-${key}`} className="my-2 p-4 bg-gray-100 rounded-lg border border-gray-300">
@@ -154,6 +151,9 @@ function renderCQCode(cq: CQCode, key: number, isSelf: boolean = false): React.R
           </div>
         )
       }
+
+      // 统一走本地媒体代理，避免 QQ 直链失效
+      const finalImgSrc = buildMediaProxyUrl('image', { url: imageUrl, file: imageFile })
       
       return (
         <div key={`img-${key}`} className="my-2">
@@ -162,12 +162,7 @@ function renderCQCode(cq: CQCode, key: number, isSelf: boolean = false): React.R
             alt={cq.params.summary || '图片'}
             className="max-w-xs max-h-64 rounded-lg cursor-pointer hover:opacity-90 transition-opacity block"
             onClick={() => {
-              // 如果原始源是file参数，使用代理URL；否则直接打开
-              if (imageFile && !imageUrl) {
-                window.open(finalImgSrc, '_blank')
-              } else {
-                window.open(imgSrc, '_blank')
-              }
+              window.open(finalImgSrc, '_blank')
             }}
             onError={(e) => {
               console.error('Image load failed:', finalImgSrc)
@@ -188,10 +183,6 @@ function renderCQCode(cq: CQCode, key: number, isSelf: boolean = false): React.R
                   </div>
                 `
                 const link = document.createElement('a')
-                // 使用图片代理接口，而不是直接打开原始URL
-                const proxyUrl = imgSrc.startsWith('http://') || imgSrc.startsWith('https://')
-                  ? `${API_BASE_URL}/chat/image-proxy?url=${encodeURIComponent(imgSrc)}`
-                  : imgSrc
                 link.href = '#'
                 link.className = 'text-xs text-blue-600 hover:underline mt-1 block cursor-pointer'
                 link.textContent = '查看图片'
@@ -199,27 +190,15 @@ function renderCQCode(cq: CQCode, key: number, isSelf: boolean = false): React.R
                   event.preventDefault()
                   // 尝试通过代理打开图片
                   try {
-                    // 先尝试通过代理获取图片
-                    const response = await fetch(proxyUrl)
+                    const response = await fetch(finalImgSrc)
                     if (response.ok) {
-                      // 如果成功，在新窗口打开代理URL
-                      window.open(proxyUrl, '_blank')
-                    } else {
-                      // 如果代理失败，尝试直接打开原始URL（可能已过期）
-                      if (imgSrc.startsWith('http://') || imgSrc.startsWith('https://')) {
-                        window.open(imgSrc, '_blank')
-                      } else {
-                        alert('图片链接无效或已过期')
-                      }
-                    }
-                  } catch (error) {
-                    // 如果代理请求失败，尝试直接打开原始URL
-                    console.error('Failed to load image via proxy:', error)
-                    if (imgSrc.startsWith('http://') || imgSrc.startsWith('https://')) {
-                      window.open(imgSrc, '_blank')
+                      window.open(finalImgSrc, '_blank')
                     } else {
                       alert('图片链接无效或已过期')
                     }
+                  } catch (error) {
+                    console.error('Failed to load image via proxy:', error)
+                    alert('图片链接无效或已过期')
                   }
                 }
                 fallback.appendChild(link)
@@ -261,14 +240,15 @@ function renderCQCode(cq: CQCode, key: number, isSelf: boolean = false): React.R
 
     case 'video':
       const videoSrc = cq.params.url || cq.params.file
+      const finalVideoSrc = videoSrc ? buildMediaProxyUrl('video', { url: cq.params.url, file: cq.params.file }) : ''
       const fileSize = cq.params.file_size ? parseInt(cq.params.file_size) : 0
       const fileSizeMB = fileSize > 0 ? (fileSize / 1024 / 1024).toFixed(2) : ''
       
       return (
         <div key={`video-${key}`} className="my-2">
-          {videoSrc && (videoSrc.startsWith('http://') || videoSrc.startsWith('https://')) ? (
+          {videoSrc ? (
             <video
-              src={videoSrc}
+              src={finalVideoSrc}
               controls
               className="max-w-sm max-h-64 rounded-lg"
               preload="metadata"
@@ -285,7 +265,7 @@ function renderCQCode(cq: CQCode, key: number, isSelf: boolean = false): React.R
                   {fileSizeMB && <p className="text-xs text-gray-400">大小: {fileSizeMB} MB</p>}
                   {videoSrc && (
                     <a
-                      href={videoSrc}
+                      href={finalVideoSrc}
                       target="_blank"
                       rel="noopener noreferrer"
                       className="text-xs text-blue-600 hover:underline mt-1 block"
@@ -301,19 +281,37 @@ function renderCQCode(cq: CQCode, key: number, isSelf: boolean = false): React.R
       )
 
     case 'record':
+      const recordRaw = cq.params.url || cq.params.file
+      if (!recordRaw) {
+        return (
+          <span key={`audio-${key}`} className="text-gray-500 text-sm">
+            [语音]
+          </span>
+        )
+      }
+      const recordSrc = buildMediaProxyUrl('record', { url: cq.params.url, file: cq.params.file })
       return (
         <div key={`audio-${key}`} className="my-1">
-          <audio src={cq.params.url || cq.params.file} controls className="max-w-xs">
+          <audio src={recordSrc} controls className="max-w-xs">
             您的浏览器不支持音频播放
           </audio>
         </div>
       )
 
     case 'file':
+      const fileRaw = cq.params.url || cq.params.file
+      if (!fileRaw) {
+        return (
+          <span key={`file-${key}`} className="text-gray-500 text-sm">
+            [文件]
+          </span>
+        )
+      }
+      const fileSrc = buildMediaProxyUrl('file', { url: cq.params.url, file: cq.params.file })
       return (
         <a
           key={`file-${key}`}
-          href={cq.params.url || cq.params.file}
+          href={fileSrc}
           target="_blank"
           rel="noopener noreferrer"
           className="inline-flex items-center gap-1 text-blue-600 hover:text-blue-700 underline"
@@ -351,4 +349,3 @@ export function buildCQCode(type: string, params: Record<string, string>): strin
     .join(',')
   return `[CQ:${type}${paramStr ? ',' + paramStr : ''}]`
 }
-

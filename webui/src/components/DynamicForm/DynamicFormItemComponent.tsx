@@ -1,6 +1,7 @@
 import { X, Plus, Upload } from 'lucide-react'
 import { FieldConfig } from './DynamicFormComponent'
 import { useState } from 'react'
+import { useTranslation } from 'react-i18next'
 import { api } from '@/utils/api'
 
 interface DynamicFormItemComponentProps {
@@ -18,13 +19,14 @@ export default function DynamicFormItemComponent({
   onChange,
   onFileUploaded,
 }: DynamicFormItemComponentProps) {
+  const { t } = useTranslation()
   const [uploading, setUploading] = useState(false)
 
   const handleFileUpload = async (file: File): Promise<{ file_key: string; mimetype: string } | null> => {
     const MAX_FILE_SIZE = 10 * 1024 * 1024 // 10MB
 
     if (file.size > MAX_FILE_SIZE) {
-      alert('文件大小不能超过 10MB')
+      alert(t('dynamicForm.fileTooLarge'))
       return null
     }
 
@@ -34,7 +36,9 @@ export default function DynamicFormItemComponent({
       onFileUploaded?.(response.file_key)
       return { file_key: response.file_key, mimetype: file.type }
     } catch (error) {
-      alert('文件上传失败: ' + (error as Error).message)
+      alert(
+        t('dynamicForm.uploadError', { message: (error as Error).message })
+      )
       return null
     } finally {
       setUploading(false)
@@ -85,7 +89,7 @@ export default function DynamicFormItemComponent({
             onChange={(e) => onChange(e.target.checked)}
             className="rounded border-gray-300 text-primary-600"
           />
-          <span className="text-sm text-gray-600">启用</span>
+          <span className="text-sm text-gray-600">{t('dynamicForm.booleanHint')}</span>
         </label>
       )
 
@@ -108,7 +112,7 @@ export default function DynamicFormItemComponent({
           className="input w-full"
           required={config.required}
         >
-          <option value="">请选择</option>
+          <option value="">{t('dynamicForm.selectPlaceholder')}</option>
           {config.options?.map((opt) => (
             <option key={opt.value} value={opt.value}>
               {opt.label}
@@ -123,7 +127,7 @@ export default function DynamicFormItemComponent({
         <div className="space-y-2">
           {arrayValue.length === 0 ? (
             <div className="text-sm text-gray-500 py-2 border border-dashed border-gray-300 rounded p-3 text-center">
-              暂无项目，点击下方"添加项"按钮添加
+              {t('dynamicForm.emptyArray')}
             </div>
           ) : (
             arrayValue.map((item: any, index: number) => (
@@ -137,7 +141,7 @@ export default function DynamicFormItemComponent({
                     onChange(newArray)
                   }}
                   className="input flex-1"
-                  placeholder={config.items?.type === 'string' ? '输入值' : '输入值'}
+                  placeholder={config.items?.type === 'string' ? '' : ''}
                 />
                 <button
                   type="button"
@@ -160,7 +164,7 @@ export default function DynamicFormItemComponent({
             className="btn btn-primary text-sm flex items-center gap-2 w-full justify-center py-2"
           >
             <Plus className="h-4 w-4" />
-            添加项
+            {t('dynamicForm.addItem')}
           </button>
         </div>
       )
@@ -215,7 +219,7 @@ export default function DynamicFormItemComponent({
                 className="btn btn-primary text-sm flex items-center gap-2"
               >
                 <Upload className="w-4 h-4" />
-                {uploading ? '上传中...' : '选择文件'}
+                {uploading ? t('dynamicForm.uploading') : t('dynamicForm.uploadFile')}
               </button>
             </div>
           )}
@@ -275,21 +279,23 @@ export default function DynamicFormItemComponent({
               className="btn btn-primary text-sm flex items-center gap-2 w-full justify-center py-2"
             >
               <Plus className="w-4 h-4" />
-              {uploading ? '上传中...' : '添加文件'}
+              {uploading ? t('dynamicForm.uploading') : t('dynamicForm.addFile')}
             </button>
           </div>
         </div>
       )
 
     default:
-      // Fallback: 未知类型使用文本输入框
+      // Fallback: 
       return (
         <input
           type="text"
           value={value || ''}
           onChange={(e) => onChange(e.target.value)}
           className="input w-full"
-          placeholder={`类型: ${config.type || 'unknown'}`}
+          placeholder={t('dynamicForm.unknownField', {
+            type: config.type || 'unknown',
+          })}
         />
       )
   }

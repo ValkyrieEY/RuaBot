@@ -15,9 +15,9 @@ export default function SplashScreen({ onComplete }: SplashScreenProps) {
         await new Promise(resolve => setTimeout(resolve, 800)) 
         
         setStage('intro')
-        await new Promise(resolve => setTimeout(resolve, 3000)) // 增加显示时间
+        await new Promise(resolve => setTimeout(resolve, 3000)) // 
         
-        // 等待 intro 淡出动画完成（duration-1000 = 1秒）
+        //  intro duration-1000 = 1
         await new Promise(resolve => setTimeout(resolve, 1200)) 
         
         setStage('brand')
@@ -48,24 +48,24 @@ export default function SplashScreen({ onComplete }: SplashScreenProps) {
     <div className={`fixed inset-0 z-[9999] flex items-center justify-center overflow-hidden transition-colors duration-1000 ${
       stage === 'transition' || stage === 'complete' ? 'bg-white' : 'bg-[#050505]'
     }`}>
-      {/* 动态极光背景 */}
+      {/*  */}
       <div className="absolute inset-0 overflow-hidden pointer-events-none">
         <div className="absolute top-[-20%] left-[-10%] w-[70%] h-[70%] bg-blue-600/20 blur-[150px] rounded-full animate-aurora-1" />
         <div className="absolute bottom-[-20%] right-[-10%] w-[80%] h-[80%] bg-purple-600/20 blur-[180px] rounded-full animate-aurora-2" />
         <div className="absolute top-[20%] right-[10%] w-[50%] h-[50%] bg-indigo-600/15 blur-[120px] rounded-full animate-aurora-3" />
       </div>
 
-      {/* 噪点与颗粒感 */}
+      {/*  */}
       <div className="absolute inset-0 opacity-[0.05] pointer-events-none mix-blend-overlay bg-[url('https://grainy-gradients.vercel.app/noise.svg')]" />
 
       <div className="relative z-10 w-full h-full flex items-center justify-center">
         
-        {/* Intro Stage: "嗨" */}
+        {/* Intro Stage: "" */}
         <div className={`absolute transition-all duration-1000 ease-in-out flex flex-col items-center ${
           stage === 'intro' ? 'opacity-100 translate-y-0 scale-100 rotate-0' : 'opacity-0 translate-y-12 scale-90 rotate-2 pointer-events-none'
         }`}>
           <div className="text-6xl md:text-[10rem] font-black bg-clip-text text-transparent bg-gradient-to-b from-white via-white to-white/20 mb-6 tracking-tighter leading-none">
-            嗨，别来无恙
+            
           </div>
           <div className="text-xl md:text-2xl text-blue-400 font-light tracking-[0.5em] uppercase opacity-60 text-center px-4">
             Welcome back to your dashboard
@@ -93,17 +93,17 @@ export default function SplashScreen({ onComplete }: SplashScreenProps) {
             Building the <span className="text-white font-normal">Next-Gen</span> Intelligence
           </div>
           
-          {/* 进入按钮 */}
+          {/*  */}
           <button
             onClick={handleEnter}
             className="px-12 py-4 bg-gradient-to-r from-blue-500 to-purple-500 text-white font-semibold text-lg rounded-full shadow-lg hover:shadow-xl hover:scale-105 transition-all duration-300 backdrop-blur-sm border border-white/20"
           >
-            进入系统
+            
           </button>
         </div>
       </div>
 
-      {/* 增强型扫描线 */}
+      {/*  */}
       <div className="absolute inset-0 pointer-events-none">
         <div className="absolute inset-0 bg-gradient-to-b from-transparent via-blue-500/10 to-transparent h-[2px] w-full animate-scan" />
         <div className="absolute inset-0 bg-[radial-gradient(circle_at_50%_50%,rgba(59,130,246,0.05)_0%,rgba(0,0,0,0)_70%)]" />

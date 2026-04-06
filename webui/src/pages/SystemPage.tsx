@@ -7,11 +7,9 @@ interface SystemConfig {
   app_name: string
   app_version: string
   environment: string
-  debug: boolean
   log_level: string
   plugin_auto_load: boolean
   web_ui_enabled: boolean
-  ai_thread_pool_enabled?: boolean
   plugin_thread_pool_enabled?: boolean
 }
 
@@ -31,13 +29,10 @@ export default function SystemPage() {
   const [passwordSuccess, setPasswordSuccess] = useState(false)
   const [passwordError, setPasswordError] = useState('')
   
-  // AI Thread Pool config
-  const [aiThreadPoolEnabled, setAiThreadPoolEnabled] = useState(true)
-  
   // Plugin Thread Pool config
   const [pluginThreadPoolEnabled, setPluginThreadPoolEnabled] = useState(true)
   
-  // 用于防止竞态条件
+  // 
   const loadingRequestRef = useRef(0)
 
   useEffect(() => {
@@ -47,28 +42,26 @@ export default function SystemPage() {
   const loadConfig = async () => {
     const currentRequest = ++loadingRequestRef.current
     setLoading(true)
-    setError('') // 清除之前的错误
+    setError('') // 
     
     try {
       const data = await api.getSystemConfig()
       
-      // 只有最新的请求才更新状态
+      // 
       if (currentRequest !== loadingRequestRef.current) {
         return
       }
       
-      // 验证数据完整性
+      // 
       if (!data || typeof data !== 'object') {
         throw new Error('Invalid configuration data received')
       }
       
       setConfig(data)
-      // Load AI Thread Pool config
-      setAiThreadPoolEnabled(data.ai_thread_pool_enabled !== undefined ? data.ai_thread_pool_enabled : true)
       // Load Plugin Thread Pool config
       setPluginThreadPoolEnabled(data.plugin_thread_pool_enabled !== undefined ? data.plugin_thread_pool_enabled : true)
     } catch (err: any) {
-      // 只有最新的请求才更新错误状态
+      // 
       if (currentRequest !== loadingRequestRef.current) {
         return
       }
@@ -79,7 +72,7 @@ export default function SystemPage() {
                           t('system.loadConfigFailed')
       setError(errorMessage)
     } finally {
-      // 只有最新的请求才更新加载状态
+      // 
       if (currentRequest === loadingRequestRef.current) {
         setLoading(false)
       }
@@ -97,9 +90,7 @@ export default function SystemPage() {
     try {
       const updateData: any = {
         web_ui_enabled: config.web_ui_enabled,
-        debug: config.debug,
         log_level: config.log_level,
-        ai_thread_pool_enabled: aiThreadPoolEnabled,
         plugin_thread_pool_enabled: pluginThreadPoolEnabled,
       }
       
@@ -220,26 +211,6 @@ export default function SystemPage() {
           </button>
         </div>
 
-        {/* Debug Mode */}
-        <div className="flex items-center justify-between py-3 border-b border-gray-100">
-          <div>
-            <label className="text-sm font-medium text-gray-900">{t('system.debugMode')}</label>
-            <p className="text-xs text-gray-500 mt-1">{t('system.debugModeDesc')}</p>
-          </div>
-          <button
-            type="button"
-            onClick={() => setConfig({ ...config, debug: !config.debug })}
-            className="relative inline-flex h-6 w-11 items-center rounded-full transition-colors focus:outline-none focus:ring-2 focus:ring-primary-500 focus:ring-offset-2"
-            style={{ backgroundColor: config.debug ? '#3b82f6' : '#d1d5db' }}
-          >
-            <span
-              className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${
-                config.debug ? 'translate-x-6' : 'translate-x-1'
-              }`}
-            />
-          </button>
-        </div>
-
         {/* Log Level */}
         <div>
           <label className="label">{t('system.logLevelLabel')}</label>
@@ -256,53 +227,30 @@ export default function SystemPage() {
           </select>
         </div>
 
-        {/* AI Thread Pool Settings */}
-        <div className="border-t border-gray-200 pt-4 mt-4">
-          <h3 className="text-sm font-medium text-gray-900 mb-3">{t('system.aiThreadPool')}</h3>
-          
-          {/* Thread Pool Enabled */}
-          <div className="flex items-center justify-between py-3">
-            <div>
-              <label className="text-sm font-medium text-gray-900">{t('system.enableAiThreadPool')}</label>
-              <p className="text-xs text-gray-500 mt-1">{t('system.aiThreadPoolDesc')}</p>
-            </div>
-            <button
-              type="button"
-              onClick={() => setAiThreadPoolEnabled(!aiThreadPoolEnabled)}
-              className="relative inline-flex h-6 w-11 items-center rounded-full transition-colors focus:outline-none focus:ring-2 focus:ring-primary-500 focus:ring-offset-2"
-              style={{ backgroundColor: aiThreadPoolEnabled ? '#3b82f6' : '#d1d5db' }}
-            >
-              <span
-                className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${
-                  aiThreadPoolEnabled ? 'translate-x-6' : 'translate-x-1'
-                }`}
-              />
-            </button>
-          </div>
-        </div>
-
         {/* Plugin Thread Pool Settings */}
         <div className="border-t border-gray-200 pt-4 mt-4">
           <h3 className="text-sm font-medium text-gray-900 mb-3">{t('system.pluginThreadPool')}</h3>
           
           {/* Plugin Thread Pool Enabled */}
-          <div className="flex items-center justify-between py-3">
-            <div>
-              <label className="text-sm font-medium text-gray-900">{t('system.enablePluginThreadPool')}</label>
-              <p className="text-xs text-gray-500 mt-1">{t('system.pluginThreadPoolDesc')}</p>
+          <div className="flex items-center justify-between gap-3 py-3">
+            <div className="min-w-0 pr-2">
+              <label className="text-sm font-medium text-gray-900 whitespace-nowrap">{t('system.enablePluginThreadPool')}</label>
+              <p className="text-xs text-gray-500 mt-1 truncate">{t('system.pluginThreadPoolDesc')}</p>
             </div>
-            <button
-              type="button"
-              onClick={() => setPluginThreadPoolEnabled(!pluginThreadPoolEnabled)}
-              className="relative inline-flex h-6 w-11 items-center rounded-full transition-colors focus:outline-none focus:ring-2 focus:ring-primary-500 focus:ring-offset-2"
-              style={{ backgroundColor: pluginThreadPoolEnabled ? '#f59e0b' : '#d1d5db' }}
-            >
-              <span
-                className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${
-                  pluginThreadPoolEnabled ? 'translate-x-6' : 'translate-x-1'
-                }`}
-              />
-            </button>
+            <div className="flex-shrink-0">
+              <button
+                type="button"
+                onClick={() => setPluginThreadPoolEnabled(!pluginThreadPoolEnabled)}
+                className="relative inline-flex h-6 w-11 items-center rounded-full transition-colors focus:outline-none focus:ring-2 focus:ring-primary-500 focus:ring-offset-2"
+                style={{ backgroundColor: pluginThreadPoolEnabled ? '#f59e0b' : '#d1d5db' }}
+              >
+                <span
+                  className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${
+                    pluginThreadPoolEnabled ? 'translate-x-6' : 'translate-x-1'
+                  }`}
+                />
+              </button>
+            </div>
           </div>
         </div>
 

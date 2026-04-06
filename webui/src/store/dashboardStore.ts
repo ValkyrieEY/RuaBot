@@ -10,6 +10,7 @@ interface ThreadPoolHistoryItem {
   time: string
   tasks: number
   timestamp: number
+  total?: number // Optional: store cumulative total for trend calculation
 }
 
 interface ThreadPoolHistory {

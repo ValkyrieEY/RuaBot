@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { api, type MessageLog } from '@/utils/api'
 import { MessageSquare, User, Users, Clock, RefreshCw, Bell, UserPlus, Wifi, WifiOff } from 'lucide-react'
@@ -12,23 +12,70 @@ export default function MessageLogPage() {
   const [limit, setLimit] = useState(100)
   const [autoRefresh, setAutoRefresh] = useState(true)
   const [filter, setFilter] = useState<'all' | 'message' | 'notice' | 'request'>('all')
+  const messagesRef = useRef<MessageLog[]>([])
+
+  const getEventKey = (msg: MessageLog) => {
+    return (
+      msg.id ||
+      `${(msg as any).event_type || ''}:${(msg as any).message_id || ''}:${msg.time || (msg as any).timestamp || ''}:${msg.raw_message || msg.message || ''}`
+    )
+  }
+
+  const getEventTime = (msg: MessageLog) => {
+    const raw = msg.time || (msg as any).timestamp
+    const ts = raw ? new Date(raw).getTime() : 0
+    return Number.isNaN(ts) ? 0 : ts
+  }
+
+  const getMaxDbRowId = (list: MessageLog[]) => {
+    return list.reduce((max, item) => {
+      const rowId = Number(item.db_row_id || 0)
+      return rowId > max ? rowId : max
+    }, 0)
+  }
+
+  const mergeMessageLists = (base: MessageLog[], incoming: MessageLog[], nextLimit: number) => {
+    const byKey = new Map<string, MessageLog>()
+
+    const upsert = (msg: MessageLog) => {
+      const key = getEventKey(msg)
+      const existing = byKey.get(key)
+      if (!existing) {
+        byKey.set(key, msg)
+        return
+      }
+
+      const oldRowId = Number(existing.db_row_id || 0)
+      const newRowId = Number(msg.db_row_id || 0)
+      if (newRowId > oldRowId) {
+        byKey.set(key, { ...existing, ...msg })
+      } else if (newRowId === oldRowId) {
+        byKey.set(key, { ...existing, ...msg })
+      }
+    }
+
+    base.forEach(upsert)
+    incoming.forEach(upsert)
+
+    return Array.from(byKey.values())
+      .sort((a, b) => {
+        const bRow = Number(b.db_row_id || 0)
+        const aRow = Number(a.db_row_id || 0)
+        if (bRow !== aRow) return bRow - aRow
+        return getEventTime(b) - getEventTime(a)
+      })
+      .slice(0, nextLimit)
+  }
 
   // WebSocket for real-time updates
   const { isConnected } = useWebSocket({
     onMessage: (wsMessage: WebSocketMessage) => {
-      // Add new message to the top of the list
-      setMessages((prev) => {
-        // Check if message already exists (by id)
-        if (prev.some((m) => m.id === wsMessage.id)) {
-          return prev
-        }
-        // Add new message and maintain limit
-        const newMessages = [wsMessage as MessageLog, ...prev]
-        return newMessages.slice(0, limit)
-      })
+      setMessages((prev) => mergeMessageLists(prev, [wsMessage as MessageLog], limit))
     },
     onConnected: () => {
       console.log('[MessageLog] WebSocket connected')
+      // WS reconnect catch-up: fetch persisted rows newer than current DB cursor.
+      compensateMissedMessages()
     },
     onDisconnected: () => {
       console.log('[MessageLog] WebSocket disconnected')
@@ -36,11 +83,21 @@ export default function MessageLogPage() {
   })
 
   useEffect(() => {
+    messagesRef.current = messages
+  }, [messages])
+
+  useEffect(() => {
     loadMessages()
-    // Still use polling as fallback, but with longer interval (30 seconds)
+    // Polling fallback while WebSocket is disconnected.
     let interval: ReturnType<typeof setInterval> | null = null
     if (autoRefresh && !isConnected) {
-      interval = setInterval(loadMessages, 30000) // Fallback polling every 30 seconds when WebSocket disconnected
+      interval = setInterval(() => {
+        if (messagesRef.current.length === 0) {
+          loadMessages()
+        } else {
+          compensateMissedMessages()
+        }
+      }, 5000)
     }
     return () => {
       if (interval) clearInterval(interval)
@@ -61,6 +118,26 @@ export default function MessageLogPage() {
     } finally {
       setLoading(false)
       setRefreshing(false)
+    }
+  }
+
+  const compensateMissedMessages = async (showRefreshing = false) => {
+    const cursor = getMaxDbRowId(messagesRef.current)
+    if (!cursor) {
+      await loadMessages(showRefreshing)
+      return
+    }
+
+    if (showRefreshing) setRefreshing(true)
+    try {
+      const delta = await api.getMessageLog(limit, cursor)
+      if (delta.length > 0) {
+        setMessages((prev) => mergeMessageLists(prev, delta, limit))
+      }
+    } catch (error) {
+      console.error('Failed to compensate missed messages:', error)
+    } finally {
+      if (showRefreshing) setRefreshing(false)
     }
   }
 
@@ -152,7 +229,7 @@ export default function MessageLogPage() {
             <option value={500}>500条</option>
           </select>
           <button
-            onClick={() => loadMessages(true)}
+            onClick={() => compensateMissedMessages(true)}
             disabled={refreshing}
             className="btn btn-secondary flex items-center justify-center gap-1 disabled:opacity-50 disabled:cursor-not-allowed whitespace-nowrap text-xs px-2 py-1.5"
           >

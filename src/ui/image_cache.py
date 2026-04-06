@@ -8,10 +8,13 @@ import asyncio
 import hashlib
 import re
 import httpx
+import mimetypes
+import shutil
 from pathlib import Path
 from typing import Optional, Dict, Any
 from datetime import datetime, timedelta
 import aiofiles
+from urllib.parse import urlparse, parse_qs
 
 from ..core.logger import get_logger
 from ..core.app import get_app
@@ -44,6 +47,13 @@ class ImageCacheManager:
         self._cleanup_task: Optional[asyncio.Task] = None
         
         logger.info(f"Image cache manager initialized: {self.cache_dir}")
+
+    _MEDIA_EXTENSIONS = {
+        "image": ["jpg", "jpeg", "png", "gif", "webp", "bmp"],
+        "video": ["mp4", "webm", "mov", "mkv", "avi", "flv"],
+        "record": ["mp3", "wav", "ogg", "m4a", "amr", "silk"],
+        "file": ["bin", "zip", "rar", "7z", "pdf", "txt", "doc", "docx", "xlsx", "pptx"],
+    }
     
     def _get_image_hash(self, url: str) -> str:
         """Generate hash for image URL."""
@@ -53,7 +63,246 @@ class ImageCacheManager:
         """Get cache file path for an image URL."""
         image_hash = self._get_image_hash(url)
         return self.cache_dir / f"{image_hash}.{file_extension}"
-    
+
+    def _guess_extension(self, resolved_url: str, content_type: str, media_kind: str) -> str:
+        """Guess extension from content type / URL / media kind fallback."""
+        # 0) Query hints (QQ download URL often carries ?format=amr)
+        try:
+            query = parse_qs(urlparse(resolved_url).query or "")
+            fmt = (query.get("format") or [None])[0]
+            if fmt:
+                fmt = str(fmt).strip().lower()
+                if fmt:
+                    return fmt
+        except Exception:
+            pass
+
+        # 1) Prefer content-type
+        guessed_from_ct = mimetypes.guess_extension((content_type or "").split(";")[0].strip())
+        if guessed_from_ct:
+            ext = guessed_from_ct.lstrip(".").lower()
+            if ext:
+                return ext
+
+        # 2) Try URL suffix
+        parsed = urlparse(resolved_url)
+        suffix = Path(parsed.path or "").suffix.lower().lstrip(".")
+        if suffix:
+            return suffix
+
+        # 3) Fallback by media kind
+        if media_kind == "video":
+            return "mp4"
+        if media_kind == "record":
+            return "amr"
+        if media_kind == "file":
+            return "bin"
+        return "jpg"
+
+    async def ensure_browser_playable_record(self, source_path: str) -> str:
+        """Convert unsupported record formats (amr/silk) to browser-playable wav."""
+        src = Path(source_path)
+        if not src.exists() or not src.is_file():
+            return source_path
+
+        def detect_audio_format(path: Path) -> str:
+            try:
+                header = path.read_bytes()[:16]
+            except Exception:
+                return "unknown"
+            if header.startswith(b"#!AMR"):
+                return "amr"
+            if header.startswith(b"#!SILK_V3"):
+                return "silk"
+            if header.startswith(b"RIFF"):
+                return "wav"
+            if header.startswith(b"OggS"):
+                return "ogg"
+            if header.startswith(b"ID3"):
+                return "mp3"
+            if len(header) >= 2 and header[0] == 0xFF and (header[1] & 0xE0) == 0xE0:
+                return "mp3"
+            return "unknown"
+
+        ext = src.suffix.lower().lstrip(".")
+        actual_fmt = detect_audio_format(src)
+
+        # Formats commonly supported by browsers (by real content, not extension).
+        if actual_fmt in {"mp3", "wav", "ogg"}:
+            return source_path
+        if actual_fmt == "unknown" and ext in {"mp3", "wav", "ogg", "m4a", "webm"}:
+            return source_path
+
+        # Only convert formats likely unsupported in browser.
+        needs_convert = actual_fmt in {"amr", "silk"} or ext in {"amr", "silk"}
+        if not needs_convert:
+            return source_path
+
+        ffmpeg_bin = shutil.which("ffmpeg")
+
+        target = src.with_suffix(".web.wav")
+
+        def transcode_with_pyav_sync(in_path: Path, out_path: Path) -> bool:
+            try:
+                import av  # Optional dependency
+
+                in_container = av.open(str(in_path))
+                out_container = av.open(str(out_path), mode="w")
+                out_stream = out_container.add_stream("pcm_s16le", rate=24000)
+                out_stream.layout = "mono"
+
+                for frame in in_container.decode(audio=0):
+                    frame.pts = None
+                    for packet in out_stream.encode(frame):
+                        out_container.mux(packet)
+
+                for packet in out_stream.encode(None):
+                    out_container.mux(packet)
+
+                out_container.close()
+                in_container.close()
+                return out_path.exists() and out_path.stat().st_size > 0
+            except Exception:
+                return False
+
+        try:
+            if (
+                target.exists()
+                and target.is_file()
+                and target.stat().st_size > 0
+                and target.stat().st_mtime >= src.stat().st_mtime
+            ):
+                return str(target)
+
+            # Prefer PyAV (Python dependency) for distributable packaging.
+            pyav_ok = await asyncio.to_thread(transcode_with_pyav_sync, src, target)
+            if pyav_ok:
+                logger.info(f"Converted record for web playback via PyAV: {src} -> {target}")
+                return str(target)
+
+            if not ffmpeg_bin:
+                logger.debug(
+                    f"Neither PyAV transcode nor ffmpeg available for record: {src} "
+                    f"(ext={ext}, actual={actual_fmt})"
+                )
+                return source_path
+
+            proc = await asyncio.create_subprocess_exec(
+                ffmpeg_bin,
+                "-y",
+                "-i",
+                str(src),
+                "-vn",
+                "-ac",
+                "1",
+                "-ar",
+                "24000",
+                str(target),
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            _, stderr = await proc.communicate()
+            if proc.returncode == 0 and target.exists() and target.stat().st_size > 0:
+                logger.info(f"Converted record for web playback: {src} -> {target}")
+                return str(target)
+
+            if target.exists():
+                try:
+                    target.unlink()
+                except Exception:
+                    pass
+            logger.warning(
+                "Failed to transcode record for web playback: "
+                f"{src}, returncode={proc.returncode}, stderr={stderr.decode(errors='ignore')[:300]}"
+            )
+            return source_path
+        except Exception as e:
+            logger.warning(f"Record transcode error for {src}: {e}")
+            return source_path
+
+    async def _resolve_media_url(self, media_ref: str, onebot_adapter=None, media_kind: str = "image") -> Optional[str]:
+        """Resolve OneBot file references into downloadable URL when possible."""
+        if media_ref.startswith("http://") or media_ref.startswith("https://"):
+            return media_ref
+
+        # Local file URI/path can be served directly by upper layers; no download URL needed.
+        if media_ref.startswith("file://"):
+            return media_ref
+
+        if not onebot_adapter:
+            return None
+
+        try:
+            if media_kind == "image":
+                image_info = await onebot_adapter.call_api("get_image", {"file": media_ref})
+                if isinstance(image_info, dict):
+                    return image_info.get("url")
+                return None
+        except Exception as e:
+            logger.warning(f"Failed to resolve media URL from OneBot ({media_kind}): {media_ref}, error: {e}")
+            return None
+
+        # OneBot v11 has no generic "get_video"/"get_file" URL API in many implementations.
+        return None
+
+    async def get_cached_media_path(self, media_ref: str, media_kind: str = "image") -> Optional[str]:
+        """Get cached media path if exists."""
+        exts = self._MEDIA_EXTENSIONS.get(media_kind, self._MEDIA_EXTENSIONS["file"])
+        for ext in exts:
+            cache_path = self._get_cache_path(media_ref, ext)
+            if cache_path.exists():
+                return str(cache_path)
+        return None
+
+    async def download_and_cache_media(
+        self,
+        media_ref: str,
+        onebot_adapter=None,
+        media_kind: str = "image",
+    ) -> Optional[str]:
+        """Download and cache media (image/video/record/file)."""
+        original_ref = media_ref
+        try:
+            resolved = await self._resolve_media_url(media_ref, onebot_adapter=onebot_adapter, media_kind=media_kind)
+            if not resolved:
+                logger.warning(f"Could not resolve media reference to URL: {original_ref}")
+                return None
+
+            # file:// resources should be handled by caller directly, not downloaded.
+            if resolved.startswith("file://"):
+                return None
+
+            cached_existing = await self.get_cached_media_path(resolved, media_kind=media_kind)
+            if cached_existing and Path(cached_existing).exists():
+                return cached_existing
+
+            headers = {
+                "Referer": "https://qzone.qq.com/",
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            }
+            async with httpx.AsyncClient(follow_redirects=True, timeout=30.0) as client:
+                response = await client.get(resolved, headers=headers)
+                response.raise_for_status()
+                content_type = response.headers.get("content-type", "")
+                file_ext = self._guess_extension(resolved, content_type, media_kind)
+                cache_path = self._get_cache_path(resolved, file_ext)
+                async with aiofiles.open(cache_path, "wb") as f:
+                    await f.write(response.content)
+                logger.info(
+                    f"Media cached successfully: {cache_path} ({len(response.content)} bytes) "
+                    f"kind={media_kind} from {original_ref}"
+                )
+                return str(cache_path)
+        except httpx.HTTPStatusError as e:
+            logger.warning(f"HTTP error caching media {original_ref}: {e.response.status_code} - {e.response.text[:100]}")
+            return None
+        except httpx.TimeoutException:
+            logger.warning(f"Timeout caching media {original_ref}")
+            return None
+        except Exception as e:
+            logger.warning(f"Failed to cache media {original_ref}: {e}", exc_info=True)
+            return None
+
     async def download_and_cache_image(self, image_url: str, onebot_adapter=None) -> Optional[str]:
         """
         Download and cache an image from URL.
@@ -65,77 +314,7 @@ class ImageCacheManager:
         Returns:
             Local file path if successful, None otherwise
         """
-        try:
-            original_ref = image_url  # Save original reference for logging
-            
-            # If it's a CQ image file reference (not a full URL), try to get URL from OneBot
-            if not image_url.startswith('http://') and not image_url.startswith('https://'):
-                if onebot_adapter:
-                    try:
-                        image_info = await onebot_adapter.call_api('get_image', {'file': image_url})
-                        if image_info and isinstance(image_info, dict):
-                            image_url = image_info.get('url', '')
-                            if not image_url:
-                                logger.warning(f"Could not get URL for image file: {original_ref}")
-                                return None
-                            logger.debug(f"Got image URL from OneBot for file {original_ref}: {image_url[:50]}...")
-                        else:
-                            logger.warning(f"get_image API returned invalid response for file {original_ref}: {image_info}")
-                            return None
-                    except Exception as e:
-                        logger.warning(f"Failed to get image URL from OneBot for file {original_ref}: {e}")
-                        return None
-                else:
-                    logger.warning(f"Image reference is not a URL and no OneBot adapter available: {original_ref}")
-                    return None
-            
-            # Check if already cached (try all common extensions)
-            for ext in ['jpg', 'jpeg', 'png', 'gif', 'webp']:
-                cache_path = self._get_cache_path(image_url, ext)
-                if cache_path.exists():
-                    logger.debug(f"Image already cached: {cache_path}")
-                    return str(cache_path)
-            
-            # Download image
-            headers = {
-                'Referer': 'https://qzone.qq.com/',
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
-            }
-            
-            async with httpx.AsyncClient(follow_redirects=True, timeout=30.0) as client:
-                response = await client.get(image_url, headers=headers)
-                response.raise_for_status()
-                
-                # Determine file extension from content-type or URL
-                content_type = response.headers.get('content-type', 'image/jpeg')
-                if 'png' in content_type:
-                    file_ext = 'png'
-                elif 'gif' in content_type:
-                    file_ext = 'gif'
-                elif 'webp' in content_type:
-                    file_ext = 'webp'
-                else:
-                    file_ext = 'jpg'
-                
-                # Update cache path with correct extension
-                cache_path = self._get_cache_path(image_url, file_ext)
-                
-                # Save to cache
-                async with aiofiles.open(cache_path, 'wb') as f:
-                    await f.write(response.content)
-                
-                logger.info(f"Image cached successfully: {cache_path} ({len(response.content)} bytes) from {original_ref}")
-                return str(cache_path)
-                
-        except httpx.HTTPStatusError as e:
-            logger.warning(f"HTTP error caching image {original_ref}: {e.response.status_code} - {e.response.text[:100]}")
-            return None
-        except httpx.TimeoutException:
-            logger.warning(f"Timeout caching image {original_ref}")
-            return None
-        except Exception as e:
-            logger.warning(f"Failed to cache image {original_ref}: {e}", exc_info=True)
-            return None
+        return await self.download_and_cache_media(image_url, onebot_adapter=onebot_adapter, media_kind="image")
     
     async def get_cached_image_path(self, image_url: str) -> Optional[str]:
         """
@@ -147,12 +326,7 @@ class ImageCacheManager:
         Returns:
             Local file path if cached, None otherwise
         """
-        # Try common extensions
-        for ext in ['jpg', 'jpeg', 'png', 'gif', 'webp']:
-            cache_path = self._get_cache_path(image_url, ext)
-            if cache_path.exists():
-                return str(cache_path)
-        return None
+        return await self.get_cached_media_path(image_url, media_kind="image")
     
     async def extract_and_cache_images(self, raw_message: str, onebot_adapter=None) -> Dict[str, str]:
         """

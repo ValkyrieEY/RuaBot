@@ -23,8 +23,8 @@ echo Build complete! Output: ..\src\ui\static
 
 REM Check if build succeeded
 if exist "..\src\ui\static\index.html" (
-    echo ✓ Build successful!
+    echo  Build successful!
 ) else (
-    echo ✗ Build failed!
+    echo  Build failed!
     exit /b 1
 )

@@ -13,7 +13,6 @@ from .logger import setup_logger, get_logger
 from .event_bus import EventBus, get_event_bus
 from .storage import Storage, init_storage
 from .database import DatabaseManager, get_database_manager
-from .ai_detector import is_ai_available
 
 logger = get_logger(__name__)
 
@@ -197,7 +196,7 @@ class Application:
                     # Use modified data if changed
                     if modified_ctx.is_modified():
                         plugin_payload = modified_ctx.event_data
-            
+
             # For notice events, also use event context system (but don't block by default)
             elif event.get('type') == 'notice':
                 from ..core.event_context import EventContext
@@ -221,30 +220,28 @@ class Application:
                         plugin_payload = modified_ctx.event_data
             
             # Also publish to regular event bus subscribers
-            await self.event_bus.publish(
+            published_event_id = await self.event_bus.publish(
                 event_name,
                 plugin_payload,  # Pass raw OneBot format to plugins
                 source="onebot"
             )
+            # Persist message log events for WebUI history recovery across WS disconnects.
+            if event.get('type') in ('message', 'notice', 'request') and self.db_manager:
+                try:
+                    await self.db_manager.create_message_event(
+                        event_id=published_event_id,
+                        event_name=event_name,
+                        payload=plugin_payload if isinstance(plugin_payload, dict) else {},
+                        source="onebot",
+                    )
+                except Exception as e:
+                    logger.warning(f"Failed to persist message event: {e}")
             logger.debug(f"Event published: {event_name}")
         
         self.onebot_adapter.on_event(handle_onebot_event)
         
         # Start adapter
         await self.onebot_adapter.start()
-        
-        # Initialize AI message handler (only if AI system is available)
-        if is_ai_available():
-            try:
-                from ..ai.message_handler import AIMessageHandler
-                self.ai_message_handler = AIMessageHandler()
-                await self.ai_message_handler.initialize()
-                logger.info("AI message handler initialized successfully")
-            except Exception as e:
-                logger.error(f"Failed to initialize AI message handler: {e}", exc_info=True)
-                logger.info("AI message handler disabled due to initialization error")
-        else:
-            logger.info("AI system not available, skipping AI message handler initialization")
         
         # Initialize image cache manager and cleanup on startup
         try:
@@ -257,132 +254,85 @@ class Application:
             logger.warning(f"Failed to initialize image cache manager: {e}")
         
         # Initialize plugin system
-        try:
-            from ..plugins.runtime import PluginRuntimeConnector
-            from ..plugins.interceptor import ExecutionMode
-            
-            # Read interceptor configuration from TOML file directly
-            # since Config is a Pydantic model and doesn't support .get() method
-            interceptor_config = {}
-            try:
-                project_root = Path(__file__).parent.parent.parent
-                toml_file = project_root / "config.toml"
-                if toml_file.exists():
-                    with open(toml_file, "rb") as f:
-                        toml_data = tomllib.load(f)
-                        plugins_config = toml_data.get('plugins', {})
-                        interceptor_config = plugins_config.get('interceptor', {})
-            except Exception as e:
-                logger.warning(f"Failed to read interceptor config from TOML: {e}")
-            
-            execution_mode_str = interceptor_config.get('execution_mode', 'hybrid')
-            
-            # Convert string to ExecutionMode enum
-            execution_mode_map = {
-                'serial': ExecutionMode.SERIAL,
-                'parallel': ExecutionMode.PARALLEL,
-                'hybrid': ExecutionMode.HYBRID
-            }
-            execution_mode = execution_mode_map.get(
-                execution_mode_str.lower(),
-                ExecutionMode.HYBRID
-            )
-            
-            self.plugin_connector = PluginRuntimeConnector(
-                event_bus=self.event_bus,
-                db_manager=self.db_manager,
-                app=self,  # Pass app instance for OneBot access
-                interceptor_mode=execution_mode
-            )
-            
-            # Configure circuit breaker and timeouts if specified
-            if 'circuit_breaker_threshold' in interceptor_config:
-                self.plugin_connector.interceptor_registry.configure_circuit_breaker(
-                    threshold=interceptor_config.get('circuit_breaker_threshold', 3),
-                    duration=interceptor_config.get('circuit_breaker_duration', 30.0)
-                )
-            
-            if 'base_timeout' in interceptor_config:
-                self.plugin_connector.interceptor_registry.configure_timeouts(
-                    base_timeout=interceptor_config.get('base_timeout', 3.0),
-                    max_timeout=interceptor_config.get('max_timeout', 10.0)
-                )
-            
-            await self.plugin_connector.initialize()
-            logger.info(
-                f"Plugin system initialized successfully "
-                f"(interceptor mode: {execution_mode.value})"
-            )
-        except Exception as e:
-            logger.error(f"Failed to initialize plugin system: {e}", exc_info=True)
-            logger.info("Plugin system disabled due to initialization error")
-
-        # Initialize and start maintenance tasks (Dream, Expression Check) - only if AI available
-        if is_ai_available():
-            try:
-                from ..ai.model_manager import ModelManager
-                from ..ai.dream import init_dream_scheduler
-                from ..ai.expression_auto_checker import start_expression_auto_check_scheduler
-                
-                model_manager = ModelManager()
-                await model_manager.initialize()
-                
-                # Get default model for maintenance tasks
-                default_model = await model_manager.get_default_model()
-                if default_model:
-                    model_with_secret = await model_manager.get_model_with_secret(default_model['uuid'])
-                    if model_with_secret:
-                        from ..ai.llm_client import LLMClient
-                        api_format = model_with_secret.get('config', {}).get('api_format', 'openai')
-                        llm_client = LLMClient(
-                            api_key=model_with_secret.get('api_key', ''),
-                            base_url=model_with_secret.get('base_url', ''),
-                            model_name=model_with_secret.get('model_name', ''),
-                            provider=model_with_secret.get('provider', 'openai'),
-                            api_format=api_format
-                        )
-                        
-                        # Start Dream Scheduler
-                        try:
-                            dream_scheduler = init_dream_scheduler(
-                                llm_client=llm_client,
-                                bot_name="AI助手",
-                                enabled=True,
-                                first_delay_seconds=300,  # 5分钟后首次运行
-                                interval_minutes=30  # 每30分钟运行一次
-                            )
-                            # start_background() returns a Task, store it directly
-                            self._tasks.append(dream_scheduler.start_background())
-                            logger.info("Dream scheduler started")
-                        except Exception as e:
-                            logger.error(f"Failed to start dream scheduler: {e}", exc_info=True)
-                        
-                        # Start Expression Auto Check Scheduler
-                        try:
-                            self.add_task(start_expression_auto_check_scheduler(
-                                llm_client=llm_client,
-                                interval_minutes=60,  # 每小时检查一次
-                                batch_size=10
-                            ))
-                            logger.info("Expression auto check scheduler started")
-                        except Exception as e:
-                            logger.error(f"Failed to start expression auto check: {e}", exc_info=True)
-                    else:
-                        logger.warning("Default model not found with secret, maintenance tasks disabled")
-                else:
-                    logger.warning("No default model configured, maintenance tasks disabled")
-            except Exception as e:
-                logger.error(f"Failed to start maintenance tasks: {e}", exc_info=True)
-                logger.info("Maintenance tasks disabled due to error")
+        if not getattr(self.config, 'plugin_auto_load', True):
+            logger.info("Plugin auto-load is disabled (plugins.auto_load = false in config.toml), skipping plugin system initialization")
         else:
-            logger.info("AI system not available, skipping maintenance tasks initialization")
+            try:
+                from ..plugins.runtime import PluginRuntimeConnector
+                from ..plugins.interceptor import ExecutionMode
+                
+                # Read interceptor configuration from TOML file directly
+                # since Config is a Pydantic model and doesn't support .get() method
+                interceptor_config = {}
+                try:
+                    project_root = Path(__file__).parent.parent.parent
+                    toml_file = project_root / "config.toml"
+                    if toml_file.exists():
+                        with open(toml_file, "rb") as f:
+                            toml_data = tomllib.load(f)
+                            plugins_config = toml_data.get('plugins', {})
+                            interceptor_config = plugins_config.get('interceptor', {})
+                except Exception as e:
+                    logger.warning(f"Failed to read interceptor config from TOML: {e}")
+                
+                execution_mode_str = interceptor_config.get('execution_mode', 'hybrid')
+                
+                # Convert string to ExecutionMode enum
+                execution_mode_map = {
+                    'serial': ExecutionMode.SERIAL,
+                    'parallel': ExecutionMode.PARALLEL,
+                    'hybrid': ExecutionMode.HYBRID
+                }
+                execution_mode = execution_mode_map.get(
+                    execution_mode_str.lower(),
+                    ExecutionMode.HYBRID
+                )
+                
+                self.plugin_connector = PluginRuntimeConnector(
+                    event_bus=self.event_bus,
+                    db_manager=self.db_manager,
+                    app=self,  # Pass app instance for OneBot access
+                    interceptor_mode=execution_mode
+                )
+                
+                # Configure circuit breaker and timeouts if specified
+                if 'circuit_breaker_threshold' in interceptor_config:
+                    self.plugin_connector.interceptor_registry.configure_circuit_breaker(
+                        threshold=interceptor_config.get('circuit_breaker_threshold', 3),
+                        duration=interceptor_config.get('circuit_breaker_duration', 30.0)
+                    )
+                
+                if 'base_timeout' in interceptor_config:
+                    self.plugin_connector.interceptor_registry.configure_timeouts(
+                        base_timeout=interceptor_config.get('base_timeout', 3.0),
+                        max_timeout=interceptor_config.get('max_timeout', 10.0)
+                    )
+                
+                await self.plugin_connector.initialize()
+                logger.info(
+                    f"Plugin system initialized successfully "
+                    f"(interceptor mode: {execution_mode.value})"
+                )
+            except Exception as e:
+                logger.error(f"Failed to initialize plugin system: {e}", exc_info=True)
+                logger.info("Plugin system disabled due to initialization error")
+
+        # Wire sandbox manager to plugins (for Web UI sandbox testing)
+        try:
+            from .sandbox.sandbox_manager import get_sandbox_manager
+            _sm = get_sandbox_manager()
+            if getattr(self, "plugin_connector", None):
+                _sm.set_plugin_connector(self.plugin_connector)
+            logger.info("Sandbox manager connected to plugin runtime")
+        except Exception as e:
+            logger.warning(f"Sandbox manager wiring skipped: {e}")
         
         # Start group data cleanup scheduler (runs daily)
         try:
             async def cleanup_expired_groups():
                 """Cleanup expired left group data daily."""
                 while True:
-                    await asyncio.sleep(86400)  # 每24小时运行一次
+                    await asyncio.sleep(86400)  # 24
                     try:
                         count = await self.db_manager.cleanup_expired_left_groups(days=30)
                         if count > 0:
@@ -394,6 +344,48 @@ class Application:
             logger.info("Group data cleanup scheduler started (runs daily)")
         except Exception as e:
             logger.error(f"Failed to start group cleanup scheduler: {e}", exc_info=True)
+
+        # Cleanup persisted message events daily to control DB size.
+        try:
+            retention_days = max(1, int(getattr(self.config, "message_event_retention_days", 7)))
+            max_rows = max(1000, int(getattr(self.config, "message_event_max_rows", 50000)))
+            interval_seconds = max(
+                300,
+                int(getattr(self.config, "message_event_cleanup_interval_seconds", 3600))
+            )
+
+            async def cleanup_message_events():
+                while True:
+                    try:
+                        deleted_by_days = await self.db_manager.cleanup_message_events(
+                            retention_days=retention_days
+                        )
+                        deleted_by_cap = await self.db_manager.truncate_message_events(
+                            max_rows=max_rows
+                        )
+                        deleted = deleted_by_days + deleted_by_cap
+                        if deleted > 0:
+                            logger.info(
+                                "Message event cleanup done",
+                                deleted=deleted,
+                                deleted_by_days=deleted_by_days,
+                                deleted_by_cap=deleted_by_cap,
+                                retention_days=retention_days,
+                                max_rows=max_rows,
+                            )
+                    except Exception as e:
+                        logger.error(f"Failed to cleanup message events: {e}", exc_info=True)
+                    await asyncio.sleep(interval_seconds)
+
+            self.add_task(cleanup_message_events())
+            logger.info(
+                "Message event cleanup scheduler started",
+                retention_days=retention_days,
+                max_rows=max_rows,
+                interval_seconds=interval_seconds,
+            )
+        except Exception as e:
+            logger.error(f"Failed to start message event cleanup scheduler: {e}", exc_info=True)
 
         # Publish startup event
         await self.event_bus.publish(

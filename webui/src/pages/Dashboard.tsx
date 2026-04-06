@@ -194,22 +194,38 @@ export default function Dashboard() {
       const data = await api.getThreadPoolStats()
       setThreadPoolStats(data)
       
-      // 更新历史数据数组（用于图表显示）
+      // 
       const now = Date.now()
       const prev = useDashboardStore.getState().threadPoolHistory
       const newHistory = { ...prev }
       
-      // Helper function to process history
-      const processHistory = (currentTasks: number, history: any[]) => {
+      // Helper function to process history with trend calculation
+      const processHistory = (currentTotalTasks: number, history: any[]) => {
+        // Ensure we have a valid number
+        const totalTasks = typeof currentTotalTasks === 'number' ? currentTotalTasks : 0
+        
+        // Calculate the change rate (tasks per interval)
+        let taskChange = 0
+        if (history.length > 0) {
+          const lastTotal = history[history.length - 1].total || 0
+          taskChange = Math.max(0, totalTasks - lastTotal)
+        } else {
+          // First data point, use current total as initial value
+          taskChange = totalTasks
+        }
+        
+        // Add new data point with both total and change rate
         const updated = [
           ...history,
           {
             time: 'Now',
-            tasks: currentTasks,
+            tasks: taskChange, // Show change rate (trend) instead of cumulative
+            total: totalTasks, // Keep total for next calculation
             timestamp: now
           }
-        ].slice(-12)
+        ].slice(-12) // Keep only last 12 points (1 minute of data at 5s intervals)
         
+        // Update time labels
         return updated.map((item, index) => {
           const totalPoints = updated.length
           const position = totalPoints - 1 - index
@@ -220,15 +236,21 @@ export default function Dashboard() {
             const seconds = position * 5
             timeLabel = seconds >= 60 ? `-${Math.floor(seconds / 60)}m` : `-${seconds}s`
           }
-          return { ...item, time: timeLabel }
+          return { 
+            ...item, 
+            time: timeLabel,
+            tasks: item.tasks || 0, // Ensure tasks is always a number
+            total: item.total || 0 // Keep total for trend calculation
+          }
         })
       }
 
-      if (data.ai_threadpool) {
-        newHistory.ai = processHistory(data.ai_threadpool.active_tasks || 0, prev.ai)
-      }
-      if (data.plugin_threadpool) {
-        newHistory.plugin = processHistory(data.plugin_threadpool.active_tasks || 0, prev.plugin)
+      // Update plugin thread pool history - show trend (change rate) instead of cumulative
+      if (data.plugin_threadpool && data.plugin_threadpool.initialized) {
+        const totalTasks = data.plugin_threadpool.total_tasks || 0
+        newHistory.plugin = processHistory(totalTasks, prev.plugin || [])
+      } else if (data.plugin_threadpool === null && prev.plugin && prev.plugin.length > 0) {
+        // If thread pool is disabled, keep existing history
       }
       
       useDashboardStore.getState().setThreadPoolHistory(newHistory)
@@ -252,6 +274,7 @@ export default function Dashboard() {
   const botOnline = status?.bot_status?.online
   const memoryPercent = status?.memory?.percent || 0
   const cpuPercent = status?.cpu?.usage || 0
+  const primaryThreadPoolStats = threadPoolStats?.plugin_threadpool ?? null
   
   // Formatters
   const formatBytes = (bytes: number) => {
@@ -301,7 +324,7 @@ export default function Dashboard() {
                 </span>
               </div>
               <h1 className="text-xl sm:text-3xl font-bold text-gray-900 tracking-tight">
-                {getTimeGreeting()}，{loginInfo?.nickname || 'User'}
+                {getTimeGreeting()},{loginInfo?.nickname || 'User'}
               </h1>
               <p className="text-sm sm:text-base text-gray-500 mt-1">
                 {t('dashboard.welcome.welcomeBack')}
@@ -524,29 +547,16 @@ export default function Dashboard() {
             </div>
           </div>
 
-          {/* Thread Pools */}
-          {threadPoolStats && (
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-              {threadPoolStats.ai_threadpool && (
-                <ThreadPoolMonitor
-                  stats={threadPoolStats.ai_threadpool}
-                  title="AI Processing"
-                  color="#3b82f6"
-                  icon={<Zap className="w-5 h-5 text-blue-500" />}
-                  historyData={threadPoolHistory.ai}
-                />
-              )}
-              {threadPoolStats.plugin_threadpool && (
-                <ThreadPoolMonitor
-                  stats={threadPoolStats.plugin_threadpool}
-                  title="Plugin Connector"
-                  color="#f59e0b"
-                  icon={<Puzzle className="w-5 h-5 text-orange-500" />}
-                  historyData={threadPoolHistory.plugin}
-                />
-              )}
-            </div>
-          )}
+          {/* Thread Pool Monitor (plugin pool takes the primary slot) */}
+          <div className="grid grid-cols-1 gap-6">
+            <ThreadPoolMonitor
+              stats={primaryThreadPoolStats}
+              title="Plugin Thread Pool"
+              color="#3b82f6"
+              icon={<Puzzle className="w-5 h-5 text-blue-500" />}
+              historyData={threadPoolHistory.plugin}
+            />
+          </div>
         </div>
 
         {/* Right Column: Info & Status */}

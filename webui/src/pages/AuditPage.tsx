@@ -1,7 +1,7 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { api } from '@/utils/api'
-import { RefreshCw, FileText, AlertCircle, Info, AlertTriangle, XCircle, Check } from 'lucide-react'
+import { Terminal } from 'lucide-react'
 
 interface LogEntry {
   timestamp: string
@@ -11,58 +11,88 @@ interface LogEntry {
   [key: string]: any
 }
 
+const LOG_LIMIT = 300
+const POLL_INTERVAL_MS = 3000
+const HIDDEN_EXTRA_FIELDS = new Set([
+  'taskName',
+  '_logger',
+  '_name',
+  'name',
+  'created',
+  'msecs',
+  'relativeCreated',
+  'pathname',
+  'filename',
+  'module',
+  'exc_info',
+  'exc_text',
+  'stack_info',
+  'lineno',
+  'funcName',
+  'processName',
+  'process',
+  'threadName',
+  'thread',
+])
+
 export default function AuditPage() {
   const { t } = useTranslation()
   const [logs, setLogs] = useState<LogEntry[]>([])
   const [loading, setLoading] = useState(true)
-  const [refreshing, setRefreshing] = useState(false)
-  const [limit, setLimit] = useState(100)
-  const [filterLevel, setFilterLevel] = useState<'all' | 'debug' | 'info' | 'warning' | 'error' | 'critical'>('all')
-  const [autoRefresh, setAutoRefresh] = useState(false)
-  const [copiedIndex, setCopiedIndex] = useState<number | null>(null)
+  const [lastUpdated, setLastUpdated] = useState<Date | null>(null)
+  const [loadError, setLoadError] = useState('')
+  const terminalRef = useRef<HTMLDivElement | null>(null)
 
   useEffect(() => {
-    loadLogs()
-  }, [limit, filterLevel])
+    let cancelled = false
+
+    const loadLogs = async (initial = false) => {
+      if (initial) setLoading(true)
+
+      try {
+        const data = await api.getSystemLogs(LOG_LIMIT)
+        if (cancelled) return
+        setLogs(Array.isArray(data) ? data : [])
+        setLoadError('')
+        setLastUpdated(new Date())
+      } catch (error) {
+        if (cancelled) return
+        console.error('Failed to load system logs:', error)
+        setLoadError('日志拉取失败，稍后自动重试')
+      } finally {
+        if (!cancelled) setLoading(false)
+      }
+    }
+
+    void loadLogs(true)
+
+    const intervalId = window.setInterval(() => {
+      void loadLogs(false)
+    }, POLL_INTERVAL_MS)
+
+    return () => {
+      cancelled = true
+      window.clearInterval(intervalId)
+    }
+  }, [])
+
+  const normalizedLogs = useMemo(() => {
+    return [...logs].sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime())
+  }, [logs])
 
   useEffect(() => {
-    if (autoRefresh) {
-      const interval = setInterval(() => {
-        loadLogs(true)
-      }, 5000) // Refresh every 5 seconds
-      return () => clearInterval(interval)
-    }
-  }, [autoRefresh])
+    if (!terminalRef.current) return
+    terminalRef.current.scrollTop = terminalRef.current.scrollHeight
+  }, [normalizedLogs])
 
-  const loadLogs = async (showRefreshing = false) => {
-    if (showRefreshing) {
-      setRefreshing(true)
-    } else {
-      setLoading(true)
-    }
-    try {
-      const data = await api.getSystemLogs(limit)
-      setLogs(data)
-    } catch (error) {
-      console.error('Failed to load system logs:', error)
-    } finally {
-      setLoading(false)
-      setRefreshing(false)
-    }
-  }
-
-  const formatTime = (timestamp: string) => {
+  const formatTimestamp = (timestamp: string) => {
     try {
       const date = new Date(timestamp)
-      const formatted = date.toLocaleString('zh-CN', {
-        year: 'numeric',
-        month: '2-digit',
-        day: '2-digit',
+      const formatted = date.toLocaleTimeString('zh-CN', {
         hour: '2-digit',
         minute: '2-digit',
         second: '2-digit',
       })
-      // Add milliseconds manually
       const ms = date.getMilliseconds().toString().padStart(3, '0')
       return `${formatted}.${ms}`
     } catch {
@@ -70,145 +100,104 @@ export default function AuditPage() {
     }
   }
 
-  const getLevelIcon = (level: string) => {
-    const levelLower = level.toLowerCase()
-    if (levelLower === 'error' || levelLower === 'critical') {
-      return <XCircle className="w-4 h-4 text-red-500" />
-    } else if (levelLower === 'warning') {
-      return <AlertTriangle className="w-4 h-4 text-yellow-500" />
-    } else if (levelLower === 'info') {
-      return <Info className="w-4 h-4 text-blue-500" />
-    } else if (levelLower === 'debug') {
-      return <AlertCircle className="w-4 h-4 text-gray-500" />
-    }
-    return <Info className="w-4 h-4 text-gray-500" />
-  }
+  const formatMessage = (log: LogEntry) => {
+    const parsePythonDictLikeMessage = (raw: string): Record<string, string> | null => {
+      const text = raw.trim()
+      if (!text.startsWith('{') || !text.endsWith('}')) {
+        return null
+      }
 
-  const getLevelColor = (level: string) => {
-    const levelLower = level.toLowerCase()
-    if (levelLower === 'error' || levelLower === 'critical') {
-      return 'bg-red-100 text-red-700 border-red-200'
-    } else if (levelLower === 'warning') {
-      return 'bg-yellow-100 text-yellow-700 border-yellow-200'
-    } else if (levelLower === 'info') {
-      return 'bg-blue-100 text-blue-700 border-blue-200'
-    } else if (levelLower === 'debug') {
-      return 'bg-gray-100 text-gray-700 border-gray-200'
-    }
-    return 'bg-gray-100 text-gray-700 border-gray-200'
-  }
+      // Extract simple Python-dict style pairs: 'key': 'value' / number / True/False/None
+      const pairRegex = /'([^']+)'\s*:\s*('(?:[^'\\]|\\.)*'|True|False|None|-?\d+(?:\.\d+)?)/g
+      const out: Record<string, string> = {}
+      let match: RegExpExecArray | null = null
 
-  // Parse and beautify log message
-  const parseLogMessage = (log: LogEntry) => {
-    // Try to extract meaningful information from the log
+      while (true) {
+        match = pairRegex.exec(text)
+        if (!match) break
+        const key = match[1]
+        let value = match[2]
+        if (value.startsWith("'") && value.endsWith("'")) {
+          value = value.slice(1, -1)
+        } else if (value === 'True') {
+          value = 'true'
+        } else if (value === 'False') {
+          value = 'false'
+        } else if (value === 'None') {
+          value = 'null'
+        }
+        out[key] = value
+      }
+
+      return Object.keys(out).length > 0 ? out : null
+    }
+
     const parts: string[] = []
-    
-    // Add main message if exists
+    const seenPairs = new Set<string>()
+
     if (log.message && log.message !== '{}') {
-      parts.push(log.message)
+      const parsedMessage = parsePythonDictLikeMessage(String(log.message))
+      if (parsedMessage) {
+        const eventText = parsedMessage.event || ''
+        if (eventText) {
+          parts.push(eventText)
+        }
+        Object.entries(parsedMessage)
+          .filter(([key, value]) => {
+            if (!value) return false
+            if (HIDDEN_EXTRA_FIELDS.has(key)) return false
+            return !['event', 'timestamp', 'logger', 'level'].includes(key)
+          })
+          .forEach(([key, value]) => {
+            const pair = `${key}=${value}`
+            if (!seenPairs.has(pair)) {
+              seenPairs.add(pair)
+              parts.push(pair)
+            }
+          })
+      } else {
+        parts.push(String(log.message))
+      }
     }
-    
-    // Extract key fields (excluding standard fields)
+
     const standardFields = ['timestamp', 'level', 'logger', 'message', 'event', 'exception']
     const extraFields = Object.entries(log)
-      .filter(([key, value]) => 
-        !standardFields.includes(key) && 
-        value !== null && 
-        value !== undefined && 
-        value !== '' &&
-        key !== 'exc_info' &&
-        key !== 'exc_text'
+      .filter(
+        ([key, value]) => {
+          if (standardFields.includes(key)) return false
+          if (HIDDEN_EXTRA_FIELDS.has(key)) return false
+          if (key.startsWith('_')) return false
+          return value !== null && value !== undefined && String(value).trim() !== ''
+        },
       )
-    
-    // Format extra fields
+
     if (extraFields.length > 0) {
-      const fieldStrings = extraFields.map(([key, value]) => {
-        if (typeof value === 'object') {
-          try {
-            // For objects, show key fields
-            if (Array.isArray(value)) {
-              return `${key}=[${value.length}项]`
-            } else {
-              const objKeys = Object.keys(value).slice(0, 3).join(', ')
-              return `${key}={${objKeys}${Object.keys(value).length > 3 ? '...' : ''}}`
-            }
-          } catch {
-            return `${key}=${String(value)}`
-          }
-        }
-        return `${key}=${String(value)}`
-      })
+      const fieldStrings = extraFields
+        .map(([key, value]) =>
+          typeof value === 'object' ? `${key}=${JSON.stringify(value)}` : `${key}=${String(value)}`,
+        )
+        .filter((pair) => {
+          if (seenPairs.has(pair)) return false
+          seenPairs.add(pair)
+          return true
+        })
       parts.push(fieldStrings.join(' | '))
     }
-    
-    return parts.filter(p => p).join(' | ') || JSON.stringify(log)
-  }
 
-  // Get full log content for tooltip
-  const getFullLogContent = (log: LogEntry) => {
-    const lines: string[] = []
-    
-    if (log.message) {
-      lines.push(`Message: ${log.message}`)
+    if (log.exception) {
+      parts.push(`exception=${String(log.exception)}`)
     }
-    
-    // Add all extra fields
-    const standardFields = ['timestamp', 'level', 'logger', 'message', 'event']
-    Object.entries(log)
-      .filter(([key]) => !standardFields.includes(key) && key !== 'exc_info' && key !== 'exc_text')
-      .forEach(([key, value]) => {
-        if (value !== null && value !== undefined && value !== '') {
-          if (typeof value === 'object') {
-            lines.push(`${key}: ${JSON.stringify(value, null, 2)}`)
-          } else {
-            lines.push(`${key}: ${value}`)
-          }
-        }
-      })
-    
-    return lines.join('\n')
+
+    return parts.filter(Boolean).join(' | ')
   }
 
-  // Copy log to clipboard
-  const copyLogToClipboard = async (log: LogEntry, index: number) => {
-    const logText = `[${formatTime(log.timestamp)}] [${log.level.toUpperCase()}] [${log.logger}]
-${getFullLogContent(log)}${log.exception ? '\n\nException:\n' + log.exception : ''}`
-    
-    try {
-      // Try modern clipboard API first
-      if (navigator.clipboard && navigator.clipboard.writeText) {
-        await navigator.clipboard.writeText(logText)
-      } else {
-        // Fallback for older browsers
-        const textArea = document.createElement('textarea')
-        textArea.value = logText
-        textArea.style.position = 'fixed'
-        textArea.style.left = '-999999px'
-        document.body.appendChild(textArea)
-        textArea.select()
-        document.execCommand('copy')
-        document.body.removeChild(textArea)
-      }
-      setCopiedIndex(index)
-      setTimeout(() => setCopiedIndex(null), 2000)
-    } catch (err) {
-      console.error('Failed to copy log:', err)
-      alert(t('common.copyFailed'))
-    }
-  }
-
-  const filteredLogs = logs.filter((log) => {
-    if (filterLevel === 'all') return true
-    return log.level.toLowerCase() === filterLevel
-  })
-
-  const levelCounts = {
-    all: logs.length,
-    debug: logs.filter(l => l.level.toLowerCase() === 'debug').length,
-    info: logs.filter(l => l.level.toLowerCase() === 'info').length,
-    warning: logs.filter(l => l.level.toLowerCase() === 'warning').length,
-    error: logs.filter(l => l.level.toLowerCase() === 'error').length,
-    critical: logs.filter(l => l.level.toLowerCase() === 'critical').length,
+  const getLineColor = (level: string) => {
+    const lv = level.toLowerCase()
+    if (lv === 'error' || lv === 'critical') return 'text-red-300'
+    if (lv === 'warning') return 'text-yellow-300'
+    if (lv === 'info') return 'text-sky-300'
+    if (lv === 'debug') return 'text-slate-300'
+    return 'text-slate-200'
   }
 
   if (loading) {
@@ -220,211 +209,42 @@ ${getFullLogContent(log)}${log.exception ? '\n\nException:\n' + log.exception : 
   }
 
   return (
-    <div className="space-y-6 max-w-full overflow-x-hidden">
-      {/* Header */}
-      <div className="space-y-4">
-        <div className="flex items-center justify-between">
-          <div className="min-w-0 flex-shrink">
-            <h1 className="text-xl sm:text-2xl font-bold text-gray-900 truncate">{t('systemLog.title')}</h1>
-            <p className="text-gray-500 text-sm mt-1">{t('systemLog.description')}</p>
-          </div>
+    <div className="space-y-4 max-w-full overflow-x-hidden">
+      <div className="flex items-center justify-between gap-3">
+        <div>
+          <h1 className="text-xl sm:text-2xl font-bold text-gray-900 truncate">{t('systemLog.title')}</h1>
+          <p className="text-gray-500 text-sm mt-1">{t('systemLog.description')}</p>
         </div>
-        
-        {/* Controls */}
-        <div className="flex items-center gap-2 flex-wrap">
-          <select
-            value={filterLevel}
-            onChange={(e) => setFilterLevel(e.target.value as any)}
-            className="input py-2 text-sm w-[110px]"
-          >
-            <option value="all">{t('systemLog.allLevels')}</option>
-            <option value="debug">DEBUG</option>
-            <option value="info">INFO</option>
-            <option value="warning">WARNING</option>
-            <option value="error">ERROR</option>
-            <option value="critical">CRITICAL</option>
-          </select>
-          <select
-            value={limit}
-            onChange={(e) => setLimit(Number(e.target.value))}
-            className="input py-2 text-sm w-[90px]"
-          >
-            <option value={50}>50条</option>
-            <option value={100}>100条</option>
-            <option value={200}>200条</option>
-            <option value={500}>500条</option>
-            <option value={1000}>1K条</option>
-          </select>
-          <button
-            onClick={() => setAutoRefresh(!autoRefresh)}
-            className={`btn ${autoRefresh ? 'btn-primary' : 'btn-secondary'} flex items-center gap-1.5 whitespace-nowrap text-sm px-3 py-2`}
-          >
-            <RefreshCw className={`w-4 h-4 ${autoRefresh ? 'animate-spin' : ''}`} />
-            <span className="hidden sm:inline">{autoRefresh ? t('common.autoRefreshing') : t('common.autoRefresh')}</span>
-            <span className="sm:hidden">{t('common.auto')}</span>
-          </button>
-          <button
-            onClick={() => loadLogs(true)}
-            disabled={refreshing}
-            className="btn btn-secondary flex items-center gap-1.5 disabled:opacity-50 disabled:cursor-not-allowed whitespace-nowrap text-sm px-3 py-2"
-          >
-            <RefreshCw className={`w-4 h-4 ${refreshing ? 'animate-spin' : ''}`} />
-            <span className="hidden sm:inline">{t('common.refresh')}</span>
-          </button>
+        <div className="text-xs text-gray-500 text-right">
+          <div>自动刷新中（{POLL_INTERVAL_MS / 1000}s）</div>
+          <div>{lastUpdated ? `最后更新: ${lastUpdated.toLocaleTimeString('zh-CN')}` : '正在连接日志流...'}</div>
         </div>
       </div>
 
-      {/* Stats Cards */}
-      <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-4">
-        <div className="card">
-          <div className="flex items-center justify-between">
-            <div>
-              <p className="text-xs text-gray-500">{t('common.all')}</p>
-              <p className="text-2xl font-bold text-gray-900 mt-1">{levelCounts.all}</p>
-            </div>
-            <FileText className="w-8 h-8 text-gray-500" />
-          </div>
+      <div className="rounded-xl border border-slate-300 bg-slate-950 shadow-inner overflow-hidden">
+        <div className="h-8 border-b border-slate-800 flex items-center px-3 text-xs text-slate-300 gap-2">
+          <Terminal className="w-3.5 h-3.5" />
+          <span>system.log</span>
         </div>
-        <div className="card">
-          <div className="flex items-center justify-between">
-            <div>
-              <p className="text-xs text-gray-500">DEBUG</p>
-              <p className="text-2xl font-bold text-gray-600 mt-1">{levelCounts.debug}</p>
-            </div>
-            <AlertCircle className="w-8 h-8 text-gray-500" />
-          </div>
-        </div>
-        <div className="card">
-          <div className="flex items-center justify-between">
-            <div>
-              <p className="text-xs text-gray-500">INFO</p>
-              <p className="text-2xl font-bold text-blue-600 mt-1">{levelCounts.info}</p>
-            </div>
-            <Info className="w-8 h-8 text-blue-500" />
-          </div>
-        </div>
-        <div className="card">
-          <div className="flex items-center justify-between">
-            <div>
-              <p className="text-xs text-gray-500">WARNING</p>
-              <p className="text-2xl font-bold text-yellow-600 mt-1">{levelCounts.warning}</p>
-            </div>
-            <AlertTriangle className="w-8 h-8 text-yellow-500" />
-          </div>
-        </div>
-        <div className="card">
-          <div className="flex items-center justify-between">
-            <div>
-              <p className="text-xs text-gray-500">ERROR</p>
-              <p className="text-2xl font-bold text-red-600 mt-1">{levelCounts.error}</p>
-            </div>
-            <XCircle className="w-8 h-8 text-red-500" />
-          </div>
-        </div>
-        <div className="card">
-          <div className="flex items-center justify-between">
-            <div>
-              <p className="text-xs text-gray-500">CRITICAL</p>
-              <p className="text-2xl font-bold text-red-700 mt-1">{levelCounts.critical}</p>
-            </div>
-            <XCircle className="w-8 h-8 text-red-700" />
-          </div>
-        </div>
-      </div>
 
-      {/* Logs Table */}
-      <div className="card p-0">
-        <div className="overflow-x-auto max-h-[600px] overflow-y-auto">
-          <table className="w-full min-w-[800px]">
-            <thead className="sticky top-0 bg-gray-50 z-10">
-              <tr className="border-b border-gray-200">
-                <th className="text-left py-3 px-4 font-semibold text-gray-700 text-sm">{t('systemLog.time')}</th>
-                <th className="text-left py-3 px-4 font-semibold text-gray-700 text-sm">{t('systemLog.level')}</th>
-                <th className="text-left py-3 px-4 font-semibold text-gray-700 text-sm">{t('systemLog.logger')}</th>
-                <th className="text-left py-3 px-4 font-semibold text-gray-700 text-sm">{t('systemLog.message')}</th>
-              </tr>
-            </thead>
-            <tbody>
-              {filteredLogs.length === 0 ? (
-                <tr>
-                  <td colSpan={4} className="text-center py-12 text-gray-500">
-                    <FileText className="w-12 h-12 text-gray-300 mx-auto mb-3" />
-                    <p>{t('systemLog.noLogs')}</p>
-                  </td>
-                </tr>
-              ) : (
-                filteredLogs.map((log, index) => {
-                  const displayMessage = parseLogMessage(log)
-                  const fullContent = getFullLogContent(log)
-                  const maxLength = 150
-                  const shouldTruncate = displayMessage.length > maxLength
-                  const truncatedMessage = shouldTruncate ? displayMessage.slice(0, maxLength) + '...' : displayMessage
-                  
-                  return (
-                    <tr 
-                      key={index} 
-                      className="border-b border-gray-100 hover:bg-gray-50 transition-colors group cursor-pointer"
-                      onDoubleClick={() => copyLogToClipboard(log, index)}
-                      title={t('common.doubleClickToCopy')}
-                    >
-                      <td className="py-3 px-4 text-sm text-gray-600 font-mono whitespace-nowrap">
-                        {formatTime(log.timestamp)}
-                      </td>
-                      <td className="py-3 px-4">
-                        <div className="flex items-center gap-2">
-                          {getLevelIcon(log.level)}
-                          <span className={`px-2 py-1 rounded text-xs font-medium border ${getLevelColor(log.level)}`}>
-                            {log.level.toUpperCase()}
-                          </span>
-                        </div>
-                      </td>
-                      <td className="py-3 px-4 text-sm text-gray-600 font-mono">
-                        {log.logger || '-'}
-                      </td>
-                      <td className="py-3 px-4 text-sm text-gray-900 relative">
-                        <div className="flex items-start gap-2">
-                          <div className="flex-1 max-w-2xl">
-                            <div className="break-words">
-                              {truncatedMessage}
-                            </div>
-                            {/* Copy success indicator */}
-                            {copiedIndex === index && (
-                              <div className="absolute right-0 top-0 bg-green-500 text-white text-xs px-2 py-1 rounded shadow-lg flex items-center gap-1 z-10">
-                                <Check className="w-3 h-3" />
-                                <span>{t('common.copied')}</span>
-                              </div>
-                            )}
-                            {/* Hover Tooltip */}
-                            <div className="absolute left-0 top-full mt-1 z-50 invisible group-hover:visible opacity-0 group-hover:opacity-100 transition-opacity duration-200 pointer-events-none">
-                              <div className="bg-gray-900 text-white text-xs rounded-lg shadow-2xl p-3 max-w-2xl min-w-[300px] border border-gray-700">
-                                <div className="whitespace-pre-wrap break-words max-h-96 overflow-y-auto custom-scrollbar">
-                                  {fullContent}
-                                </div>
-                                {log.exception && (
-                                  <div className="mt-2 pt-2 border-t border-gray-700">
-                                    <div className="text-red-400 font-semibold mb-1">{t('systemLog.exceptionDetail')}</div>
-                                    <pre className="text-xs whitespace-pre-wrap break-words text-red-300">
-                                      {log.exception}
-                                    </pre>
-                                  </div>
-                                )}
-                              </div>
-                            </div>
-                            {log.exception && (
-                              <div className="mt-1 text-xs text-red-600 flex items-center gap-1">
-                                <AlertTriangle className="w-3 h-3" />
-                                <span>{t('systemLog.hasException')}</span>
-                              </div>
-                            )}
-                          </div>
-                        </div>
-                      </td>
-                    </tr>
-                  )
-                })
-              )}
-            </tbody>
-          </table>
+        <div
+          ref={terminalRef}
+          className="h-[calc(100vh-260px)] min-h-[420px] overflow-auto p-3 font-mono text-xs leading-6"
+        >
+          {loadError && <div className="text-red-300 mb-2">{loadError}</div>}
+
+          {normalizedLogs.length === 0 ? (
+            <div className="text-slate-400">{t('systemLog.noLogs')}</div>
+          ) : (
+            normalizedLogs.map((log, index) => (
+              <div key={`${log.timestamp}-${index}`} className={`${getLineColor(log.level)} break-words whitespace-pre-wrap`}>
+                <span className="text-slate-500">[{formatTimestamp(log.timestamp)}]</span>{' '}
+                <span className="text-violet-300">[{(log.level || 'info').toUpperCase()}]</span>{' '}
+                <span className="text-emerald-300">[{log.logger || '-'}]</span>{' '}
+                <span>{formatMessage(log)}</span>
+              </div>
+            ))
+          )}
         </div>
       </div>
     </div>

@@ -31,16 +31,17 @@ export const ThreadPoolMonitor: React.FC<ThreadPoolMonitorProps> = ({
 }) => {
   if (!stats || !stats.initialized) {
     return (
-      <div className="relative overflow-hidden rounded-2xl bg-gradient-to-br from-gray-50 to-gray-100 p-6 shadow-lg border border-gray-200">
-        <div className="flex items-center gap-3 mb-4 opacity-50">
-          <div className="p-2 rounded-xl bg-gray-200 text-gray-500">
+      <div className="relative overflow-hidden rounded-2xl border border-slate-200 bg-gradient-to-br from-slate-50 to-slate-100 p-6 shadow-sm">
+        <div className="mb-4 flex items-center gap-3 opacity-70">
+          <div className="rounded-xl bg-slate-200 p-2 text-slate-500">
             {icon}
           </div>
-          <h3 className="font-bold text-gray-900 text-lg">{title}</h3>
+          <h3 className="text-lg font-bold text-slate-900">{title}</h3>
         </div>
-        <div className="flex flex-col items-center justify-center py-12 text-gray-400">
-          <AlertCircle className="w-12 h-12 mb-3 opacity-50" />
-          <p className="text-sm font-medium">Not Initialized</p>
+        <div className="flex flex-col items-center justify-center py-12 text-slate-500">
+          <AlertCircle className="mb-3 h-12 w-12 opacity-60" />
+          <p className="text-sm font-semibold">Thread Pool Not Initialized</p>
+          <p className="mt-1 text-xs text-slate-400">Enable plugin thread pool in system settings to start monitoring.</p>
         </div>
       </div>
     )
@@ -63,25 +64,21 @@ export const ThreadPoolMonitor: React.FC<ThreadPoolMonitorProps> = ({
   // Get Chart Data
   const getChartData = () => {
     if (historyData && historyData.length > 0) {
+      // Use actual history data
       return historyData.map((item, index) => ({
-        tasks: item.tasks,
+        tasks: item.tasks || 0,
         index: index,
-        time: item.time
+        time: item.time || ''
       }))
     }
-    // Generate placeholder data with smooth curve
+    // If no history data, create initial data points with current value
     const currentTasks = stats.active_tasks || 0
-    const points = 20
-    return Array.from({ length: points }, (_, i) => {
-      const progress = i / (points - 1)
-      const wave = Math.sin(progress * Math.PI * 2) * 0.3
-      const value = Math.max(0, currentTasks * (0.7 + wave))
-      return { 
-        tasks: Math.round(value * 10) / 10,
-        index: i,
-        time: ''
-      }
-    })
+    const points = 12 // Match the history length
+    return Array.from({ length: points }, (_, i) => ({
+      tasks: currentTasks,
+      index: i,
+      time: i === points - 1 ? 'Now' : ''
+    }))
   }
 
   const chartData = getChartData()
@@ -126,6 +123,7 @@ export const ThreadPoolMonitor: React.FC<ThreadPoolMonitorProps> = ({
             </div>
             <div>
               <h3 className="font-bold text-white text-lg tracking-tight">{title}</h3>
+              <p className="text-[11px] text-white/80 mt-0.5">Framework plugin operations executor</p>
               <div className="flex items-center gap-2 mt-0.5">
                 <span className="relative flex h-2 w-2">
                   <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-green-300 opacity-75"></span>
@@ -170,7 +168,7 @@ export const ThreadPoolMonitor: React.FC<ThreadPoolMonitorProps> = ({
       <div className="p-5 bg-gray-50/50">
         <div className="flex items-center gap-2 mb-3">
           <TrendingUp className="w-4 h-4 text-gray-500" />
-          <h4 className="text-xs font-bold text-gray-600 uppercase tracking-wider">Activity Trend</h4>
+          <h4 className="text-xs font-bold text-gray-600 uppercase tracking-wider">Task Throughput Trend</h4>
         </div>
         <div className="bg-white rounded-xl p-4 border border-gray-200 shadow-sm">
           <ResponsiveContainer width="100%" height={120}>
@@ -190,8 +188,11 @@ export const ThreadPoolMonitor: React.FC<ThreadPoolMonitorProps> = ({
                 stroke="#999" 
                 tick={{ fontSize: 11, fill: '#666' }}
                 width={32}
+                domain={[0, 'auto']}
+                allowDecimals={false}
               />
-              <Tooltip 
+              <Tooltip
+                formatter={(value: number | string) => [`${value} tasks/5s`, 'Throughput']}
                 contentStyle={{ 
                   backgroundColor: 'rgba(255, 255, 255, 0.95)',
                   border: '1px solid #e5e7eb',

@@ -14,7 +14,7 @@ const getLanguage = (): string => {
   }
 }
 
-// 初始化 i18n
+//  i18n
 const initPromise = i18n
   .use(initReactI18next)
   .init({
@@ -23,19 +23,24 @@ const initPromise = i18n
       en: { translation: en },
     },
     lng: getLanguage(),
-    fallbackLng: 'zh',
+    // 中文缺键、空串（returnEmptyString: false 视为缺失）时回退到英文，否则会显示 login.xxx 原始键名
+    fallbackLng: {
+      zh: ['en'],
+      en: ['en'],
+      default: ['en'],
+    },
     interpolation: {
       escapeValue: false,
     },
     react: {
       useSuspense: false,
     },
-    // 如果找不到翻译键，返回键本身而不是空字符串
+    // 
     returnEmptyString: false,
     returnNull: false,
   })
 
-// 导出初始化 Promise，供 main.tsx 使用
+//  Promise main.tsx 
 export { initPromise }
 export default i18n
 

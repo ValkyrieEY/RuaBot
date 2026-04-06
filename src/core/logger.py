@@ -249,6 +249,9 @@ def setup_logger(
     log_backup_count: int = 5  # Keep 5 backup files
 ) -> structlog.BoundLogger:
     """Setup and register a logger."""
+    # Keep WebUI system logs session-scoped (in-memory only).
+    clear_memory_logs()
+
     logger = Logger(name, level, log_file, log_max_bytes, log_backup_count)
     _loggers[name] = logger
     return logger.setup()

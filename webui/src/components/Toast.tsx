@@ -19,6 +19,30 @@ interface ToastContextType {
 }
 
 const ToastContext = createContext<ToastContextType | undefined>(undefined)
+let toastBridge: ToastContextType | null = null
+const pendingToasts: Array<{ message: string; type?: ToastType; duration?: number }> = []
+
+export const toast = {
+  showToast(message: string, type: ToastType = 'info', duration?: number) {
+    if (toastBridge) {
+      toastBridge.showToast(message, type, duration)
+      return
+    }
+    pendingToasts.push({ message, type, duration })
+  },
+  success(message: string, duration?: number) {
+    this.showToast(message, 'success', duration)
+  },
+  error(message: string, duration?: number) {
+    this.showToast(message, 'error', duration)
+  },
+  warning(message: string, duration?: number) {
+    this.showToast(message, 'warning', duration)
+  },
+  info(message: string, duration?: number) {
+    this.showToast(message, 'info', duration)
+  },
+}
 
 export function useToast() {
   const context = useContext(ToastContext)
@@ -63,6 +87,12 @@ export function ToastProvider({ children }: { children: ReactNode }) {
   const info = useCallback((message: string, duration?: number) => {
     showToast(message, 'info', duration)
   }, [showToast])
+
+  toastBridge = { showToast, success, error, warning, info }
+  if (pendingToasts.length > 0) {
+    const queued = pendingToasts.splice(0)
+    setTimeout(() => queued.forEach((item) => showToast(item.message, item.type, item.duration)), 0)
+  }
 
   return (
     <ToastContext.Provider value={{ showToast, success, error, warning, info }}>

@@ -12,7 +12,6 @@ import {
   Upload,
   X,
   Save,
-  CheckCircle,
   Trash2,
   Download
 } from 'lucide-react'
@@ -22,6 +21,27 @@ interface PluginConfigModalProps {
   isOpen: boolean
   onClose: () => void
   onSave: (config: any) => void
+}
+
+function collectUploadedFileKeys(value: any): string[] {
+  const keys = new Set<string>()
+
+  const walk = (current: any) => {
+    if (Array.isArray(current)) {
+      current.forEach(walk)
+      return
+    }
+    if (current && typeof current === 'object') {
+      Object.values(current).forEach(walk)
+      return
+    }
+    if (typeof current === 'string' && current.startsWith('plugin_config_')) {
+      keys.add(current)
+    }
+  }
+
+  walk(value)
+  return [...keys]
 }
 
 function PluginConfigModal({ pluginName, isOpen, onClose, onSave }: PluginConfigModalProps) {
@@ -36,6 +56,7 @@ function PluginConfigModal({ pluginName, isOpen, onClose, onSave }: PluginConfig
   
   // 
   const loadingRequestRef = useRef(0)
+  const pendingUploadKeysRef = useRef<Set<string>>(new Set())
 
   useEffect(() => {
     if (isOpen && pluginName) {
@@ -65,6 +86,7 @@ function PluginConfigModal({ pluginName, isOpen, onClose, onSave }: PluginConfig
         setSchema(schemaData.value)
         const loadedConfig = schemaData.value.current_config || schemaData.value.default_config || {}
         setConfig(loadedConfig)
+        pendingUploadKeysRef.current.clear()
       } else {
         console.error('Failed to load config schema:', schemaData.reason)
         throw new Error(t('plugins.configLoadErrorTitle') + ': ' + (schemaData.reason?.message || ''))
@@ -105,6 +127,12 @@ function PluginConfigModal({ pluginName, isOpen, onClose, onSave }: PluginConfig
       
       // Update local config state with returned config
       setConfig(updatedConfig)
+      const persistedKeys = new Set(collectUploadedFileKeys(updatedConfig))
+      pendingUploadKeysRef.current.forEach((key) => {
+        if (persistedKeys.has(key)) {
+          pendingUploadKeysRef.current.delete(key)
+        }
+      })
       
       // Update priority from response if available
       if (response?.priority !== undefined) {
@@ -124,6 +152,19 @@ function PluginConfigModal({ pluginName, isOpen, onClose, onSave }: PluginConfig
     }
   }
 
+  const handleClose = async () => {
+    const pendingKeys = [...pendingUploadKeysRef.current]
+    pendingUploadKeysRef.current.clear()
+
+    if (pendingKeys.length > 0) {
+      await Promise.allSettled(
+        pendingKeys.map((fileKey) => api.deletePluginConfigFile(pluginName, fileKey)),
+      )
+    }
+
+    onClose()
+  }
+
   if (!isOpen) return null
 
   return (
@@ -133,7 +174,7 @@ function PluginConfigModal({ pluginName, isOpen, onClose, onSave }: PluginConfig
         <div className="flex items-center justify-between p-6 border-b border-gray-200 flex-shrink-0">
           <h2 className="text-xl font-bold text-gray-900">{t('plugins.pluginConfigTitle', { name: pluginName })}</h2>
           <button
-            onClick={onClose}
+            onClick={handleClose}
             className="p-2 hover:bg-gray-100 rounded-lg transition-colors"
           >
             <X className="w-5 h-5" />
@@ -194,9 +235,11 @@ function PluginConfigModal({ pluginName, isOpen, onClose, onSave }: PluginConfig
               </div>
             ) : schema && schema.config_schema ? (
               <DynamicFormComponent
+                pluginName={pluginName}
                 schema={schema.config_schema}
                 initialValues={config}
                 onSubmit={(values) => setConfig(values)}
+                onFileUploaded={(fileKey) => pendingUploadKeysRef.current.add(fileKey)}
               />
             ) : (
               <div className="text-center py-12 text-gray-500">
@@ -209,7 +252,7 @@ function PluginConfigModal({ pluginName, isOpen, onClose, onSave }: PluginConfig
         {/* Fixed Footer */}
         <div className="flex items-center justify-end gap-3 p-6 border-t border-gray-200 flex-shrink-0">
           <button
-            onClick={onClose}
+            onClick={handleClose}
             className="btn btn-secondary"
           >
             {t('common.cancel')}
@@ -236,33 +279,27 @@ interface UploadModalProps {
 
 function UploadModal({ isOpen, onClose, onSuccess }: UploadModalProps) {
   const { t } = useTranslation()
+  const toast = useToast()
   const [file, setFile] = useState<File | null>(null)
   const [uploading, setUploading] = useState(false)
-  const [error, setError] = useState('')
-  const [success, setSuccess] = useState(false)
   const [isDragging, setIsDragging] = useState(false)
 
   const handleUpload = async () => {
     if (!file) {
-      setError('')
+      toast.warning(t('plugins.uploadZipLabel'))
       return
     }
 
     setUploading(true)
-    setError('')
-    setSuccess(false)
 
     try {
       await api.uploadPlugin(file)
-      setSuccess(true)
-      setTimeout(() => {
-        onSuccess()
-        onClose()
-        setFile(null)
-        setSuccess(false)
-      }, 1500)
+      toast.success(t('plugins.uploadSuccessMsg'))
+      onSuccess()
+      onClose()
+      setFile(null)
     } catch (err: any) {
-      setError(err.response?.data?.detail || '')
+      toast.error(err.response?.data?.detail || t('common.error'))
     } finally {
       setUploading(false)
     }
@@ -295,9 +332,8 @@ function UploadModal({ isOpen, onClose, onSuccess }: UploadModalProps) {
       const droppedFile = files[0]
       if (droppedFile.name.endsWith('.zip')) {
         setFile(droppedFile)
-        setError('')
       } else {
-        setError(t('plugins.invalidZip'))
+        toast.warning(t('plugins.invalidZip'))
       }
     }
   }
@@ -320,107 +356,89 @@ function UploadModal({ isOpen, onClose, onSuccess }: UploadModalProps) {
         </div>
         
         <div className="p-6 space-y-4">
-          {success ? (
-            <div className="flex items-center gap-2 text-green-600">
-              <CheckCircle className="w-5 h-5" />
-              <span>{t('plugins.uploadSuccessMsg')}</span>
-            </div>
-          ) : (
-            <>
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-2">
-                  {t('plugins.uploadZipLabel')}
-                </label>
-                
-                {/* Drag and Drop Zone */}
-                <div
-                  onDragEnter={handleDragEnter}
-                  onDragOver={handleDragOver}
-                  onDragLeave={handleDragLeave}
-                  onDrop={handleDrop}
-                  className={`
-                    relative border-2 border-dashed rounded-lg p-8 text-center transition-colors cursor-pointer
-                    ${isDragging 
-                      ? 'border-primary-500 bg-primary-50' 
-                      : 'border-gray-300 hover:border-primary-400 hover:bg-gray-50'
-                    }
-                  `}
-                  onClick={() => document.getElementById('file-upload')?.click()}
-                >
-                  <input
-                    id="file-upload"
-                    type="file"
-                    accept=".zip"
-                    onChange={(e) => {
-                      const selectedFile = e.target.files?.[0]
-                      if (selectedFile) {
-                        setFile(selectedFile)
-                        setError('')
-                      }
-                    }}
-                    className="hidden"
-                  />
-                  
-                  <Upload className={`w-12 h-12 mx-auto mb-3 ${isDragging ? 'text-primary-500' : 'text-gray-400'}`} />
-                  
-                  {file ? (
-                    <div className="space-y-2">
-                      <p className="text-sm font-medium text-gray-900">{file.name}</p>
-                      <p className="text-xs text-gray-500">
-                        {(file.size / 1024 / 1024).toFixed(2)} MB
-                      </p>
-                      <button
-                        type="button"
-                        onClick={(e) => {
-                          e.stopPropagation()
-                          setFile(null)
-                        }}
-                        className="text-sm text-primary-600 hover:text-primary-700"
-                      >
-                        {t('plugins.removeFile')}
-                      </button>
-                    </div>
-                  ) : (
-                    <div className="space-y-1">
-                      <p className="text-sm text-gray-600">
-                        {isDragging ? t('plugins.dragDropZip') : t('plugins.dragDropZip')}
-                      </p>
-                      <p className="text-xs text-gray-500">
-                        {t('plugins.zipOnlyHint')}
-                      </p>
-                    </div>
-                  )}
-                </div>
-              </div>
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-2">
+              {t('plugins.uploadZipLabel')}
+            </label>
+            
+            {/* Drag and Drop Zone */}
+            <div
+              onDragEnter={handleDragEnter}
+              onDragOver={handleDragOver}
+              onDragLeave={handleDragLeave}
+              onDrop={handleDrop}
+              className={`
+                relative border-2 border-dashed rounded-lg p-8 text-center transition-colors cursor-pointer
+                ${isDragging 
+                  ? 'border-primary-500 bg-primary-50' 
+                  : 'border-gray-300 hover:border-primary-400 hover:bg-gray-50'
+                }
+              `}
+              onClick={() => document.getElementById('file-upload')?.click()}
+            >
+              <input
+                id="file-upload"
+                type="file"
+                accept=".zip"
+                onChange={(e) => {
+                  const selectedFile = e.target.files?.[0]
+                  if (selectedFile) {
+                    setFile(selectedFile)
+                  }
+                }}
+                className="hidden"
+              />
               
-              {error && (
-                <div className="bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded-lg text-sm">
-                  {error}
+              <Upload className={`w-12 h-12 mx-auto mb-3 ${isDragging ? 'text-primary-500' : 'text-gray-400'}`} />
+              
+              {file ? (
+                <div className="space-y-2">
+                  <p className="text-sm font-medium text-gray-900">{file.name}</p>
+                  <p className="text-xs text-gray-500">
+                    {(file.size / 1024 / 1024).toFixed(2)} MB
+                  </p>
+                  <button
+                    type="button"
+                    onClick={(e) => {
+                      e.stopPropagation()
+                      setFile(null)
+                    }}
+                    className="text-sm text-primary-600 hover:text-primary-700"
+                  >
+                    {t('plugins.removeFile')}
+                  </button>
+                </div>
+              ) : (
+                <div className="space-y-1">
+                  <p className="text-sm text-gray-600">
+                    {isDragging ? t('plugins.dragDropZip') : t('plugins.dragDropZip')}
+                  </p>
+                  <p className="text-xs text-gray-500">
+                    {t('plugins.zipOnlyHint')}
+                  </p>
                 </div>
               )}
-            </>
-          )}
+            </div>
+          </div>
         </div>
         
-        {!success && (
-          <div className="flex items-center justify-end gap-3 p-6 border-t border-gray-200">
-            <button
-              onClick={onClose}
-              className="btn btn-secondary"
-              disabled={uploading}
-            >
-              {t('common.cancel')}
-            </button>
-            <button
-              onClick={handleUpload}
-              disabled={uploading || !file}
-              className="btn btn-primary flex items-center gap-2"
-            >
-              <Upload className="w-4 h-4" />
-              {uploading ? t('common.loading') : t('plugins.uploadPlugin')}
-            </button>
-          </div>
-        )}
+        <div className="flex items-center justify-end gap-3 p-6 border-t border-gray-200">
+          <button
+            onClick={onClose}
+            className="btn btn-secondary"
+            disabled={uploading}
+          >
+            {t('common.cancel')}
+          </button>
+          <button
+            onClick={handleUpload}
+            disabled={uploading || !file}
+            className="btn btn-primary flex items-center gap-2"
+          >
+            <Upload className="w-4 h-4" />
+            {uploading ? t('common.loading') : t('plugins.uploadPlugin')}
+          </button>
+        </div>
       </div>
     </div>
   )
@@ -434,13 +452,13 @@ interface GitHubInstallModalProps {
 
 function GitHubInstallModal({ isOpen, onClose, onSuccess }: GitHubInstallModalProps) {
   const { t } = useTranslation()
+  const toast = useToast()
   const [repoUrl, setRepoUrl] = useState('')
   const [installing, setInstalling] = useState(false)
-  const [error, setError] = useState('')
-  const [success, setSuccess] = useState(false)
   const [progress, setProgress] = useState(0)
   const [progressMessage, setProgressMessage] = useState('')
   const eventSourceRef = useRef<EventSource | null>(null)
+  const installFinishedRef = useRef(false)
 
   useEffect(() => {
     // Cleanup EventSource on unmount or close
@@ -454,13 +472,12 @@ function GitHubInstallModal({ isOpen, onClose, onSuccess }: GitHubInstallModalPr
 
   const handleInstall = async () => {
     if (!repoUrl.trim()) {
-      setError(t('plugins.githubUrlRequired'))
+      toast.warning(t('plugins.githubUrlRequired'))
       return
     }
 
     setInstalling(true)
-    setError('')
-    setSuccess(false)
+    installFinishedRef.current = false
     setProgress(0)
     setProgressMessage('')
 
@@ -482,21 +499,23 @@ function GitHubInstallModal({ isOpen, onClose, onSuccess }: GitHubInstallModalPr
           const data = JSON.parse(event.data)
           
           if (data.status === 'completed') {
+            installFinishedRef.current = true
             setProgress(100)
             setProgressMessage('Update OK')
-            setSuccess(true)
+            setInstalling(false)
+            toast.success(t('plugins.uploadSuccessMsg'))
             eventSource.close()
             eventSourceRef.current = null
             setTimeout(() => {
               onSuccess()
               onClose()
               setRepoUrl('')
-              setSuccess(false)
               setProgress(0)
               setProgressMessage('')
-            }, 1500)
+            }, 500)
           } else if (data.status === 'failed') {
-            setError(data.message || 'Update failed')
+            installFinishedRef.current = true
+            toast.error(data.message || 'Update failed')
             setInstalling(false)
             eventSource.close()
             eventSourceRef.current = null
@@ -513,13 +532,14 @@ function GitHubInstallModal({ isOpen, onClose, onSuccess }: GitHubInstallModalPr
         console.error('EventSource error:', err)
         eventSource.close()
         eventSourceRef.current = null
-        if (!success && !error) {
-          setError('Connection interrupted')
+        if (!installFinishedRef.current) {
+          toast.error('Connection interrupted')
           setInstalling(false)
         }
       }
     } catch (err: any) {
-      setError(err.response?.data?.detail || t('common.error'))
+      installFinishedRef.current = true
+      toast.error(err.response?.data?.detail || t('common.error'))
       setInstalling(false)
       if (eventSourceRef.current) {
         eventSourceRef.current.close()
@@ -536,6 +556,7 @@ function GitHubInstallModal({ isOpen, onClose, onSuccess }: GitHubInstallModalPr
     setInstalling(false)
     setProgress(0)
     setProgressMessage('')
+    installFinishedRef.current = false
     onClose()
   }
 
@@ -550,7 +571,7 @@ function GitHubInstallModal({ isOpen, onClose, onSuccess }: GitHubInstallModalPr
           </h2>
           <button
             onClick={handleClose}
-            disabled={installing && !success}
+            disabled={installing}
             className="p-2 hover:bg-gray-100 rounded-lg transition-colors disabled:opacity-50"
           >
             <X className="w-5 h-5" />
@@ -558,78 +579,61 @@ function GitHubInstallModal({ isOpen, onClose, onSuccess }: GitHubInstallModalPr
         </div>
         
         <div className="p-6 space-y-4">
-          {success ? (
-            <div className="flex items-center gap-2 text-green-600">
-              <CheckCircle className="w-5 h-5" />
-              <span>{t('plugins.uploadSuccessMsg')}</span>
-            </div>
-          ) : (
-            <>
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-2">
-                  {t('plugins.githubRepoLabel')}
-                </label>
-                <input
-                  type="text"
-                  value={repoUrl}
-                  onChange={(e) => setRepoUrl(e.target.value)}
-                  placeholder={t('plugins.githubRepoPlaceholder')}
-                  className="input w-full"
-                  disabled={installing}
-                  onKeyDown={(e) => {
-                    if (e.key === 'Enter' && !installing) {
-                      handleInstall()
-                    }
-                  }}
-                />
-                <p className="text-xs text-gray-500 mt-2">
-                  {t('plugins.githubRepoHelp')}
-                </p>
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-2">
+              {t('plugins.githubRepoLabel')}
+            </label>
+            <input
+              type="text"
+              value={repoUrl}
+              onChange={(e) => setRepoUrl(e.target.value)}
+              placeholder={t('plugins.githubRepoPlaceholder')}
+              className="input w-full"
+              disabled={installing}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' && !installing) {
+                  handleInstall()
+                }
+              }}
+            />
+            <p className="text-xs text-gray-500 mt-2">
+              {t('plugins.githubRepoHelp')}
+            </p>
+          </div>
+          
+          {installing && (
+            <div className="space-y-2">
+              <div className="flex items-center justify-between text-sm">
+                <span className="text-gray-700">{progressMessage || t('plugins.installingGithub')}</span>
+                <span className="text-gray-500">{progress}%</span>
               </div>
-              
-              {installing && (
-                <div className="space-y-2">
-                  <div className="flex items-center justify-between text-sm">
-                    <span className="text-gray-700">{progressMessage || t('plugins.installingGithub')}</span>
-                    <span className="text-gray-500">{progress}%</span>
-                  </div>
-                  <div className="w-full bg-gray-200 rounded-full h-2.5">
-                    <div
-                      className="bg-blue-600 h-2.5 rounded-full transition-all duration-300"
-                      style={{ width: `${progress}%` }}
-                    />
-                  </div>
-                </div>
-              )}
-              
-              {error && (
-                <div className="bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded-lg text-sm">
-                  {error}
-                </div>
-              )}
-            </>
+              <div className="w-full bg-gray-200 rounded-full h-2.5">
+                <div
+                  className="bg-blue-600 h-2.5 rounded-full transition-all duration-300"
+                  style={{ width: `${progress}%` }}
+                />
+              </div>
+            </div>
           )}
         </div>
         
-        {!success && (
-          <div className="flex items-center justify-end gap-3 p-6 border-t border-gray-200">
-            <button
-              onClick={handleClose}
-              disabled={installing}
-              className="btn btn-secondary"
-            >
-              {t('common.cancel')}
-            </button>
-            <button
-              onClick={handleInstall}
-              disabled={installing || !repoUrl.trim()}
-              className="btn btn-primary flex items-center gap-2"
-            >
-              <Download className="w-4 h-4" />
-              {installing ? t('plugins.installingGithub') : t('plugins.installFromGithub')}
-            </button>
-          </div>
-        )}
+        <div className="flex items-center justify-end gap-3 p-6 border-t border-gray-200">
+          <button
+            onClick={handleClose}
+            disabled={installing}
+            className="btn btn-secondary"
+          >
+            {t('common.cancel')}
+          </button>
+          <button
+            onClick={handleInstall}
+            disabled={installing || !repoUrl.trim()}
+            className="btn btn-primary flex items-center gap-2"
+          >
+            <Download className="w-4 h-4" />
+            {installing ? t('plugins.installingGithub') : t('plugins.installFromGithub')}
+          </button>
+        </div>
       </div>
     </div>
   )

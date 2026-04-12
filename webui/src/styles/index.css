@@ -48,6 +48,21 @@
   .label {
     @apply block text-sm font-medium text-gray-700 mb-1;
   }
+
+  .form-input {
+    @apply h-10 w-full border border-slate-200 bg-white px-3 text-sm text-slate-900 outline-none transition-colors;
+    @apply focus:border-slate-400;
+  }
+
+  .form-select {
+    @apply h-10 w-full border border-slate-200 bg-white px-3 text-sm text-slate-900 outline-none transition-colors;
+    @apply focus:border-slate-400;
+  }
+
+  .form-textarea {
+    @apply min-h-24 w-full resize-y border border-slate-200 bg-white px-3 py-2 text-sm leading-6 text-slate-900 outline-none transition-colors;
+    @apply focus:border-slate-400;
+  }
 }
 
 @layer utilities {

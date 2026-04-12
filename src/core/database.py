@@ -20,6 +20,7 @@ from .models.plugin import PluginSetting
 from .models.storage import BinaryStorage
 from .models.sandbox import Sandbox, SandboxMessage
 from .models.message_event import MessageEvent
+from ..plugins.manifest import plugin_manifest_exists
 
 logger = get_logger(__name__)
 
@@ -228,7 +229,8 @@ class DatabaseManager:
     async def prune_orphaned_plugin_settings(self, plugin_base: Path) -> List[str]:
         """Remove DB rows and related storage when the plugin directory is missing on disk.
         
-        Matches the plugin runtime layout: ``plugin_base / plugin_name / plugin.json``.
+        Matches the plugin runtime layout: ``plugin_base / plugin_name / metadata.yaml``
+        plus ``settings.json``.
         Use after a plugin folder was removed manually (not via Web UI), so the database
         stays consistent with :meth:`delete_plugin` / :meth:`uninstall_plugin` behavior.
         
@@ -254,8 +256,8 @@ class DatabaseManager:
             return pruned
         
         for p in rows:
-            manifest = plugin_base / p.plugin_name / "plugin.json"
-            if manifest.is_file():
+            manifest_dir = plugin_base / p.plugin_name
+            if plugin_manifest_exists(manifest_dir):
                 continue
             
             plugin_id = f"{p.plugin_author}/{p.plugin_name}"
@@ -263,6 +265,7 @@ class DatabaseManager:
                 existing = await self.get_plugin_setting(p.plugin_author, p.plugin_name)
                 try:
                     await self.delete_plugin_config_upload_blobs(
+                        plugin_id,
                         existing.config if existing else None,
                         None,
                     )
@@ -416,28 +419,39 @@ class DatabaseManager:
             )
             return [row[0] for row in result.all()]
     
-    async def delete_plugin_config_upload_blobs(
-        self, *configs: Optional[Dict[str, Any]]
+    async def delete_plugin_config_upload_keys(
+        self,
+        plugin_owner: Optional[str],
+        keys: Set[str],
     ) -> int:
-        """Delete binary rows under ``system`` / ``plugin_config`` referenced by plugin config dict(s)."""
+        """Delete plugin config upload blobs from plugin-private binary storage."""
+        if not keys:
+            return 0
+
+        deleted = 0
+        for key in keys:
+            try:
+                if plugin_owner and await self.delete_binary("plugin", plugin_owner, key):
+                    deleted += 1
+            except Exception as e:
+                logger.warning(f"Failed to delete plugin config upload blob {key}: {e}")
+
+        logger.info(
+            f"Removed {deleted}/{len(keys)} plugin_config upload blob(s) from binary storage"
+        )
+        return deleted
+
+    async def delete_plugin_config_upload_blobs(
+        self,
+        plugin_owner: Optional[str],
+        *configs: Optional[Dict[str, Any]],
+    ) -> int:
+        """Delete config-upload blobs referenced by plugin config dict(s)."""
         keys: Set[str] = set()
         for c in configs:
             if c:
                 keys |= collect_plugin_config_upload_keys(c)
-        if not keys:
-            return 0
-        deleted = 0
-        for key in keys:
-            try:
-                if await self.delete_binary("system", "plugin_config", key):
-                    deleted += 1
-            except Exception as e:
-                logger.warning(f"Failed to delete plugin config upload blob {key}: {e}")
-        if keys:
-            logger.info(
-                f"Removed {deleted}/{len(keys)} plugin_config upload blob(s) from binary storage"
-            )
-        return deleted
+        return await self.delete_plugin_config_upload_keys(plugin_owner, keys)
 
     # ==================== Message Events ====================
 
@@ -474,7 +488,7 @@ class DatabaseManager:
         # Guard query size to avoid large response payloads / memory spikes.
         limit = max(1, min(int(limit or 100), 500))
         async with self.session() as session:
-            allowed_names = ["onebot.message"]
+            allowed_names = ["onebot.message", "onebot.message_sent"]
             if include_notices:
                 allowed_names.append("onebot.notice")
             if include_requests:
@@ -502,6 +516,8 @@ class DatabaseManager:
 
     async def truncate_message_events(self, max_rows: int = 50000) -> int:
         """Trim oldest persisted message events to keep at most ``max_rows`` rows."""
+        if int(max_rows or 0) <= 0:
+            return 0
         max_rows = max(1000, int(max_rows or 50000))
         async with self.session() as session:
             total_result = await session.execute(select(func.count(MessageEvent.id)))
@@ -541,7 +557,9 @@ class DatabaseManager:
             payload_user_id = func.json_extract(MessageEvent.payload, "$.user_id")
             payload_target_id = func.json_extract(MessageEvent.payload, "$.target_id")
 
-            query = select(MessageEvent).where(MessageEvent.event_name == "onebot.message")
+            query = select(MessageEvent).where(
+                MessageEvent.event_name.in_(["onebot.message", "onebot.message_sent"])
+            )
 
             if chat_type == "group":
                 group_conds = [payload_group_id == chat_id_str]

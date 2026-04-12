@@ -8,7 +8,7 @@ from typing import Any, Dict, Optional, Type
 from contextlib import asynccontextmanager
 from datetime import datetime
 
-from .config import Config, get_config
+from .config import Config, get_config, get_config_file_path
 from .logger import setup_logger, get_logger
 from .event_bus import EventBus, get_event_bus
 from .storage import Storage, init_storage
@@ -62,6 +62,7 @@ class Application:
         self.storage: Optional[Storage] = None
         self.db_manager: Optional[DatabaseManager] = None
         self.plugin_connector: Optional[Any] = None
+        self.blocking_task_pool: Optional[Any] = None
         self._running = False
         self._tasks: list[asyncio.Task] = []
         self._start_time: Optional[datetime] = None
@@ -87,14 +88,20 @@ class Application:
 
         logger.info("Starting application...")
         
-        # Initialize plugin thread pool early (before plugins load)
-        if getattr(self.config, 'plugin_thread_pool_enabled', True):
+        # Initialize blocking task pool early (before plugins load)
+        if getattr(self.config, 'blocking_task_pool_enabled', True):
             try:
-                from ..plugins.thread_pool import get_plugin_thread_pool_manager
-                self.plugin_thread_pool = get_plugin_thread_pool_manager()
-                logger.info("Plugin thread pool initialized with system-managed workers")
+                from .blocking_task_pool import get_blocking_task_pool_manager
+
+                self.blocking_task_pool = get_blocking_task_pool_manager(
+                    getattr(self.config, 'blocking_task_pool_max_workers', 0)
+                )
+                logger.info(
+                    "Blocking task pool initialized",
+                    configured_max_workers=getattr(self.config, 'blocking_task_pool_max_workers', 0),
+                )
             except Exception as e:
-                logger.warning(f"Failed to initialize plugin thread pool: {e}")
+                logger.warning(f"Failed to initialize blocking task pool: {e}")
 
         # Initialize event bus
         self.event_bus = get_event_bus()
@@ -197,6 +204,18 @@ class Application:
                     if modified_ctx.is_modified():
                         plugin_payload = modified_ctx.event_data
 
+                try:
+                    from ..assistant.runtime import get_assistant_runtime
+
+                    asyncio.create_task(
+                        get_assistant_runtime().handle_message(
+                            plugin_payload if isinstance(plugin_payload, dict) else {},
+                            self.onebot_adapter,
+                        )
+                    )
+                except Exception as e:
+                    logger.warning(f"Failed to schedule Assistant runtime: {e}")
+
             # For notice events, also use event context system (but don't block by default)
             elif event.get('type') == 'notice':
                 from ..core.event_context import EventContext
@@ -247,9 +266,9 @@ class Application:
         try:
             from ..ui.image_cache import get_image_cache_manager
             image_cache = get_image_cache_manager()
-            await image_cache.cleanup_all_images()  # Clean up all images on startup
-            await image_cache.start_periodic_cleanup(interval_hours=6)  # Clean up every 6 hours
-            logger.info("Image cache manager initialized and cleanup scheduled")
+            retention_days = max(1, int(getattr(self.config, "message_event_retention_days", 30)))
+            await image_cache.cleanup_old_images(max_age_hours=retention_days * 24)
+            logger.info("Media cache manager initialized", retention_days=retention_days)
         except Exception as e:
             logger.warning(f"Failed to initialize image cache manager: {e}")
         
@@ -265,8 +284,7 @@ class Application:
                 # since Config is a Pydantic model and doesn't support .get() method
                 interceptor_config = {}
                 try:
-                    project_root = Path(__file__).parent.parent.parent
-                    toml_file = project_root / "config.toml"
+                    toml_file = get_config_file_path()
                     if toml_file.exists():
                         with open(toml_file, "rb") as f:
                             toml_data = tomllib.load(f)
@@ -347,11 +365,11 @@ class Application:
 
         # Cleanup persisted message events daily to control DB size.
         try:
-            retention_days = max(1, int(getattr(self.config, "message_event_retention_days", 7)))
-            max_rows = max(1000, int(getattr(self.config, "message_event_max_rows", 50000)))
+            retention_days = max(1, int(getattr(self.config, "message_event_retention_days", 30)))
+            max_rows = int(getattr(self.config, "message_event_max_rows", 0))
             interval_seconds = max(
                 300,
-                int(getattr(self.config, "message_event_cleanup_interval_seconds", 3600))
+                int(getattr(self.config, "message_event_cleanup_interval_seconds", 86400))
             )
 
             async def cleanup_message_events():
@@ -360,16 +378,31 @@ class Application:
                         deleted_by_days = await self.db_manager.cleanup_message_events(
                             retention_days=retention_days
                         )
-                        deleted_by_cap = await self.db_manager.truncate_message_events(
-                            max_rows=max_rows
-                        )
+                        deleted_by_cap = 0
+                        if max_rows > 0:
+                            deleted_by_cap = await self.db_manager.truncate_message_events(
+                                max_rows=max_rows
+                            )
+                        deleted_cached_media = 0
+                        try:
+                            from ..ui.image_cache import get_image_cache_manager
+
+                            image_cache = get_image_cache_manager()
+                            deleted_cached_media = await image_cache.cleanup_old_images(
+                                max_age_hours=retention_days * 24
+                            )
+                        except Exception as media_cleanup_error:
+                            logger.warning(
+                                f"Failed to cleanup cached media: {media_cleanup_error}"
+                            )
                         deleted = deleted_by_days + deleted_by_cap
-                        if deleted > 0:
+                        if deleted > 0 or deleted_cached_media > 0:
                             logger.info(
-                                "Message event cleanup done",
+                                "Message event/media cleanup done",
                                 deleted=deleted,
                                 deleted_by_days=deleted_by_days,
                                 deleted_by_cap=deleted_by_cap,
+                                deleted_cached_media=deleted_cached_media,
                                 retention_days=retention_days,
                                 max_rows=max_rows,
                             )
@@ -381,7 +414,7 @@ class Application:
             logger.info(
                 "Message event cleanup scheduler started",
                 retention_days=retention_days,
-                max_rows=max_rows,
+                max_rows=max_rows if max_rows > 0 else "disabled",
                 interval_seconds=interval_seconds,
             )
         except Exception as e:
@@ -421,14 +454,6 @@ class Application:
         if self.plugin_connector:
             await self.plugin_connector.dispose()
         
-        # Stop image cache cleanup task
-        try:
-            from ..ui.image_cache import get_image_cache_manager
-            image_cache = get_image_cache_manager()
-            await image_cache.stop_periodic_cleanup()
-        except Exception as e:
-            logger.warning(f"Failed to stop image cache cleanup: {e}")
-
         # Cancel all tasks
         for task in self._tasks:
             if not task.done():
@@ -445,6 +470,16 @@ class Application:
         # Close storage
         if self.storage:
             await self.storage.close()
+
+        # Shutdown blocking task pool
+        if self.blocking_task_pool:
+            try:
+                from .blocking_task_pool import shutdown_blocking_task_pool
+
+                shutdown_blocking_task_pool(wait=True)
+                self.blocking_task_pool = None
+            except Exception as e:
+                logger.warning(f"Failed to shutdown blocking task pool: {e}")
 
         self._running = False
         logger.info("Application shut down successfully")

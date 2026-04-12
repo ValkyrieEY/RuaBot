@@ -1,6 +1,5 @@
-"""NapCat installation and management module."""
+"""Framework-managed NapCat integration."""
 
-from .manager import NapCatManager, get_napcat_manager
+from .manager import get_napcat_manager, NapCatManager
 
-__all__ = ['NapCatManager', 'get_napcat_manager']
-
+__all__ = ["get_napcat_manager", "NapCatManager"]

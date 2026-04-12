@@ -2,16 +2,16 @@ import { useState, FormEvent, useEffect, useRef } from 'react'
 import { useTranslation } from 'react-i18next'
 import { Save, AlertCircle, RefreshCw } from 'lucide-react'
 import { api, type OneBotConfig } from '@/utils/api'
+import { useToast } from '@/components/Toast'
 
 export default function OneBotPage() {
   const { t } = useTranslation()
+  const toast = useToast()
   const [config, setConfig] = useState<OneBotConfig | null>(null)
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
   const [reconnecting, setReconnecting] = useState(false)
-  const [success, setSuccess] = useState(false)
   const [error, setError] = useState('')
-  const [reconnectSuccess, setReconnectSuccess] = useState(false)
   
   // 用于防止竞态条件
   const loadingRequestRef = useRef(0)
@@ -77,7 +77,6 @@ export default function OneBotPage() {
     if (!config) return
 
     setSaving(true)
-    setSuccess(false)
     setError('')
 
     try {
@@ -92,11 +91,10 @@ export default function OneBotPage() {
         access_token: config.onebot_access_token,
       }
       await api.updateOneBotConfig(updateData)
-      setSuccess(true)
+      toast.success(t('onebot.saveSuccess'))
       await loadConfig() // Reload to confirm changes
-      setTimeout(() => setSuccess(false), 3000)
     } catch (err: any) {
-      setError(err.response?.data?.detail || t('onebot.saveFailed'))
+      toast.error(err.response?.data?.detail || t('onebot.saveFailed'))
     } finally {
       setSaving(false)
     }
@@ -104,19 +102,17 @@ export default function OneBotPage() {
 
   const handleReconnect = async () => {
     setReconnecting(true)
-    setReconnectSuccess(false)
     setError('')
 
     try {
       const result = await api.reconnectOneBot()
       if (result.success) {
-        setReconnectSuccess(true)
-        setTimeout(() => setReconnectSuccess(false), 3000)
+        toast.success(t('onebot.reconnectSuccess'))
       } else {
-        setError(result.message || t('onebot.reconnectFailed'))
+        toast.error(result.message || t('onebot.reconnectFailed'))
       }
     } catch (err: any) {
-      setError(err.response?.data?.detail || t('onebot.reconnectFailed'))
+      toast.error(err.response?.data?.detail || t('onebot.reconnectFailed'))
     } finally {
       setReconnecting(false)
     }
@@ -158,18 +154,6 @@ export default function OneBotPage() {
       </div>
 
       <form onSubmit={handleSubmit} className="card space-y-6">
-        {success && (
-          <div className="bg-green-50 border border-green-200 text-green-700 px-4 py-3 rounded-lg">
-            {t('onebot.saveSuccess')}
-          </div>
-        )}
-
-        {reconnectSuccess && (
-          <div className="bg-green-50 border border-green-200 text-green-700 px-4 py-3 rounded-lg">
-            {t('onebot.reconnectSuccess')}
-          </div>
-        )}
-
         {error && (
           <div className="bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded-lg flex items-center gap-2">
             <AlertCircle className="w-5 h-5" />

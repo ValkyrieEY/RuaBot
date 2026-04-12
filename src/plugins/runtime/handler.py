@@ -40,6 +40,8 @@ class RuntimeConnectionHandler:
             return await self._handle_get_config(data)
         elif action == 'set_config':
             return await self._handle_set_config(data)
+        elif action == 'get_config_upload':
+            return await self._handle_get_config_upload(data)
         elif action == 'get_binary':
             return await self._handle_get_binary(data)
         elif action == 'set_binary':
@@ -68,6 +70,21 @@ class RuntimeConnectionHandler:
             author, name, config=config
         )
         return {'success': success}
+
+    async def _handle_get_config_upload(self, data: Dict[str, Any]) -> Dict[str, Any]:
+        """Handle plugin config upload reads from plugin-private storage."""
+        owner = data.get('owner')
+        key = data.get('key')
+
+        if not isinstance(key, str) or not key.startswith('plugin_config_'):
+            return {'success': False, 'error': 'Invalid config upload key'}
+
+        value = await self.db_manager.get_binary('plugin', owner, key)
+        if value:
+            import base64
+
+            return {'success': True, 'value': base64.b64encode(value).decode()}
+        return {'success': False, 'error': 'Key not found'}
     
     async def _handle_get_binary(self, data: Dict[str, Any]) -> Dict[str, Any]:
         """Handle get_binary request."""

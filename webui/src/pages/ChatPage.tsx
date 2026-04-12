@@ -5,6 +5,7 @@ import { api } from '@/utils/api'
 import { useWebSocket, type WebSocketMessage } from '@/hooks/useWebSocket'
 import { parseMessageContent } from '@/utils/messageParser'
 import EmojiPicker from '@/components/EmojiPicker'
+import { useToast } from '@/components/Toast'
 
 interface Contact {
   id: string
@@ -29,13 +30,32 @@ interface Message {
     user_id?: string | number
     nickname?: string
     card?: string
+    avatar?: string
     [key: string]: any
   }
   is_self: boolean
 }
 
+function fallbackAvatar(label: string, size = 40): string {
+  const text = (label || '?').trim().slice(0, 2) || '?'
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${size}" height="${size}" viewBox="0 0 ${size} ${size}"><defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#dbeafe"/><stop offset="1" stop-color="#e2e8f0"/></linearGradient></defs><rect width="${size}" height="${size}" rx="${size / 2}" fill="url(#g)"/><text x="50%" y="50%" text-anchor="middle" dominant-baseline="central" fill="#475569" font-family="sans-serif" font-size="${Math.max(12, Math.floor(size * 0.34))}" font-weight="700">${text}</text></svg>`
+  return `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`
+}
+
+function qqAvatar(userId?: string | number): string | null {
+  const id = String(userId || '').trim()
+  return id ? `https://q.qlogo.cn/headimg_dl?dst_uin=${id}&spec=640` : null
+}
+
+function messageAvatar(msg: Message, fallbackLabel: string): string {
+  const senderUserId = msg.sender?.user_id
+  const userId = msg.is_self ? (senderUserId || msg.user_id) : (msg.user_id || senderUserId)
+  return msg.sender?.avatar || qqAvatar(userId) || fallbackAvatar(msg.is_self ? 'Bot' : fallbackLabel)
+}
+
 export default function ChatPage() {
   const { t } = useTranslation()
+  const toast = useToast()
   const [contacts, setContacts] = useState<Contact[]>([])
   const [selectedContact, setSelectedContact] = useState<Contact | null>(null)
   const [messages, setMessages] = useState<Message[]>([])
@@ -325,7 +345,7 @@ export default function ChatPage() {
       }, 300)
     } catch (error: any) {
       console.error('Send message error:', error)
-      alert(error.response?.data?.detail || '发送失败')
+      toast.error(error.response?.data?.detail || '发送失败')
     } finally {
       setSending(false)
     }
@@ -348,13 +368,13 @@ export default function ChatPage() {
 
     // 检查文件类型
     if (!file.type.startsWith('image/')) {
-      alert('请选择图片文件')
+      toast.warning('请选择图片文件')
       return
     }
 
     // 检查文件大小（最大10MB）
     if (file.size > 10 * 1024 * 1024) {
-      alert('图片大小不能超过10MB')
+      toast.warning('图片大小不能超过10MB')
       return
     }
 
@@ -388,7 +408,7 @@ export default function ChatPage() {
         } catch (error: any) {
           console.error('Send image error:', error)
           const errorMsg = error.response?.data?.detail || error.message || '发送图片失败'
-          alert(`发送图片失败: ${errorMsg}`)
+          toast.error(`发送图片失败: ${errorMsg}`)
         } finally {
           setSending(false)
           if (fileInputRef.current) {
@@ -398,12 +418,12 @@ export default function ChatPage() {
       }
       reader.onerror = () => {
         setSending(false)
-        alert('读取图片失败')
+        toast.error('读取图片失败')
       }
       reader.readAsDataURL(file)
     } catch (error) {
       setSending(false)
-      alert('发送图片失败')
+      toast.error('发送图片失败')
       if (fileInputRef.current) {
         fileInputRef.current.value = ''
       }
@@ -535,7 +555,7 @@ export default function ChatPage() {
                       alt={contact.name}
                       className="w-12 h-12 rounded-full object-cover"
                       onError={(e) => {
-                        e.currentTarget.src = 'data:image/svg+xml,%3Csvg xmlns="http://www.w3.org/2000/svg" width="48" height="48"%3E%3Crect width="48" height="48" fill="%23e5e7eb"/%3E%3Ctext x="50%25" y="50%25" text-anchor="middle" dy=".3em" fill="%239ca3af" font-size="16"%3E%3C/text%3E%3C/svg%3E'
+                        e.currentTarget.src = fallbackAvatar(contact.name, 48)
                       }}
                     />
                     {unreadCount > 0 && (
@@ -593,6 +613,9 @@ export default function ChatPage() {
                   src={selectedContact.avatar}
                   alt={selectedContact.name}
                   className="w-10 h-10 rounded-full object-cover flex-shrink-0"
+                  onError={(e) => {
+                    e.currentTarget.src = fallbackAvatar(selectedContact.name, 40)
+                  }}
                 />
                 <div className="min-w-0 flex-1">
                   <div className="flex items-center gap-2">
@@ -637,7 +660,7 @@ export default function ChatPage() {
                         setGroupMembers(sortedMembers)
                       } catch (error) {
                         console.error('Failed to load group members:', error)
-                        alert('加载群成员列表失败')
+                        toast.error('加载群成员列表失败')
                       } finally {
                         setLoadingMembers(false)
                       }
@@ -668,15 +691,16 @@ export default function ChatPage() {
                 messages.map((msg) => {
                   const senderName = msg.sender?.card || msg.sender?.nickname || `用户${msg.user_id}`
                   const isGroup = selectedContact.type === 'group'
+                  const avatarSrc = messageAvatar(msg, senderName)
                   
                   return (
                     <div key={msg.id} className={`flex gap-2 md:gap-3 ${msg.is_self ? 'flex-row-reverse' : ''}`}>
                       <img
-                        src={`https://q.qlogo.cn/headimg_dl?dst_uin=${msg.user_id}&spec=640`}
+                        src={avatarSrc}
                         alt={senderName}
                         className="w-8 h-8 md:w-10 md:h-10 rounded-full object-cover flex-shrink-0"
                         onError={(e) => {
-                          e.currentTarget.src = 'data:image/svg+xml,%3Csvg xmlns="http://www.w3.org/2000/svg" width="40" height="40"%3E%3Crect width="40" height="40" fill="%23e5e7eb"/%3E%3Ctext x="50%25" y="50%25" text-anchor="middle" dy=".3em" fill="%239ca3af" font-size="14"%3E%3C/text%3E%3C/svg%3E'
+                          e.currentTarget.src = fallbackAvatar(msg.is_self ? 'Bot' : senderName, 40)
                         }}
                       />
                       <div className={`flex-1 min-w-0 ${msg.is_self ? 'flex flex-col items-end' : ''}`}>
@@ -806,7 +830,7 @@ export default function ChatPage() {
                         alt={member.nickname || member.card || `用户${member.user_id}`}
                         className="w-10 h-10 rounded-full object-cover flex-shrink-0"
                         onError={(e) => {
-                          e.currentTarget.src = 'data:image/svg+xml,%3Csvg xmlns="http://www.w3.org/2000/svg" width="40" height="40"%3E%3Crect width="40" height="40" fill="%23e5e7eb"/%3E%3Ctext x="50%25" y="50%25" text-anchor="middle" dy=".3em" fill="%239ca3af" font-size="14"%3E%3C/text%3E%3C/svg%3E'
+                          e.currentTarget.src = fallbackAvatar(member.card || member.nickname || `用户${member.user_id}`, 40)
                         }}
                       />
                       <div className="flex-1 min-w-0">

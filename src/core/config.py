@@ -1,6 +1,7 @@
 """Configuration management with hot reload support."""
 
 import os
+import sys
 import tomllib
 import tomli_w
 from pathlib import Path
@@ -10,6 +11,27 @@ from functools import lru_cache
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from .version import get_version
+
+
+def get_runtime_base_dir() -> Path:
+    """Resolve runtime base directory for config/data files."""
+    if getattr(sys, "frozen", False):
+        # PyInstaller: keep runtime data beside executable.
+        return Path(sys.executable).resolve().parent
+    return Path(__file__).resolve().parent.parent.parent
+
+
+def get_config_file_path(filename: str = "config.toml") -> Path:
+    """Resolve config file path with a safe fallback order."""
+    preferred = get_runtime_base_dir() / filename
+    if preferred.exists():
+        return preferred
+
+    cwd_candidate = Path.cwd() / filename
+    if cwd_candidate.exists():
+        return cwd_candidate
+
+    return preferred
 
 
 class Config(BaseSettings):
@@ -78,14 +100,15 @@ class Config(BaseSettings):
     # AI Workspace
     ai_workspace_mode: str = Field(default="agent", alias="AI_WORKSPACE_MODE")
     
-    # Plugin Thread Pool
-    plugin_thread_pool_enabled: bool = Field(default=True, alias="PLUGIN_THREAD_POOL_ENABLED")
+    # Blocking Task Pool
+    blocking_task_pool_enabled: bool = Field(default=True, alias="BLOCKING_TASK_POOL_ENABLED")
+    blocking_task_pool_max_workers: int = Field(default=0, alias="BLOCKING_TASK_POOL_MAX_WORKERS")
 
     # Message event persistence (for WebUI history recovery)
-    message_event_retention_days: int = Field(default=7, alias="MESSAGE_EVENT_RETENTION_DAYS")
-    message_event_max_rows: int = Field(default=50000, alias="MESSAGE_EVENT_MAX_ROWS")
+    message_event_retention_days: int = Field(default=30, alias="MESSAGE_EVENT_RETENTION_DAYS")
+    message_event_max_rows: int = Field(default=0, alias="MESSAGE_EVENT_MAX_ROWS")
     message_event_cleanup_interval_seconds: int = Field(
-        default=3600,
+        default=86400,
         alias="MESSAGE_EVENT_CLEANUP_INTERVAL_SECONDS"
     )
     
@@ -112,7 +135,7 @@ class Config(BaseSettings):
                 # to avoid conflicts from previous runs
                 config_keys = [
                     "LOG_LEVEL", "DEBUG", "APP_DEBUG", "LOGGING_LEVEL", "APP_LOG_LEVEL",
-                    "WEB_UI_ENABLED", "PLUGIN_AUTO_LOAD"
+                    "WEB_UI_ENABLED", "WEB_UI_USERNAME", "WEB_UI_PASSWORD", "PLUGIN_AUTO_LOAD"
                 ]
                 for key in config_keys:
                     os.environ.pop(key, None)
@@ -172,9 +195,12 @@ def _flatten_toml(data: Dict[str, Any], result: Dict[str, str], prefix: str = ""
             # [plugins].auto_load -> PLUGIN_AUTO_LOAD (not PLUGINS_AUTO_LOAD)
             elif env_key == "PLUGINS_AUTO_LOAD":
                 result["PLUGIN_AUTO_LOAD"] = value
-            # [plugins].thread_pool_enabled -> PLUGIN_THREAD_POOL_ENABLED (not PLUGINS_THREAD_POOL_ENABLED)
-            elif env_key == "PLUGINS_THREAD_POOL_ENABLED":
-                result["PLUGIN_THREAD_POOL_ENABLED"] = value
+            # [plugins].blocking_task_pool_enabled -> BLOCKING_TASK_POOL_ENABLED
+            elif env_key == "PLUGINS_BLOCKING_TASK_POOL_ENABLED":
+                result["BLOCKING_TASK_POOL_ENABLED"] = value
+            # [plugins].blocking_task_pool_max_workers -> BLOCKING_TASK_POOL_MAX_WORKERS
+            elif env_key == "PLUGINS_BLOCKING_TASK_POOL_MAX_WORKERS":
+                result["BLOCKING_TASK_POOL_MAX_WORKERS"] = value
             # [plugins].auto_reload -> AUTO_RELOAD (not PLUGINS_AUTO_RELOAD)
             elif env_key == "PLUGINS_AUTO_RELOAD":
                 result["AUTO_RELOAD"] = value
@@ -194,8 +220,7 @@ class ConfigManager:
     def load(self, config_path: Optional[str] = None) -> Config:
         """Load configuration from TOML file or environment."""
         # Try to load from config.toml first
-        project_root = Path(__file__).parent.parent.parent  # onebot_framework/
-        toml_file = project_root / "config.toml"
+        toml_file = get_config_file_path()
         
         if toml_file.exists():
             self._config = Config.from_toml(toml_file)
@@ -211,8 +236,7 @@ class ConfigManager:
         """Reload configuration and notify callbacks."""
         old_config = self._config
         # Force reload from TOML file
-        project_root = Path(__file__).parent.parent.parent  # onebot_framework/
-        toml_file = project_root / "config.toml"
+        toml_file = get_config_file_path()
         
         if toml_file.exists():
             self._config = Config.from_toml(toml_file)

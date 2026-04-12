@@ -65,6 +65,8 @@ class OneBotAdapter(ProtocolAdapter):
         self._api_responses: Dict[str, asyncio.Future] = {}
         self._echo_counter = 0
         self._cleanup_task: Optional[asyncio.Task] = None  # 清理任务
+        self.self_id = str(config.get("self_id", "") or "")
+        self.self_nickname = str(config.get("nickname", "") or config.get("self_nickname", "") or "Bot")
         
         # Timeout 配置
         self.http_timeout = config.get("http_timeout", 120.0)  # HTTP 请求超时（发送消息、上传文件等）
@@ -446,6 +448,8 @@ class OneBotAdapter(ProtocolAdapter):
         # BUT allow message_sent events (self-sent messages) for chat history
         user_id = data.get("user_id")
         self_id = data.get("self_id")
+        if self_id:
+            self.self_id = str(self_id)
         if user_id and self_id and str(user_id) == str(self_id) and post_type != "message_sent":
             logger.debug("Skipping self message", user_id=user_id, post_type=post_type)
             return
@@ -911,15 +915,46 @@ class OneBotAdapter(ProtocolAdapter):
             "internal_code": None
         }
     
-    async def call_api(self, action: str, params: Dict[str, Any], source_plugin: Optional[str] = None) -> Dict[str, Any]:
+    async def call_api(
+        self,
+        action: str,
+        params: Dict[str, Any],
+        source_plugin: Optional[str] = None,
+        source: Optional[str] = None,
+    ) -> Dict[str, Any]:
         """Call OneBot API.
         
         Args:
             action: API action name
             params: API parameters
             source_plugin: Plugin ID that initiated the call (if any)
+            source: Framework subsystem that initiated the call, e.g. "assistant" or "webui:admin"
         """
-        logger.debug(f"call_api called: action={action}, params={params}, connection_type={self.connection_type}, source_plugin={source_plugin}")
+        params = dict(params or {})
+        framework_meta = params.pop("_xq_meta", {})
+        if not isinstance(framework_meta, dict):
+            framework_meta = {}
+        call_source = source_plugin or source or "onebot"
+
+        def _redact_for_log(value: Any) -> Any:
+            if isinstance(value, str):
+                if value.startswith("base64://"):
+                    return f"base64://<redacted:{len(value)} chars>"
+                if "base64://" in value:
+                    return value[:200].replace("base64://", "base64://<redacted>") + (
+                        "..." if len(value) > 200 else ""
+                    )
+                return value
+            if isinstance(value, dict):
+                return {k: _redact_for_log(v) for k, v in value.items()}
+            if isinstance(value, list):
+                return [_redact_for_log(v) for v in value]
+            return value
+
+        logger.debug(
+            f"call_api called: action={action}, params={_redact_for_log(params)}, "
+            f"connection_type={self.connection_type}, source_plugin={source_plugin}, source={call_source}"
+        )
         
         # Check if this is a message-sending action
         # Include all OneBot message sending APIs
@@ -932,6 +967,10 @@ class OneBotAdapter(ProtocolAdapter):
             'send_forward_msg',         # 发送合并转发消息（通用）
         ]
         is_message_action = action in message_actions
+
+        def _is_expected_media_lookup_miss(message: str) -> bool:
+            text = (message or "").lower()
+            return action in {"get_record", "get_image", "get_file"} and "file not found" in text
         
         # Emit event with context before sending message (allows plugins to modify/block)
         # Note: Plugin-initiated calls are already handled by interceptors in connector.py
@@ -947,9 +986,11 @@ class OneBotAdapter(ProtocolAdapter):
                     event_name='message.before_send',
                     event_data={
                         'action': action,
-                        'params': params
+                        'params': params,
+                        'source': call_source,
+                        'source_plugin': source_plugin,
                     },
-                    source="onebot"
+                    source=call_source
                 )
                 
                 # Emit with context (allows plugins to modify/block)
@@ -958,9 +999,11 @@ class OneBotAdapter(ProtocolAdapter):
                     'message.before_send',
                     {
                         'action': action,
-                        'params': params
+                        'params': params,
+                        'source': call_source,
+                        'source_plugin': source_plugin,
                     },
-                    source="onebot",
+                    source=call_source,
                     plugin_connector=app.plugin_connector
                 )
                 
@@ -981,9 +1024,10 @@ class OneBotAdapter(ProtocolAdapter):
         
         # Helper function to emit message_sent event
         async def emit_message_sent_event(result_data: Dict[str, Any] = None):
-            """Emit message_sent event for statistics."""
+            """Emit enriched message_sent event and persist it for chat history."""
             try:
                 from ..core.event_bus import get_event_bus
+                from ..core.database import get_database_manager
                 event_bus = get_event_bus()
                 if not event_bus:
                     logger.warning("EventBus not available, cannot emit message_sent event")
@@ -1008,23 +1052,85 @@ class OneBotAdapter(ProtocolAdapter):
                         message_type = "unknown"
                         target = ""
                 
-                message_id = result_data.get("message_id") if result_data else None
+                message_id = result_data.get("message_id") if isinstance(result_data, dict) else None
+
+                raw_message_value = framework_meta.get("display_message", params.get("message"))
+                if raw_message_value is None and "forward" in action:
+                    raw_message = "[合并转发消息]"
+                elif isinstance(raw_message_value, str):
+                    raw_message = raw_message_value
+                elif isinstance(raw_message_value, list):
+                    try:
+                        raw_message = json.dumps(raw_message_value, ensure_ascii=False)
+                    except Exception:
+                        raw_message = str(raw_message_value)
+                else:
+                    raw_message = str(raw_message_value) if raw_message_value is not None else ""
+
+                sender_payload = framework_meta.get("sender") or params.get("sender")
+                sender = dict(sender_payload) if isinstance(sender_payload, dict) else {}
+                source_user_id = str(framework_meta.get("self_id") or params.get("self_id") or self.self_id or "")
+                if not sender.get("nickname"):
+                    sender["nickname"] = framework_meta.get("self_nickname") or self.self_nickname or "Bot"
+                if source_user_id and not sender.get("user_id"):
+                    sender["user_id"] = source_user_id
+                if source_user_id and not sender.get("avatar"):
+                    sender["avatar"] = f"https://q.qlogo.cn/headimg_dl?dst_uin={source_user_id}&spec=640"
+
+                event_payload = {
+                    "message_type": message_type,
+                    "target": target,
+                    "target_id": target if message_type == "private" else None,
+                    "group_id": target if message_type == "group" else None,
+                    "message_id": str(message_id) if message_id is not None else "",
+                    "user_id": source_user_id,
+                    "raw_message": raw_message,
+                    "message": raw_message,
+                    "sender": sender,
+                    "is_self": True,
+                    "timestamp": datetime.now().isoformat(),
+                    "action": action,
+                    "source_plugin": source_plugin,
+                    "source": call_source,
+                }
                 
                 logger.debug(
                     f"Emitting message_sent event: action={action}, message_type={message_type}, "
                     f"target={target}, message_id={message_id}"
                 )
                 
-                await event_bus.publish("onebot.message_sent", {
-                    "message_type": message_type,
-                    "target": target,
-                    "message_id": message_id,
-                    "timestamp": datetime.now()
-                })
+                published_event_id = await event_bus.publish(
+                    "onebot.message_sent",
+                    event_payload,
+                    source=call_source
+                )
+
+                # Persist sent-message rows so chat history can recover after refresh/reconnect.
+                try:
+                    db_manager = get_database_manager()
+                    await db_manager.create_message_event(
+                        event_id=published_event_id,
+                        event_name="onebot.message_sent",
+                        payload=event_payload,
+                        source="self",
+                    )
+                except Exception as persist_error:
+                    logger.warning(f"Failed to persist message_sent event: {persist_error}")
                 
                 logger.debug(f"Successfully emitted message_sent event for {action}")
             except Exception as e:
                 logger.error(f"Failed to emit message_sent event: {e}", exc_info=True)
+
+        def remember_login_info(result_data: Dict[str, Any]) -> None:
+            """Keep a lightweight cached bot identity for WebUI self-message rendering."""
+            if action != "get_login_info" or not isinstance(result_data, dict):
+                return
+            user_id = result_data.get("user_id")
+            nickname = result_data.get("nickname")
+            if user_id:
+                self.self_id = str(user_id)
+            if nickname:
+                self.self_nickname = str(nickname)
         
         # Use WebSocket if available (forward or reverse)
         if self.connection_type in ("ws", "ws_forward") and self._ws:
@@ -1042,7 +1148,7 @@ class OneBotAdapter(ProtocolAdapter):
                     "params": params,
                     "echo": echo
                 }
-                logger.debug(f"WebSocket payload: {json.dumps(payload)}")
+                logger.debug(f"WebSocket payload: {json.dumps(_redact_for_log(payload), ensure_ascii=False)}")
                 await self._ws.send(json.dumps(payload))
                 logger.debug(f"WebSocket message sent, waiting for response (echo={echo})")
                 
@@ -1052,6 +1158,7 @@ class OneBotAdapter(ProtocolAdapter):
                     logger.debug(f"Received API response: {result}")
                     if result.get("status") == "ok":
                         data = result.get("data", {})
+                        remember_login_info(data)
                         # Emit message_sent event for message-sending actions
                         if is_message_action:
                             await emit_message_sent_event(data)
@@ -1059,13 +1166,27 @@ class OneBotAdapter(ProtocolAdapter):
                     else:
                         # Parse error and provide friendly error message
                         error_info = self._parse_api_error(result, action, params)
-                        logger.error(f"API call failed: {error_info['message']}")
+                        if _is_expected_media_lookup_miss(error_info["message"]):
+                            logger.debug(f"API media lookup miss ({action}): {error_info['message']}")
+                        else:
+                            logger.error(f"API call failed: {error_info['message']}")
                         raise RuntimeError(error_info['message'])
+                except asyncio.CancelledError as e:
+                    # Future may be cancelled when WS reconnects and pending futures are flushed.
+                    # Convert to RuntimeError so upper API handlers can degrade gracefully.
+                    task = asyncio.current_task()
+                    if task is not None and getattr(task, "cancelling", lambda: 0)() > 0:
+                        raise
+                    logger.warning(f"API response future cancelled (likely WS reconnect): {action} (echo={echo})")
+                    raise RuntimeError(f"API call cancelled due to OneBot connection reset: {action}") from e
                 except asyncio.TimeoutError:
                     logger.error(f"API call timeout: {action} (echo={echo})")
                     raise RuntimeError(f"API call timeout: {action}")
             except Exception as e:
-                logger.error(f"Failed to call API via WebSocket: {e}", exc_info=True)
+                if _is_expected_media_lookup_miss(str(e)):
+                    logger.debug(f"WebSocket API media lookup miss ({action}): {e}")
+                else:
+                    logger.error(f"Failed to call API via WebSocket: {e}", exc_info=True)
                 raise RuntimeError(f"Failed to call API via WebSocket: {e}")
             finally:
                 # Always remove the future from the dictionary to prevent memory leaks
@@ -1093,6 +1214,7 @@ class OneBotAdapter(ProtocolAdapter):
                         result = await asyncio.wait_for(future, timeout=self.ws_api_timeout)
                         if result.get("status") == "ok":
                             data = result.get("data", {})
+                            remember_login_info(data)
                             # Emit message_sent event for message-sending actions
                             if is_message_action:
                                 await emit_message_sent_event(data)
@@ -1100,8 +1222,17 @@ class OneBotAdapter(ProtocolAdapter):
                         else:
                             # Parse error and provide friendly error message
                             error_info = self._parse_api_error(result, action, params)
-                            logger.error(f"API call failed: {error_info['message']}")
+                            if _is_expected_media_lookup_miss(error_info["message"]):
+                                logger.debug(f"API media lookup miss ({action}): {error_info['message']}")
+                            else:
+                                logger.error(f"API call failed: {error_info['message']}")
                             raise RuntimeError(error_info['message'])
+                    except asyncio.CancelledError as e:
+                        task = asyncio.current_task()
+                        if task is not None and getattr(task, "cancelling", lambda: 0)() > 0:
+                            raise
+                        logger.warning(f"Reverse WS API response future cancelled (likely reconnect): {action} (echo={echo})")
+                        raise RuntimeError(f"API call cancelled due to OneBot connection reset: {action}") from e
                     except asyncio.TimeoutError:
                         raise RuntimeError(f"API call timeout: {action}")
             except Exception as e:
@@ -1113,13 +1244,23 @@ class OneBotAdapter(ProtocolAdapter):
             # Fallback to HTTP
             if not self._http_client:
                 raise RuntimeError("HTTP client not initialized and WebSocket not available")
-
-            response = await self._http_client.post(f"/{action}", json=params)
-            response.raise_for_status()
-            result = response.json()
+            try:
+                response = await self._http_client.post(f"/{action}", json=params)
+                response.raise_for_status()
+                result = response.json()
+            except httpx.ConnectError as e:
+                raise RuntimeError(
+                    f"Failed to connect to OneBot HTTP API at {self.http_url}"
+                ) from e
+            except httpx.TimeoutException as e:
+                raise RuntimeError(f"OneBot HTTP API timeout: {action}") from e
+            except httpx.HTTPStatusError as e:
+                status_code = e.response.status_code if e.response is not None else "unknown"
+                raise RuntimeError(f"OneBot HTTP API returned {status_code} for action: {action}") from e
             
             if result.get("status") == "ok":
                 data = result.get("data", {})
+                remember_login_info(data)
                 # Emit message_sent event for message-sending actions
                 if is_message_action:
                     await emit_message_sent_event(data)
@@ -1127,7 +1268,10 @@ class OneBotAdapter(ProtocolAdapter):
             else:
                 # Parse error and provide friendly error message
                 error_info = self._parse_api_error(result, action, params)
-                logger.error(f"API call failed: {error_info['message']}")
+                if _is_expected_media_lookup_miss(error_info["message"]):
+                    logger.debug(f"API media lookup miss ({action}): {error_info['message']}")
+                else:
+                    logger.error(f"API call failed: {error_info['message']}")
                 raise RuntimeError(error_info['message'])
 
     def get_protocol_name(self) -> str:

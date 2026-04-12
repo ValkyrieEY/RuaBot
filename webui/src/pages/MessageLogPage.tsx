@@ -1,18 +1,30 @@
 import { useEffect, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
+import {
+  Bell,
+  Clock,
+  MessageSquare,
+  RefreshCw,
+  User,
+  UserPlus,
+  Users,
+  Wifi,
+  WifiOff,
+  X,
+} from 'lucide-react'
 import { api, type MessageLog } from '@/utils/api'
-import { MessageSquare, User, Users, Clock, RefreshCw, Bell, UserPlus, Wifi, WifiOff } from 'lucide-react'
 import { useWebSocket, type WebSocketMessage } from '@/hooks/useWebSocket'
+
+type MessageFilter = 'all' | 'message' | 'notice' | 'request'
 
 export default function MessageLogPage() {
   const { t } = useTranslation()
   const [messages, setMessages] = useState<MessageLog[]>([])
   const [loading, setLoading] = useState(true)
-  const [refreshing, setRefreshing] = useState(false)
-  const [limit, setLimit] = useState(100)
-  const [autoRefresh, setAutoRefresh] = useState(true)
-  const [filter, setFilter] = useState<'all' | 'message' | 'notice' | 'request'>('all')
+  const [filter, setFilter] = useState<MessageFilter>('all')
+  const [selectedMessage, setSelectedMessage] = useState<MessageLog | null>(null)
   const messagesRef = useRef<MessageLog[]>([])
+  const limit = 300
 
   const getEventKey = (msg: MessageLog) => {
     return (
@@ -27,54 +39,49 @@ export default function MessageLogPage() {
     return Number.isNaN(ts) ? 0 : ts
   }
 
-  const getMaxDbRowId = (list: MessageLog[]) => {
-    return list.reduce((max, item) => {
-      const rowId = Number(item.db_row_id || 0)
-      return rowId > max ? rowId : max
-    }, 0)
-  }
-
   const mergeMessageLists = (base: MessageLog[], incoming: MessageLog[], nextLimit: number) => {
     const byKey = new Map<string, MessageLog>()
 
     const upsert = (msg: MessageLog) => {
-      const key = getEventKey(msg)
-      const existing = byKey.get(key)
-      if (!existing) {
-        byKey.set(key, msg)
-        return
-      }
-
-      const oldRowId = Number(existing.db_row_id || 0)
-      const newRowId = Number(msg.db_row_id || 0)
-      if (newRowId > oldRowId) {
-        byKey.set(key, { ...existing, ...msg })
-      } else if (newRowId === oldRowId) {
-        byKey.set(key, { ...existing, ...msg })
-      }
+      byKey.set(getEventKey(msg), msg)
     }
 
     base.forEach(upsert)
     incoming.forEach(upsert)
 
     return Array.from(byKey.values())
-      .sort((a, b) => {
-        const bRow = Number(b.db_row_id || 0)
-        const aRow = Number(a.db_row_id || 0)
-        if (bRow !== aRow) return bRow - aRow
-        return getEventTime(b) - getEventTime(a)
-      })
+      .sort((a, b) => getEventTime(b) - getEventTime(a))
       .slice(0, nextLimit)
   }
 
-  // WebSocket for real-time updates
+  const loadMessages = async (replace = true) => {
+    if (replace && messagesRef.current.length === 0) {
+      setLoading(true)
+    }
+
+    try {
+      const data = await api.getSessionMessageLog(limit)
+      setMessages((prev) => (replace ? mergeMessageLists([], data, limit) : mergeMessageLists(prev, data, limit)))
+    } catch (error) {
+      console.error('Failed to load session messages:', error)
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  const compensateMissedMessages = async () => {
+    await loadMessages(false)
+  }
+
   const { isConnected } = useWebSocket({
     onMessage: (wsMessage: WebSocketMessage) => {
+      if (!['message', 'notice', 'request'].includes(wsMessage.type)) {
+        return
+      }
       setMessages((prev) => mergeMessageLists(prev, [wsMessage as MessageLog], limit))
     },
     onConnected: () => {
       console.log('[MessageLog] WebSocket connected')
-      // WS reconnect catch-up: fetch persisted rows newer than current DB cursor.
       compensateMissedMessages()
     },
     onDisconnected: () => {
@@ -88,68 +95,27 @@ export default function MessageLogPage() {
 
   useEffect(() => {
     loadMessages()
-    // Polling fallback while WebSocket is disconnected.
+
     let interval: ReturnType<typeof setInterval> | null = null
-    if (autoRefresh && !isConnected) {
+    if (!isConnected) {
       interval = setInterval(() => {
-        if (messagesRef.current.length === 0) {
-          loadMessages()
-        } else {
-          compensateMissedMessages()
-        }
+        compensateMissedMessages()
       }, 5000)
     }
+
     return () => {
       if (interval) clearInterval(interval)
     }
-  }, [limit, autoRefresh, isConnected])
-
-  const loadMessages = async (showRefreshing = false) => {
-    if (showRefreshing) {
-      setRefreshing(true)
-    } else if (messages.length === 0) {
-      setLoading(true)
-    }
-    try {
-      const data = await api.getMessageLog(limit)
-      setMessages(data)
-    } catch (error) {
-      console.error('Failed to load messages:', error)
-    } finally {
-      setLoading(false)
-      setRefreshing(false)
-    }
-  }
-
-  const compensateMissedMessages = async (showRefreshing = false) => {
-    const cursor = getMaxDbRowId(messagesRef.current)
-    if (!cursor) {
-      await loadMessages(showRefreshing)
-      return
-    }
-
-    if (showRefreshing) setRefreshing(true)
-    try {
-      const delta = await api.getMessageLog(limit, cursor)
-      if (delta.length > 0) {
-        setMessages((prev) => mergeMessageLists(prev, delta, limit))
-      }
-    } catch (error) {
-      console.error('Failed to compensate missed messages:', error)
-    } finally {
-      if (showRefreshing) setRefreshing(false)
-    }
-  }
+  }, [isConnected])
 
   const formatTime = (timestamp: string | undefined) => {
-    if (!timestamp) return 'Invalid Date'
+    if (!timestamp) return '--'
     try {
       const date = new Date(timestamp)
-      if (isNaN(date.getTime())) {
+      if (Number.isNaN(date.getTime())) {
         return timestamp
       }
       return date.toLocaleString('zh-CN', {
-        year: 'numeric',
         month: '2-digit',
         day: '2-digit',
         hour: '2-digit',
@@ -157,295 +123,265 @@ export default function MessageLogPage() {
         second: '2-digit',
       })
     } catch {
-      return timestamp || 'Invalid Date'
+      return timestamp || '--'
     }
   }
 
-  // Filter messages based on selected filter
   const filteredMessages = messages.filter((msg) => {
     if (filter === 'all') return true
-    const eventType = (msg as any).event_type || 'message'
-    return eventType === filter
+    return ((msg as any).event_type || 'message') === filter
   })
 
-  if (loading && messages.length === 0) {
-    return (
-      <div className="flex items-center justify-center h-64">
-        <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-primary-600"></div>
-      </div>
-    )
+  const counts = {
+    all: messages.length,
+    message: messages.filter((msg) => ((msg as any).event_type || 'message') === 'message').length,
+    notice: messages.filter((msg) => (msg as any).event_type === 'notice').length,
+    request: messages.filter((msg) => (msg as any).event_type === 'request').length,
+  }
+
+  const filters: Array<{
+    key: MessageFilter
+    label: string
+    icon: typeof MessageSquare
+  }> = [
+    { key: 'all', label: t('common.all'), icon: MessageSquare },
+    { key: 'message', label: t('messages.message'), icon: MessageSquare },
+    { key: 'notice', label: t('messages.notice'), icon: Bell },
+    { key: 'request', label: t('messages.request'), icon: UserPlus },
+  ]
+
+  const getEventLabel = (msg: MessageLog) => {
+    const eventType = (msg as any).event_type || 'message'
+    if (eventType === 'notice') return t('messages.systemNotice')
+    if (eventType === 'request') return t('messages.requestEvent')
+
+    const isSelf = Boolean((msg as any).is_self)
+    if (msg.message_type === 'group') {
+      return isSelf ? '机器人群消息' : (msg.sender?.nickname || `用户 ${msg.user_id}`)
+    }
+    return isSelf ? '机器人私聊消息' : (msg.sender?.nickname || `用户 ${msg.user_id}`)
+  }
+
+  const getMetaLabel = (msg: MessageLog) => {
+    const eventType = (msg as any).event_type || 'message'
+    if (eventType !== 'message') {
+      return msg.group_id ? `群 ${msg.group_id}` : '系统事件'
+    }
+
+    if (msg.message_type === 'group' && msg.group_id) {
+      return `群 ${msg.group_id}`
+    }
+
+    const isSelf = Boolean((msg as any).is_self)
+    const privateId = isSelf ? (msg as any).target_id || msg.user_id : msg.user_id
+    return privateId ? `私聊 ${privateId}` : '私聊'
+  }
+
+  const renderTypeIcon = (msg: MessageLog) => {
+    const eventType = (msg as any).event_type || 'message'
+    if (eventType === 'notice') return <Bell className="w-4 h-4" />
+    if (eventType === 'request') return <UserPlus className="w-4 h-4" />
+    return msg.message_type === 'group' ? <Users className="w-4 h-4" /> : <User className="w-4 h-4" />
+  }
+
+  const getRowClasses = (msg: MessageLog) => {
+    const eventType = (msg as any).event_type || 'message'
+    const isSelf = Boolean((msg as any).is_self)
+
+    if (eventType === 'notice') return 'border-l-4 border-l-blue-500 bg-blue-50 hover:bg-blue-100/80'
+    if (eventType === 'request') return 'border-l-4 border-l-yellow-500 bg-yellow-50 hover:bg-yellow-100/80'
+    if (isSelf) return 'border-l-4 border-l-emerald-500 bg-emerald-50 hover:bg-emerald-100/80'
+    return 'border-l-4 border-l-transparent bg-white hover:bg-slate-50'
+  }
+
+  const getPreviewText = (msg: MessageLog) => {
+    return String(msg.message || msg.raw_message || '[空消息]')
+      .replace(/\s+/g, ' ')
+      .trim()
+  }
+
+  const getViewerTitle = (msg: MessageLog) => {
+    const eventType = (msg as any).event_type || 'message'
+    if (eventType === 'notice') return '通知详情'
+    if (eventType === 'request') return '请求详情'
+    return '消息详情'
   }
 
   return (
-    <div className="h-full flex flex-col space-y-6 max-w-full overflow-x-hidden">
-      {/* Header */}
-      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
-        <div className="min-w-0 flex-shrink">
-          <div className="flex items-center gap-3 flex-wrap">
-            <h1 className="text-xl sm:text-2xl font-bold text-gray-900 truncate">{t('messages.title')}</h1>
-            {/* WebSocket Status Indicator */}
-            <div className="flex items-center gap-1.5 text-xs">
-              {isConnected ? (
-                <>
-                  <Wifi className="w-4 h-4 text-green-500" />
-                  <span className="text-green-600 font-medium">{t('messages.realtime')}</span>
-                </>
-              ) : (
-                <>
-                  <WifiOff className="w-4 h-4 text-orange-500" />
-                  <span className="text-orange-600 font-medium">{t('messages.polling')}</span>
-                </>
-              )}
+    <div className="fixed top-16 left-0 right-0 bottom-0 md:left-64 flex bg-white overflow-hidden">
+      <div className="flex w-full min-w-0 flex-col">
+        <div className="h-16 shrink-0 border-b border-slate-200 bg-white px-4 md:px-6">
+          <div className="flex h-full items-center justify-between gap-4">
+            <div className="min-w-0">
+              <div className="flex items-center gap-3 min-w-0">
+                <h1 className="truncate text-lg font-semibold text-slate-900">{t('messages.title')}</h1>
+                <span className="hidden sm:inline text-sm text-slate-500">仅显示本次启动后的消息</span>
+              </div>
+            </div>
+
+            <div className="flex items-center gap-3 shrink-0">
+              <div className="hidden sm:flex items-center gap-2 text-sm text-slate-500">
+                {isConnected ? (
+                  <>
+                    <Wifi className="w-4 h-4 text-emerald-500" />
+                    <span>{t('messages.realtime')}</span>
+                  </>
+                ) : (
+                  <>
+                    <WifiOff className="w-4 h-4 text-amber-500" />
+                    <span>{t('messages.polling')}</span>
+                  </>
+                )}
+              </div>
+              <button
+                type="button"
+                onClick={() => loadMessages(true)}
+                className="h-10 px-3 text-sm text-slate-600 hover:text-slate-900 transition-colors flex items-center gap-2"
+                title="刷新"
+              >
+                <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} />
+                <span className="hidden sm:inline">刷新</span>
+              </button>
             </div>
           </div>
-          <p className="text-gray-500 text-sm mt-1">
-            {t('messages.description')} {isConnected ? ` (${t('messages.realtimePush')})` : ` (${t('messages.pollingRefresh')})`}
-          </p>
         </div>
-        <div className="flex items-center gap-2 flex-shrink-0">
-          <label className="flex items-center gap-1 text-xs text-gray-600 cursor-pointer whitespace-nowrap">
-            <span className="hidden md:inline">{t('common.auto')}</span>
-            <button
-              type="button"
-              onClick={() => setAutoRefresh(!autoRefresh)}
-              className="relative inline-flex h-5 w-9 items-center rounded-full transition-colors focus:outline-none focus:ring-2 focus:ring-primary-500 focus:ring-offset-2"
-              style={{ backgroundColor: autoRefresh ? '#3b82f6' : '#d1d5db' }}
-            >
-              <span
-                className={`inline-block h-3 w-3 transform rounded-full bg-white transition-transform ${
-                  autoRefresh ? 'translate-x-5' : 'translate-x-1'
-                }`}
-              />
-            </button>
-          </label>
-          <select
-            value={limit}
-            onChange={(e) => setLimit(Number(e.target.value))}
-            className="input py-1.5 text-xs w-[80px]"
-          >
-            <option value={50}>50条</option>
-            <option value={100}>100条</option>
-            <option value={200}>200条</option>
-            <option value={500}>500条</option>
-          </select>
-          <button
-            onClick={() => compensateMissedMessages(true)}
-            disabled={refreshing}
-            className="btn btn-secondary flex items-center justify-center gap-1 disabled:opacity-50 disabled:cursor-not-allowed whitespace-nowrap text-xs px-2 py-1.5"
-          >
-            <RefreshCw className={`w-3.5 h-3.5 ${refreshing ? 'animate-spin' : ''}`} />
-            <span className="hidden sm:inline">{t('common.refresh')}</span>
-          </button>
-        </div>
-      </div>
 
-      {/* Filter Buttons */}
-      <div className="flex gap-2 flex-wrap">
-        <button
-          onClick={() => setFilter('all')}
-          className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors ${
-            filter === 'all'
-              ? 'bg-primary-600 text-white'
-              : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
-          }`}
-        >
-          {t('common.all')} ({messages.length})
-        </button>
-        <button
-          onClick={() => setFilter('message')}
-          className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors flex items-center gap-2 ${
-            filter === 'message'
-              ? 'bg-primary-600 text-white'
-              : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
-          }`}
-        >
-          <MessageSquare className="w-4 h-4" />
-          {t('messages.message')} ({messages.filter(m => !(m as any).is_system).length})
-        </button>
-        <button
-          onClick={() => setFilter('notice')}
-          className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors flex items-center gap-2 ${
-            filter === 'notice'
-              ? 'bg-primary-600 text-white'
-              : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
-          }`}
-        >
-          <Bell className="w-4 h-4" />
-          {t('messages.notice')} ({messages.filter(m => (m as any).event_type === 'notice').length})
-        </button>
-        <button
-          onClick={() => setFilter('request')}
-          className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors flex items-center gap-2 ${
-            filter === 'request'
-              ? 'bg-primary-600 text-white'
-              : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
-          }`}
-        >
-          <UserPlus className="w-4 h-4" />
-          {t('messages.request')} ({messages.filter(m => (m as any).event_type === 'request').length})
-        </button>
-      </div>
-
-      {/* Messages */}
-      <div className="space-y-3">
-        {filteredMessages.length === 0 ? (
-          <div className="card text-center py-12">
-            <MessageSquare className="w-12 h-12 text-gray-400 mx-auto mb-4" />
-            <h3 className="text-lg font-medium text-gray-900 mb-2">
-              {filter === 'all' ? t('messages.noEvents') : filter === 'message' ? t('messages.noMessages') : filter === 'notice' ? t('messages.noNotices') : t('messages.noRequests')}
-            </h3>
-            <p className="text-gray-500">
-              {filter === 'all' ? t('messages.noEventsDesc') : filter === 'message' ? t('messages.noMessagesDesc') : filter === 'notice' ? t('messages.noNoticesDesc') : t('messages.noRequestsDesc')}
-            </p>
-          </div>
-        ) : (
-          filteredMessages.map((msg, index) => {
-            const isSystem = (msg as any).is_system || (msg as any).event_type === 'notice' || (msg as any).event_type === 'request'
-            const eventType = (msg as any).event_type || 'message'
-            
-            // System notification style
-            if (isSystem) {
+        <div className="h-14 shrink-0 border-b border-slate-200 bg-white overflow-x-auto">
+          <div className="flex h-full min-w-max items-stretch px-2 md:px-4">
+            {filters.map((item) => {
+              const Icon = item.icon
+              const active = filter === item.key
               return (
-                <div
-                  key={msg.id || index}
-                  className="card hover:shadow-md transition-shadow bg-gradient-to-r from-yellow-50 to-orange-50 border-l-4 border-yellow-400"
+                <button
+                  key={item.key}
+                  type="button"
+                  onClick={() => setFilter(item.key)}
+                  className={`flex h-full items-center gap-2 border-b-2 px-4 text-sm font-medium transition-colors ${
+                    active
+                      ? 'border-primary-600 text-primary-700'
+                      : 'border-transparent text-slate-500 hover:text-slate-900'
+                  }`}
                 >
-                  <div className="flex items-start gap-4">
-                    {/* System Icon */}
-                    <div className="flex-shrink-0">
-                      <div className="w-12 h-12 rounded-full bg-gradient-to-br from-yellow-400 to-orange-500 flex items-center justify-center text-white">
-                        {eventType === 'request' ? (
-                          <UserPlus className="w-6 h-6" />
-                        ) : (
-                          <Bell className="w-6 h-6" />
-                        )}
-                      </div>
-                    </div>
-
-                    {/* Content */}
-                    <div className="flex-1 min-w-0">
-                      <div className="flex items-center gap-2 mb-2 flex-wrap">
-                        <span className="font-medium text-orange-900">
-                          {eventType === 'notice' ? t('messages.systemNotice') : eventType === 'request' ? t('messages.requestEvent') : t('messages.systemMessage')}
-                        </span>
-                        {msg.group_id && (
-                          <div className="flex items-center gap-1 text-xs text-orange-700 bg-orange-100 px-2 py-1 rounded">
-                            <Users className="w-3 h-3" />
-                            <span>{t('messages.group')} {msg.group_id}</span>
-                          </div>
-                        )}
-                        <div className="flex items-center gap-1 text-xs text-orange-700">
-                          <Clock className="w-3 h-3" />
-                          <span>{formatTime(msg.time || msg.timestamp)}</span>
-                        </div>
-                      </div>
-                      <p className="text-orange-900 font-medium break-words whitespace-pre-wrap">
-                        {msg.message || msg.raw_message}
-                      </p>
-                    </div>
-                  </div>
-                </div>
+                  <Icon className="w-4 h-4" />
+                  <span>{item.label}</span>
+                  <span className={`${active ? 'text-primary-600' : 'text-slate-400'}`}>{counts[item.key]}</span>
+                </button>
               )
-            }
+            })}
+          </div>
+        </div>
 
-            // Normal message style
-            const isSelf = (msg as any).is_self || false
-            // For private messages: if self-sent, show target_id; if received, show user_id
-            // For group messages: always show user_id (sender)
-            const displayUserId = msg.message_type === 'private' && isSelf 
-              ? (msg as any).target_id || msg.user_id 
-              : msg.user_id
-            
-            return (
-              <div
-                key={msg.id || index}
-                className={`card hover:shadow-md transition-shadow ${
-                  isSelf ? 'bg-gradient-to-r from-blue-50 to-primary-50 border-l-4 border-primary-400' : ''
-                }`}
-              >
-                <div className="flex items-start gap-4">
-                  {/* Avatar */}
-                  <div className="flex-shrink-0">
-                    {displayUserId ? (
-                      <img
-                        src={`https://q.qlogo.cn/headimg_dl?dst_uin=${displayUserId}&spec=640`}
-                        alt={msg.sender?.nickname || `User ${displayUserId}`}
-                        className="w-12 h-12 rounded-full object-cover"
-                        onError={(e) => {
-                          // Fallback to gradient avatar if image fails
-                          const target = e.currentTarget as HTMLImageElement
-                          target.style.display = 'none'
-                          const parent = target.parentElement
-                          if (parent) {
-                            const fallback = document.createElement('div')
-                            fallback.className = `w-12 h-12 rounded-full flex items-center justify-center text-white font-bold ${
-                              isSelf 
-                                ? 'bg-gradient-to-br from-primary-500 to-primary-600' 
-                                : 'bg-gradient-to-br from-blue-400 to-purple-600'
-                            }`
-                            fallback.textContent = msg.sender?.nickname?.[0]?.toUpperCase() || 'U'
-                            parent.appendChild(fallback)
-                          }
-                        }}
-                      />
-                    ) : (
-                      <div className={`w-12 h-12 rounded-full flex items-center justify-center text-white font-bold ${
-                        isSelf 
-                          ? 'bg-gradient-to-br from-primary-500 to-primary-600' 
-                          : 'bg-gradient-to-br from-blue-400 to-purple-600'
-                      }`}>
-                        {msg.sender?.nickname?.[0]?.toUpperCase() || 'U'}
-                      </div>
-                    )}
-                  </div>
-
-                  {/* Content */}
-                  <div className="flex-1 min-w-0">
-                    <div className="flex items-center gap-2 mb-2 flex-wrap">
-                      <span className={`font-medium ${isSelf ? 'text-primary-900' : 'text-gray-900'}`}>
-                        {msg.sender?.nickname || `User ${displayUserId}`}
-                        {displayUserId && (
-                          <span className="ml-2 text-xs text-gray-500">({displayUserId})</span>
-                        )}
-                        {isSelf && <span className="ml-2 text-xs text-primary-600">{t('messages.me')}</span>}
-                      </span>
-                      {msg.message_type === 'group' ? (
-                        <div className={`flex items-center gap-1 text-xs px-2 py-1 rounded ${
-                          isSelf ? 'text-primary-700 bg-primary-100' : 'text-gray-500 bg-blue-50'
-                        }`}>
-                          <Users className="w-3 h-3" />
-                          <span>{t('messages.group')} {msg.group_id}</span>
-                        </div>
-                      ) : (
-                        <div className={`flex items-center gap-1 text-xs px-2 py-1 rounded ${
-                          isSelf ? 'text-primary-700 bg-primary-100' : 'text-gray-500 bg-purple-50'
-                        }`}>
-                          <User className="w-3 h-3" />
-                          <span>{t('messages.private')}</span>
-                          {msg.message_type === 'private' && displayUserId && (
-                            <span className="ml-1">{displayUserId}</span>
-                          )}
-                        </div>
-                      )}
-                      <div className={`flex items-center gap-1 text-xs ${
-                        isSelf ? 'text-primary-700' : 'text-gray-500'
-                      }`}>
-                        <Clock className="w-3 h-3" />
-                        <span>{formatTime(msg.time || msg.timestamp)}</span>
-                      </div>
-                    </div>
-                    <p className={`break-words whitespace-pre-wrap ${
-                      isSelf ? 'text-primary-900 font-medium' : 'text-gray-700'
-                    }`}>
-                      {msg.message || msg.raw_message}
-                    </p>
-                  </div>
+        <div className="flex-1 min-h-0 bg-slate-100">
+          {loading && messages.length === 0 ? (
+            <div className="flex h-full items-center justify-center px-6 text-slate-500">
+              <div className="flex items-center gap-3 text-sm">
+                <RefreshCw className="w-5 h-5 animate-spin" />
+                <span>正在载入本次启动消息</span>
+              </div>
+            </div>
+          ) : filteredMessages.length === 0 ? (
+            <div className="flex h-full items-center justify-center px-6">
+              <div className="max-w-md text-center">
+                <MessageSquare className="w-10 h-10 text-slate-300 mx-auto mb-4" />
+                <div className="text-base font-medium text-slate-800">
+                  {filter === 'all' ? '本次启动还没有消息' : '当前筛选下没有消息'}
+                </div>
+                <div className="mt-2 text-sm text-slate-500">
+                  历史消息仍然保留在消息发送页面，这里只展示当前启动期间的新消息流。
                 </div>
               </div>
-            )
-          })
-        )}
+            </div>
+          ) : (
+            <div className="h-full overflow-y-auto">
+              <div className="min-h-full divide-y divide-slate-200 bg-white">
+                {filteredMessages.map((msg, index) => (
+                  <button
+                    key={msg.id || `${getEventKey(msg)}:${index}`}
+                    type="button"
+                    onClick={() => setSelectedMessage(msg)}
+                    className={`w-full text-left px-4 py-0 transition-colors md:px-6 ${getRowClasses(msg)}`}
+                  >
+                    <div className="flex h-16 w-full items-center gap-3 min-w-0">
+                      <div className="flex w-24 shrink-0 items-center gap-2 text-xs font-medium text-slate-500 md:w-32">
+                        {renderTypeIcon(msg)}
+                        <span className="truncate">
+                          {((msg as any).event_type || 'message') === 'notice' ? t('messages.notice') : ((msg as any).event_type || 'message') === 'request' ? t('messages.request') : t('messages.message')}
+                        </span>
+                      </div>
+
+                      <div className="hidden md:flex w-44 shrink-0 items-center gap-1 text-xs text-slate-500">
+                        <Clock className="w-3.5 h-3.5" />
+                        <span className="truncate">{formatTime(msg.time || msg.timestamp)}</span>
+                      </div>
+
+                      <div className="w-28 shrink-0 text-sm font-medium text-slate-900 truncate md:w-44">
+                        {getEventLabel(msg)}
+                      </div>
+
+                      <div className="hidden sm:flex w-28 shrink-0 items-center gap-1 text-xs text-slate-500 md:w-40">
+                        {msg.message_type === 'group' ? <Users className="w-3.5 h-3.5 shrink-0" /> : <User className="w-3.5 h-3.5 shrink-0" />}
+                        <span className="truncate">{getMetaLabel(msg)}</span>
+                      </div>
+
+                      <div className="min-w-0 flex-1 text-sm text-slate-700 truncate">
+                        {getPreviewText(msg)}
+                      </div>
+
+                      {(msg as any).is_self ? (
+                        <div className="hidden lg:block shrink-0 text-xs font-medium text-emerald-600">机器人发送</div>
+                      ) : null}
+                    </div>
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
       </div>
+
+      {selectedMessage ? (
+        <>
+          <button
+            type="button"
+            className="fixed inset-0 z-30 bg-slate-950/20 md:hidden"
+            onClick={() => setSelectedMessage(null)}
+            aria-label="关闭详情"
+          />
+          <div className="fixed right-0 top-16 bottom-0 z-40 w-full border-l border-slate-200 bg-white shadow-2xl md:w-[520px]">
+            <div className="flex h-full flex-col min-w-0">
+              <div className="flex h-16 shrink-0 items-center justify-between border-b border-slate-200 px-4 md:px-6">
+                <div className="min-w-0">
+                  <div className="text-base font-semibold text-slate-900">{getViewerTitle(selectedMessage)}</div>
+                  <div className="mt-1 text-xs text-slate-500 truncate">
+                    {formatTime(selectedMessage.time || selectedMessage.timestamp)} · {getMetaLabel(selectedMessage)}
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setSelectedMessage(null)}
+                  className="ml-4 h-10 w-10 shrink-0 flex items-center justify-center text-slate-500 hover:text-slate-900"
+                  aria-label="关闭详情"
+                >
+                  <X className="w-5 h-5" />
+                </button>
+              </div>
+
+              <div className="flex-1 overflow-y-auto px-4 py-5 md:px-6">
+                <div className="flex items-center gap-2 text-xs uppercase tracking-[0.18em] text-slate-500">
+                  {renderTypeIcon(selectedMessage)}
+                  <span>{getEventLabel(selectedMessage)}</span>
+                </div>
+                <div className="mt-3 text-sm text-slate-500">
+                  {getMetaLabel(selectedMessage)}
+                </div>
+                <pre className="mt-6 whitespace-pre-wrap break-words text-[14px] leading-7 text-slate-800">
+                  {selectedMessage.message || selectedMessage.raw_message || '[空消息]'}
+                </pre>
+              </div>
+            </div>
+          </div>
+        </>
+      ) : null}
     </div>
   )
 }

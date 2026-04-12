@@ -5,6 +5,7 @@ import { Zap, CheckCircle, AlertCircle, TrendingUp, Box } from 'lucide-react'
 interface ThreadPoolStats {
   max_workers: number
   max_workers_auto?: boolean
+  live_workers?: number
   initialized: boolean
   total_tasks: number
   completed_tasks: number
@@ -41,7 +42,7 @@ export const ThreadPoolMonitor: React.FC<ThreadPoolMonitorProps> = ({
         <div className="flex flex-col items-center justify-center py-12 text-slate-500">
           <AlertCircle className="mb-3 h-12 w-12 opacity-60" />
           <p className="text-sm font-semibold">Thread Pool Not Initialized</p>
-          <p className="mt-1 text-xs text-slate-400">Enable plugin thread pool in system settings to start monitoring.</p>
+          <p className="mt-1 text-xs text-slate-400">Enable the blocking task pool in system settings to start monitoring.</p>
         </div>
       </div>
     )
@@ -123,7 +124,7 @@ export const ThreadPoolMonitor: React.FC<ThreadPoolMonitorProps> = ({
             </div>
             <div>
               <h3 className="font-bold text-white text-lg tracking-tight">{title}</h3>
-              <p className="text-[11px] text-white/80 mt-0.5">Framework plugin operations executor</p>
+              <p className="text-[11px] text-white/80 mt-0.5">Framework blocking work executor</p>
               <div className="flex items-center gap-2 mt-0.5">
                 <span className="relative flex h-2 w-2">
                   <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-green-300 opacity-75"></span>
@@ -192,7 +193,7 @@ export const ThreadPoolMonitor: React.FC<ThreadPoolMonitorProps> = ({
                 allowDecimals={false}
               />
               <Tooltip
-                formatter={(value: number | string) => [`${value} tasks/5s`, 'Throughput']}
+                formatter={(value: number | string) => [`${value} tasks/s`, 'Throughput']}
                 contentStyle={{ 
                   backgroundColor: 'rgba(255, 255, 255, 0.95)',
                   border: '1px solid #e5e7eb',
@@ -223,10 +224,12 @@ export const ThreadPoolMonitor: React.FC<ThreadPoolMonitorProps> = ({
           <div className="bg-gradient-to-br from-gray-50 to-gray-100 rounded-xl p-3.5 border border-gray-200">
             <div className="flex items-center gap-1.5 mb-2">
               <Zap className="w-3.5 h-3.5 text-gray-500" />
-              <span className="text-[10px] font-bold text-gray-500 uppercase tracking-wider">Workers</span>
+              <span className="text-[10px] font-bold text-gray-500 uppercase tracking-wider">In Use</span>
             </div>
             <div className="flex items-baseline gap-1.5">
-              <span className="text-2xl font-black text-gray-900 tabular-nums">{stats.max_workers}</span>
+              <span className="text-2xl font-black text-gray-900 tabular-nums">
+                {(stats.live_workers ?? 0)} / {stats.max_workers}
+              </span>
               {stats.max_workers_auto && (
                 <span className="text-[9px] font-bold text-blue-600 bg-blue-100 px-1.5 py-0.5 rounded">AUTO</span>
               )}

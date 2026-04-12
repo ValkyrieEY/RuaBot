@@ -1,6 +1,6 @@
 [app]
 name = "XQNEXT Framework"
-version = "0.1"
+version = "0.1.2"
 
 # 环境模式："development"（开发）或 "production"（生产）
 environment = "development"
@@ -83,8 +83,11 @@ dir = "./plugins"
 # 启动时自动加载插件
 auto_load = true
 
-# 为插件执行启用线程池
-thread_pool_enabled = true
+# 为阻塞任务启用统一线程池
+blocking_task_pool_enabled = true
+
+# 阻塞任务池线程数（0 表示自动，自动规则为 min(32, CPU核心数 + 4)）
+blocking_task_pool_max_workers = 0
 
 # 是否文件改动自动重启
 auto_reload = false
@@ -129,12 +132,22 @@ secret_key = ""
 # 为 AI 操作启用线程池
 thread_pool_enabled = true
 
+[message_event]
+# 消息事件与聊天媒体缓存保留天数（超过该天数的数据会被清理）
+retention_days = 30
+
+# 消息事件最大保留行数（0 表示关闭，仅按保留天数清理；媒体缓存不受此项影响）
+max_rows = 0
+
+# 消息事件与聊天媒体缓存清理任务执行间隔（秒，默认每天执行一次）
+cleanup_interval_seconds = 86400
+
 [ai_workspace]
 # AI 页面默认模式："agent" 或 "assistant"
 mode = "agent"
 
 [napcat]
-# NapCat 安装路径（安装后自动配置）
+# NapCat 安装路径（托管安装后自动配置，默认位于当前框架目录下的 ./napcat）
 install_path = ""
 
 # NapCat 安装程序基础 URL（留空以使用默认值）

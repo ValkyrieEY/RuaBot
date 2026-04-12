@@ -40,8 +40,16 @@ class ApiClient {
       (response) => response,
       (error: AxiosError) => {
         if (error.response?.status === 401) {
+          const requestUrl = String(error.config?.url || '')
+          const isLoginRequest = requestUrl.includes('/auth/login')
+          const isAlreadyOnLogin = typeof window !== 'undefined' && window.location.pathname === '/login'
+          if (isLoginRequest || isAlreadyOnLogin) {
+            return Promise.reject(error)
+          }
+
           // Unauthorized - clear token and redirect to login
           localStorage.removeItem('access_token')
+          localStorage.removeItem('user')
           window.location.href = '/login'
         }
         return Promise.reject(error)
@@ -91,6 +99,11 @@ class ApiClient {
 
   async getCurrentUser(): Promise<any> {
     const response = await this.client.get('/auth/me')
+    return response.data
+  }
+
+  async getSecurityAuditEvents(params?: { limit?: number; event_type?: string; username?: string; recent_minutes?: number }): Promise<any> {
+    const response = await this.client.get('/security/audit-events', { params })
     return response.data
   }
 
@@ -153,10 +166,10 @@ class ApiClient {
     return response.data
   }
 
-  async uploadPluginConfigFile(file: File): Promise<{ file_key: string }> {
+  async uploadPluginConfigFile(pluginName: string, file: File): Promise<{ file_key: string }> {
     const formData = new FormData()
     formData.append('file', file)
-    const response = await this.client.post('/plugins/config-files', formData, {
+    const response = await this.client.post(`/plugins/${encodeURIComponent(pluginName)}/config-files`, formData, {
       headers: {
         'Content-Type': 'multipart/form-data',
       },
@@ -164,8 +177,8 @@ class ApiClient {
     return response.data
   }
 
-  async deletePluginConfigFile(fileKey: string): Promise<{ deleted: boolean }> {
-    const response = await this.client.delete(`/plugins/config-files/${fileKey}`)
+  async deletePluginConfigFile(pluginName: string, fileKey: string): Promise<{ deleted: boolean }> {
+    const response = await this.client.delete(`/plugins/${encodeURIComponent(pluginName)}/config-files/${fileKey}`)
     return response.data
   }
 
@@ -195,6 +208,11 @@ class ApiClient {
     return response.data
   }
 
+  async updateAdminUsername(data: { username: string }): Promise<any> {
+    const response = await this.client.post('/system/update-admin-username', data)
+    return response.data
+  }
+
   // AI Workspace
   async getAIWorkspaceConfig(): Promise<AIWorkspaceConfig> {
     const response = await this.client.get<AIWorkspaceConfig>('/ai/workspace-config')
@@ -203,6 +221,21 @@ class ApiClient {
 
   async updateAIWorkspaceConfig(mode: AIWorkspaceMode): Promise<AIWorkspaceConfig> {
     const response = await this.client.post<AIWorkspaceConfig>('/ai/workspace-config', { mode })
+    return response.data
+  }
+
+  async getAIAssistantConfig(): Promise<AIAssistantConfigResponse> {
+    const response = await this.client.get<AIAssistantConfigResponse>('/ai/assistant-config')
+    return response.data
+  }
+
+  async updateAIAssistantConfig(config: AIAssistantConfig): Promise<AIAssistantConfigResponse> {
+    const response = await this.client.post<AIAssistantConfigResponse>('/ai/assistant-config', { config })
+    return response.data
+  }
+
+  async clearAIAssistantMemory(payload: { scope: 'group' | 'private', target_id: string, memory_type: 'session' | 'long' | 'all' }): Promise<any> {
+    const response = await this.client.post('/ai/assistant-memory/clear', payload)
     return response.data
   }
 
@@ -235,11 +268,33 @@ class ApiClient {
     return response.data
   }
 
+  async getSessionMessageLog(limit?: number): Promise<MessageLog[]> {
+    const response = await this.client.get<MessageLog[]>('/messages/session-log', {
+      params: { limit },
+    })
+    return response.data
+  }
+
   // System Logs
   async getSystemLogs(limit?: number): Promise<any[]> {
     const response = await this.client.get('/system/logs', {
       params: { limit },
     })
+    return response.data
+  }
+
+  async getSystemLogFiles(): Promise<SystemLogFile[]> {
+    const response = await this.client.get<SystemLogFile[]>('/system/log-files')
+    return response.data
+  }
+
+  async getSystemLogFile(fileName: string): Promise<SystemLogFileContent> {
+    const response = await this.client.get<SystemLogFileContent>(`/system/log-files/${encodeURIComponent(fileName)}`)
+    return response.data
+  }
+
+  async deleteSystemLogFile(fileName: string): Promise<{ ok: boolean; deleted: string }> {
+    const response = await this.client.delete(`/system/log-files/${encodeURIComponent(fileName)}`)
     return response.data
   }
 
@@ -275,39 +330,19 @@ class ApiClient {
     return response.data
   }
 
-  // NapCat Management API
-  async getNapCatSystemInfo(): Promise<any> {
-    const response = await this.client.get('/napcat/system/info')
+  // NapCat APIs
+  async getNapCatStatus(): Promise<any> {
+    const response = await this.client.get('/napcat/status')
     return response.data
   }
 
-  async getNapCatConfig(): Promise<any> {
-    const response = await this.client.get('/napcat/config')
-    return response.data
-  }
-
-  async updateNapCatConfig(data: any): Promise<any> {
-    const response = await this.client.post('/napcat/config', data)
-    return response.data
-  }
-
-  async deployNapCat(data: any): Promise<any> {
-    const response = await this.client.post('/napcat/deploy', data)
+  async installNapCat(): Promise<any> {
+    const response = await this.client.post('/napcat/install')
     return response.data
   }
 
   async getNapCatProgress(jobId: string): Promise<any> {
     const response = await this.client.get(`/napcat/progress/${jobId}`)
-    return response.data
-  }
-
-  async cancelNapCatInstall(data: any): Promise<any> {
-    const response = await this.client.post('/napcat/cancel', data)
-    return response.data
-  }
-
-  async getNapCatStatus(): Promise<any> {
-    const response = await this.client.get('/napcat/status')
     return response.data
   }
 
@@ -331,36 +366,48 @@ class ApiClient {
     return response.data
   }
 
-  async setNapCatPath(data: any): Promise<any> {
-    const response = await this.client.post('/napcat/path', data)
+  async getNapCatQRCode(): Promise<Blob> {
+    const response = await this.client.get('/napcat/qrcode', { responseType: 'blob' })
     return response.data
   }
 
-  async setNapCatSudoPassword(data: any): Promise<any> {
-    const response = await this.client.post('/napcat/sudo-password', data)
+  async getNapCatQRCodeInfo(): Promise<any> {
+    const response = await this.client.get('/napcat/qrcode/info')
     return response.data
   }
 
-  async listNapCatDockerContainers(): Promise<any> {
-    const response = await this.client.get('/napcat/docker/containers')
+  async getNapCatConfig(): Promise<any> {
+    const response = await this.client.get('/napcat/config')
     return response.data
   }
 
-  async systemOpenDialog(): Promise<any> {
-    const response = await this.client.post('/system/open-dialog')
+  async saveNapCatConfig(payload: any): Promise<any> {
+    const response = await this.client.post('/napcat/config', payload)
     return response.data
   }
 
-  async listDirectory(data: any): Promise<any> {
-    const response = await this.client.post('/system/list-directory', data)
+  async applyFrameworkOneBotToNapCat(): Promise<any> {
+    const response = await this.client.post('/napcat/onebot/apply-framework')
     return response.data
   }
+
+  async getNapCatLoginStatus(): Promise<any> {
+    const response = await this.client.get('/napcat/login-status')
+    return response.data
+  }
+
+  async callNapCatOneBotApi(payload: { action: string; params?: Record<string, any>; timeout?: number }): Promise<any> {
+    const response = await this.client.post('/napcat/onebot/debug-call', payload)
+    return response.data
+  }
+
 }
 
 // Types
 export interface LoginRequest {
   username: string
   password: string
+  client_info?: any
 }
 
 export interface LoginResponse {
@@ -435,6 +482,15 @@ export interface AIWorkspaceConfig {
   mode: AIWorkspaceMode
 }
 
+export interface AIAssistantConfig {
+  [key: string]: any
+}
+
+export interface AIAssistantConfigResponse {
+  config: AIAssistantConfig
+  message?: string
+}
+
 export interface MessageLog {
   id?: string
   db_row_id?: number
@@ -450,6 +506,23 @@ export interface MessageLog {
   message: string
   raw_message?: string
   [key: string]: any
+}
+
+export interface SystemLogFile {
+  name: string
+  size: number
+  modified_at: string
+  created_at: string
+  path: string
+  active: boolean
+}
+
+export interface SystemLogFileContent {
+  name: string
+  content: string
+  size: number
+  modified_at: string
+  active: boolean
 }
 
 

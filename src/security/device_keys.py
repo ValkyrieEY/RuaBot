@@ -159,6 +159,25 @@ class DeviceKeyManager:
         )
         return True
 
+    def rename_user(self, old_username: str, new_username: str) -> int:
+        """Move stored device keys to a renamed account."""
+        count = 0
+        for rec in self._keys.values():
+            if rec.get("username") == old_username:
+                rec["username"] = new_username
+                count += 1
+        if count:
+            self._save()
+            logger.info(
+                "Device keys renamed with user",
+                extra={
+                    "old_username": old_username,
+                    "new_username": new_username,
+                    "count": count,
+                },
+            )
+        return count
+
     def authenticate(
         self,
         opaque_token: str,

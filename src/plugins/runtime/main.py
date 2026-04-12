@@ -13,17 +13,47 @@ import signal
 from pathlib import Path
 from typing import Dict, Any, List, Optional
 
-# 设置标准输出编码为UTF-8
-if hasattr(sys.stdout, 'reconfigure'):
-    sys.stdout.reconfigure(encoding='utf-8')
-else:
-    # 对于较老的Python版本
-    import io
-    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
+_PROTOCOL_STDOUT = sys.stdout
+os.environ["XQNEXT_LOG_STDERR"] = "1"
 
-# Add parent directory to path (project root)
-project_root = Path(__file__).parent.parent.parent.parent
-sys.path.insert(0, str(project_root))
+
+def _configure_text_stream(stream):
+    """Ensure text streams use UTF-8 when possible."""
+    if hasattr(stream, 'reconfigure'):
+        stream.reconfigure(encoding='utf-8')
+        return stream
+
+    try:
+        import io
+
+        if hasattr(stream, 'buffer'):
+            return io.TextIOWrapper(stream.buffer, encoding='utf-8')
+    except Exception:
+        pass
+
+    return stream
+
+
+_PROTOCOL_STDOUT = _configure_text_stream(_PROTOCOL_STDOUT)
+sys.stderr = _configure_text_stream(sys.stderr)
+
+# Reserve stdout for JSON IPC only. Regular logs/prints go to stderr.
+sys.stdout = sys.stderr
+
+def _get_runtime_base_dir() -> Path:
+    """Resolve runtime base directory for bundled and source runs."""
+    if getattr(sys, "frozen", False):
+        return Path(sys.executable).resolve().parent
+    return Path(__file__).resolve().parent.parent.parent.parent
+
+
+RUNTIME_BASE_DIR = _get_runtime_base_dir()
+
+# Source mode needs project root on import path when executed via script path.
+if not getattr(sys, "frozen", False):
+    sys.path.insert(0, str(RUNTIME_BASE_DIR))
+
+from src.plugins.manifest import load_plugin_manifest
 
 
 class PluginRuntime:
@@ -33,7 +63,8 @@ class PluginRuntime:
         self.plugins: Dict[str, Any] = {}  # author/name -> plugin instance
         self.plugin_configs: Dict[str, Dict[str, Any]] = {}  # author/name -> config
         self.running = True
-        self.plugins_dir = Path("plugins")
+        self.base_dir = RUNTIME_BASE_DIR
+        self.plugins_dir = (self.base_dir / "plugins").resolve()
         self.pending_requests: Dict[str, asyncio.Future] = {}  # request_id -> Future
         self.parent_pid = os.getppid()  # Store parent process ID
         self.parent_check_task: Optional[asyncio.Task] = None
@@ -41,6 +72,8 @@ class PluginRuntime:
     async def run(self):
         """Main runtime loop."""
         self.log("info", "Plugin runtime started")
+        self.log("info", f"Runtime base dir: {self.base_dir}")
+        self.log("info", f"Runtime plugins dir: {self.plugins_dir}")
         
         # Setup signal handlers for graceful shutdown
         self._setup_signal_handlers()
@@ -142,10 +175,9 @@ class PluginRuntime:
             while self.running:
                 try:
                     # Read line in executor with timeout to avoid indefinite blocking
-                    loop = asyncio.get_event_loop()
                     try:
                         line = await asyncio.wait_for(
-                            loop.run_in_executor(None, sys.stdin.readline),
+                            asyncio.to_thread(sys.stdin.readline),
                             timeout=60.0  # 60 second timeout
                         )
                     except asyncio.TimeoutError:
@@ -409,14 +441,11 @@ class PluginRuntime:
                     self.log("error", f"Plugin directory not found: {plugin_dir}")
                     continue
                 
-                # Read plugin.json
-                plugin_json = plugin_dir / "plugin.json"
-                if not plugin_json.exists():
-                    self.log("error", f"plugin.json not found: {plugin_json}")
+                try:
+                    plugin_metadata = load_plugin_manifest(plugin_dir)
+                except Exception as e:
+                    self.log("error", f"Plugin manifest load failed for {plugin_dir}: {e}")
                     continue
-                
-                with open(plugin_json, 'r', encoding='utf-8') as f:
-                    plugin_metadata = json.load(f)
                 
                 # Get entry point
                 entry = plugin_metadata.get('entry', 'main.py')
@@ -447,11 +476,15 @@ class PluginRuntime:
                 db_config = plugin_config.get('config', {}) or {}
                 config = {**default_config, **db_config}  # Database config overrides default
                 
-                # Get priority: database > plugin.json > default (100)
-                priority_from_json = plugin_metadata.get('priority')
+                # Get priority: database > metadata.yaml > default (100)
+                priority_from_manifest = plugin_metadata.get('priority')
                 priority_from_db = plugin_config.get('priority', 100)
-                # Database priority takes precedence over plugin.json
-                final_priority = priority_from_db if priority_from_db != 100 or priority_from_json is None else priority_from_json
+                # Database priority takes precedence over metadata.yaml
+                final_priority = (
+                    priority_from_db
+                    if priority_from_db != 100 or priority_from_manifest is None
+                    else priority_from_manifest
+                )
                 config['priority'] = final_priority
                 
                 # Create plugin instance
@@ -653,15 +686,14 @@ class PluginRuntime:
             else:
                 # config_override是None，说明connector没有传递配置
                 # runtime进程无法直接访问数据库（相对导入问题），所以使用默认配置
-                self.log("warning", f"Config override is None for {plugin_id}, using default config from plugin.json")
-                # Fallback to default config from plugin.json
+                self.log("warning", f"Config override is None for {plugin_id}, using default config from settings.json")
+                # Fallback to default config from settings.json
                 plugin_path = self.plugins_dir / name
-                plugin_json = plugin_path / "plugin.json"
-                if plugin_json.exists():
-                    import json
-                    with open(plugin_json, 'r', encoding='utf-8') as f:
-                        plugin_metadata = json.load(f)
-                        plugin_config_data = plugin_metadata.get('default_config', {})
+                try:
+                    plugin_metadata = load_plugin_manifest(plugin_path)
+                    plugin_config_data = plugin_metadata.get('default_config', {})
+                except Exception as e:
+                    self.log("warning", f"Failed to load default config for {plugin_id}: {e}")
             
             # Get plugin config
             plugin_config = {
@@ -887,8 +919,8 @@ class PluginRuntime:
         try:
             # 使用 ensure_ascii=False 来正确处理中文字符
             json_str = json.dumps(message, ensure_ascii=False)
-            # 在Windows上确保使用正确的编码输出
-            print(json_str, flush=True)
+            _PROTOCOL_STDOUT.write(json_str + "\n")
+            _PROTOCOL_STDOUT.flush()
         except Exception as e:
             sys.stderr.write(f"Error sending message: {e}\n")
     
@@ -1160,6 +1192,45 @@ class PluginAPI:
             self.runtime.pending_requests.pop(request_id, None)
             self.log("error", f"Config set_config error for key {key}: {e}")
             return False
+
+    async def get_config_upload(self, file_key: str) -> Optional[bytes]:
+        """Read a config-upload file as raw bytes from plugin-private storage."""
+        import uuid
+        import base64
+
+        if not isinstance(file_key, str) or not file_key.startswith("plugin_config_"):
+            self.log("error", f"Invalid config upload key: {file_key}")
+            return None
+
+        request_id = str(uuid.uuid4())
+        future = asyncio.get_event_loop().create_future()
+        self.runtime.pending_requests[request_id] = future
+
+        self.runtime.send_message({
+            'type': 'storage_request',
+            'data': {
+                'request_id': request_id,
+                'action': 'get_config_upload',
+                'plugin_id': self.plugin_id,
+                'key': file_key,
+            }
+        })
+
+        try:
+            result = await asyncio.wait_for(future, timeout=10.0)
+            if isinstance(result, dict) and result.get('success') and 'value' in result:
+                value_b64 = result.get('value', '')
+                if value_b64:
+                    return base64.b64decode(value_b64)
+            return None
+        except asyncio.TimeoutError:
+            self.runtime.pending_requests.pop(request_id, None)
+            self.log("error", f"Config upload read timeout for key: {file_key}")
+            return None
+        except Exception as e:
+            self.runtime.pending_requests.pop(request_id, None)
+            self.log("error", f"Config upload read error for key {file_key}: {e}")
+            return None
     
     async def get_storage(self, key: str) -> Optional[bytes]:
         """Get binary storage.

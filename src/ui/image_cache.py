@@ -1,10 +1,12 @@
-"""Image cache manager for chat messages.
+"""Media cache manager for chat messages.
 
-Downloads and caches images from QQ messages to local storage,
-with automatic cleanup on startup and periodic cleanup to prevent storage overflow.
+Downloads and caches media from QQ messages to local storage,
+with automatic cleanup for files older than the retention window.
 """
 
 import asyncio
+import base64
+import binascii
 import hashlib
 import re
 import httpx
@@ -16,6 +18,7 @@ from datetime import datetime, timedelta
 import aiofiles
 from urllib.parse import urlparse, parse_qs
 
+from ..core.blocking_task_pool import run_in_blocking_pool
 from ..core.logger import get_logger
 from ..core.app import get_app
 
@@ -23,15 +26,15 @@ logger = get_logger(__name__)
 
 
 class ImageCacheManager:
-    """Manages image caching for chat messages."""
+    """Manages media caching for chat messages."""
     
-    def __init__(self, cache_dir: Optional[Path] = None, max_age_hours: int = 24):
+    def __init__(self, cache_dir: Optional[Path] = None, max_age_hours: int = 24 * 30):
         """
         Initialize image cache manager.
         
         Args:
             cache_dir: Cache directory path (default: ./data/image_cache)
-            max_age_hours: Maximum age of cached images in hours (default: 24)
+            max_age_hours: Maximum age of cached images in hours (default: 30 days)
         """
         if cache_dir is None:
             app = get_app()
@@ -44,9 +47,19 @@ class ImageCacheManager:
         self.cache_dir = Path(cache_dir)
         self.cache_dir.mkdir(parents=True, exist_ok=True)
         self.max_age_hours = max_age_hours
-        self._cleanup_task: Optional[asyncio.Task] = None
+        # Suppress repetitive warnings for the same failing media reference.
+        self._failure_suppression: Dict[str, float] = {}
         
         logger.info(f"Image cache manager initialized: {self.cache_dir}")
+
+    def _should_log_failure(self, key: str, interval_seconds: float = 180.0) -> bool:
+        """Rate-limit repetitive warning logs for the same media reference."""
+        now = datetime.now().timestamp()
+        last = float(self._failure_suppression.get(key, 0.0) or 0.0)
+        if now - last >= interval_seconds:
+            self._failure_suppression[key] = now
+            return True
+        return False
 
     _MEDIA_EXTENSIONS = {
         "image": ["jpg", "jpeg", "png", "gif", "webp", "bmp"],
@@ -98,6 +111,67 @@ class ImageCacheManager:
         if media_kind == "file":
             return "bin"
         return "jpg"
+
+    def _extension_from_mime(self, mime_type: str, media_kind: str) -> str:
+        """Guess a safe file extension for uploaded data URLs."""
+        mime_type = (mime_type or "").split(";")[0].strip().lower()
+        guessed = mimetypes.guess_extension(mime_type)
+        if guessed:
+            ext = guessed.lstrip(".").lower()
+            if ext == "jpe":
+                return "jpg"
+            if ext:
+                return ext
+        if media_kind == "video":
+            return "mp4"
+        if media_kind == "record":
+            return "amr"
+        if media_kind == "file":
+            return "bin"
+        return "png"
+
+    async def save_data_url_media(self, data_url: str, media_kind: str = "image") -> Optional[str]:
+        """Save a browser-uploaded data URL into the media cache and return its local path."""
+        if not isinstance(data_url, str) or not data_url.startswith("data:"):
+            return None
+
+        match = re.match(r"^data:([^;,]+)?(;base64)?,(.*)$", data_url, re.DOTALL)
+        if not match:
+            return None
+
+        mime_type = match.group(1) or "application/octet-stream"
+        is_base64 = bool(match.group(2))
+        payload = match.group(3) or ""
+
+        try:
+            if is_base64:
+                raw_bytes = base64.b64decode(payload, validate=True)
+            else:
+                from urllib.parse import unquote_to_bytes
+                raw_bytes = unquote_to_bytes(payload)
+        except (binascii.Error, ValueError) as e:
+            logger.warning(f"Failed to decode data URL media: {e}")
+            return None
+
+        if not raw_bytes:
+            return None
+
+        ext = self._extension_from_mime(mime_type, media_kind)
+        digest = hashlib.sha256(raw_bytes).hexdigest()
+        cache_path = self.cache_dir / f"{digest}.{ext}"
+
+        try:
+            if cache_path.exists() and cache_path.stat().st_size == len(raw_bytes):
+                return str(cache_path)
+            async with aiofiles.open(cache_path, "wb") as f:
+                await f.write(raw_bytes)
+            logger.info(
+                f"Uploaded media cached successfully: {cache_path} ({len(raw_bytes)} bytes) kind={media_kind}"
+            )
+            return str(cache_path)
+        except Exception as e:
+            logger.warning(f"Failed to save uploaded media cache: {e}", exc_info=True)
+            return None
 
     async def ensure_browser_playable_record(self, source_path: str) -> str:
         """Convert unsupported record formats (amr/silk) to browser-playable wav."""
@@ -175,7 +249,7 @@ class ImageCacheManager:
                 return str(target)
 
             # Prefer PyAV (Python dependency) for distributable packaging.
-            pyav_ok = await asyncio.to_thread(transcode_with_pyav_sync, src, target)
+            pyav_ok = await run_in_blocking_pool(transcode_with_pyav_sync, src, target)
             if pyav_ok:
                 logger.info(f"Converted record for web playback via PyAV: {src} -> {target}")
                 return str(target)
@@ -265,7 +339,9 @@ class ImageCacheManager:
         try:
             resolved = await self._resolve_media_url(media_ref, onebot_adapter=onebot_adapter, media_kind=media_kind)
             if not resolved:
-                logger.warning(f"Could not resolve media reference to URL: {original_ref}")
+                # Common for expired/invalid voice-file refs; keep logs low-noise.
+                if self._should_log_failure(f"resolve:{media_kind}:{original_ref}"):
+                    logger.debug(f"Could not resolve media reference to URL: {original_ref}")
                 return None
 
             # file:// resources should be handled by caller directly, not downloaded.
@@ -294,13 +370,26 @@ class ImageCacheManager:
                 )
                 return str(cache_path)
         except httpx.HTTPStatusError as e:
-            logger.warning(f"HTTP error caching media {original_ref}: {e.response.status_code} - {e.response.text[:100]}")
+            response_text = (e.response.text or "")[:200]
+            status_code = e.response.status_code
+            expired_hint = "download url has expired" in response_text.lower()
+            should_warn = (not expired_hint) and self._should_log_failure(
+                f"http:{status_code}:{media_kind}:{original_ref}"
+            )
+            if should_warn:
+                logger.warning(f"HTTP error caching media {original_ref}: {status_code} - {response_text[:100]}")
+            else:
+                logger.debug(f"Media cache miss ({status_code}) for {original_ref}: {response_text[:80]}")
             return None
         except httpx.TimeoutException:
-            logger.warning(f"Timeout caching media {original_ref}")
+            if self._should_log_failure(f"timeout:{media_kind}:{original_ref}"):
+                logger.warning(f"Timeout caching media {original_ref}")
             return None
         except Exception as e:
-            logger.warning(f"Failed to cache media {original_ref}: {e}", exc_info=True)
+            if self._should_log_failure(f"error:{media_kind}:{original_ref}"):
+                logger.warning(f"Failed to cache media {original_ref}: {e}", exc_info=True)
+            else:
+                logger.debug(f"Failed to cache media (suppressed) {original_ref}: {e}")
             return None
 
     async def download_and_cache_image(self, image_url: str, onebot_adapter=None) -> Optional[str]:
@@ -371,9 +460,9 @@ class ImageCacheManager:
         
         return image_map
     
-    async def cleanup_old_images(self, max_age_hours: Optional[int] = None):
+    async def cleanup_old_images(self, max_age_hours: Optional[int] = None) -> int:
         """
-        Clean up old cached images.
+        Clean up old cached media files.
         
         Args:
             max_age_hours: Maximum age in hours (uses self.max_age_hours if None)
@@ -395,17 +484,22 @@ class ImageCacheManager:
                         cache_file.unlink()
                         deleted_count += 1
                         total_size += file_size
-                        logger.debug(f"Deleted old cached image: {cache_file}")
+                        logger.debug(f"Deleted old cached media: {cache_file}")
                 except Exception as e:
-                    logger.warning(f"Error deleting cached image {cache_file}: {e}")
+                    logger.warning(f"Error deleting cached media {cache_file}: {e}")
             
             if deleted_count > 0:
-                logger.info(f"Cleaned up {deleted_count} old images ({total_size / 1024 / 1024:.2f} MB)")
+                logger.info(
+                    f"Cleaned up {deleted_count} old media cache files "
+                    f"({total_size / 1024 / 1024:.2f} MB)"
+                )
+            return deleted_count
         except Exception as e:
-            logger.error(f"Error during image cache cleanup: {e}", exc_info=True)
+            logger.error(f"Error during media cache cleanup: {e}", exc_info=True)
+            return 0
     
-    async def cleanup_all_images(self):
-        """Clean up all cached images (called on startup)."""
+    async def cleanup_all_images(self) -> int:
+        """Clean up all cached media files."""
         try:
             deleted_count = 0
             total_size = 0
@@ -417,42 +511,17 @@ class ImageCacheManager:
                     deleted_count += 1
                     total_size += file_size
                 except Exception as e:
-                    logger.warning(f"Error deleting cached image {cache_file}: {e}")
+                    logger.warning(f"Error deleting cached media {cache_file}: {e}")
             
             if deleted_count > 0:
-                logger.info(f"Cleaned up all cached images on startup: {deleted_count} files ({total_size / 1024 / 1024:.2f} MB)")
+                logger.info(
+                    f"Cleaned up all cached media on startup: {deleted_count} files "
+                    f"({total_size / 1024 / 1024:.2f} MB)"
+                )
+            return deleted_count
         except Exception as e:
-            logger.error(f"Error during image cache cleanup: {e}", exc_info=True)
-    
-    async def start_periodic_cleanup(self, interval_hours: int = 6):
-        """
-        Start periodic cleanup task.
-        
-        Args:
-            interval_hours: Cleanup interval in hours (default: 6)
-        """
-        async def cleanup_loop():
-            try:
-                while True:
-                    await asyncio.sleep(interval_hours * 3600)
-                    await self.cleanup_old_images()
-            except asyncio.CancelledError:
-                pass
-            except Exception as e:
-                logger.error(f"Error in periodic cleanup task: {e}", exc_info=True)
-        
-        self._cleanup_task = asyncio.create_task(cleanup_loop())
-        logger.info(f"Started periodic image cache cleanup (every {interval_hours} hours)")
-    
-    async def stop_periodic_cleanup(self):
-        """Stop periodic cleanup task."""
-        if self._cleanup_task and not self._cleanup_task.done():
-            self._cleanup_task.cancel()
-            try:
-                await self._cleanup_task
-            except asyncio.CancelledError:
-                pass
-            self._cleanup_task = None
+            logger.error(f"Error during media cache cleanup: {e}", exc_info=True)
+            return 0
 
 
 # Global image cache manager instance

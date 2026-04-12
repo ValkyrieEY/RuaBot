@@ -1,4 +1,5 @@
 import tomllib
+import sys
 from pathlib import Path
 from typing import Optional
 
@@ -14,9 +15,12 @@ def get_version() -> str:
         return _version
     
     try:
-        # 获取项目根目录
-        current_file = Path(__file__)
-        project_root = current_file.parent.parent.parent
+        # 获取项目根目录（打包版使用可执行文件目录）
+        if getattr(sys, "frozen", False):
+            project_root = Path(sys.executable).resolve().parent
+        else:
+            current_file = Path(__file__)
+            project_root = current_file.parent.parent.parent
         
         # 读取 config.toml
         config_path = project_root / "config.toml"
@@ -49,4 +53,3 @@ def reset_version_cache():
 
 # 模块级别的版本号（方便导入）
 __version__ = get_version()
-

@@ -1,4 +1,5 @@
 import React from 'react'
+import { toast } from '@/components/Toast'
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || '/api'
 
@@ -194,11 +195,11 @@ function renderCQCode(cq: CQCode, key: number, isSelf: boolean = false): React.R
                     if (response.ok) {
                       window.open(finalImgSrc, '_blank')
                     } else {
-                      alert('图片链接无效或已过期')
+                      toast.error('图片链接无效或已过期')
                     }
                   } catch (error) {
                     console.error('Failed to load image via proxy:', error)
-                    alert('图片链接无效或已过期')
+                    toast.error('图片链接无效或已过期')
                   }
                 }
                 fallback.appendChild(link)

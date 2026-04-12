@@ -31,7 +31,7 @@ if sys.platform == 'win32':
 # Add parent directory to path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from src.core.config import get_config, get_config_manager
+from src.core.config import get_config, get_config_manager, get_config_file_path
 from src.core.logger import setup_logger, get_logger
 from src.ui.api import create_app
 
@@ -48,8 +48,7 @@ config = get_config()
 import tomllib
 import tomli_w
 
-project_root = Path(__file__).parent.parent
-toml_file = project_root / "config.toml"
+toml_file = get_config_file_path()
 
 if toml_file.exists():
     try:

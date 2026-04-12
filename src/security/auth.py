@@ -114,24 +114,24 @@ class AuthManager:
         self._sessions: Dict[str, Dict[str, Any]] = {}
         self._permission_manager = None
         
-        # Initialize with default admin user
+        # Initialize with configured admin user
         config = get_config()
-        self._users["admin"] = {
-            "username": "admin",
+        admin_username = (config.web_ui_username or "admin").strip() or "admin"
+        self._users[admin_username] = {
+            "username": admin_username,
             "password_hash": get_password_hash(config.web_ui_password),
             "roles": ["admin"],
             "enabled": True
         }
         
         # Initialize admin user permissions
-        self._init_permissions()
+        self._init_permissions(admin_username)
     
-    def _init_permissions(self):
+    def _init_permissions(self, admin_username: str):
         """Initialize permission manager and assign admin role."""
         from ..security.permissions import get_permission_manager
         self._permission_manager = get_permission_manager()
-        # Assign admin role to admin user
-        self._permission_manager.assign_role_to_user("admin", "admin")
+        self._permission_manager.assign_role_to_user(admin_username, "admin")
 
     async def authenticate(self, username: str, password: str) -> Optional[str]:
         """
@@ -255,6 +255,35 @@ class AuthManager:
             return True
         return False
 
+    async def rename_user(self, old_username: str, new_username: str) -> bool:
+        """Rename a user and keep active sessions/permissions attached."""
+        old_username = (old_username or "").strip()
+        new_username = (new_username or "").strip()
+        if not old_username or not new_username:
+            return False
+        if old_username == new_username:
+            return True
+        if old_username not in self._users or new_username in self._users:
+            return False
+
+        user = self._users.pop(old_username)
+        user["username"] = new_username
+        self._users[new_username] = user
+
+        for session in self._sessions.values():
+            if session.get("username") == old_username:
+                session["username"] = new_username
+
+        if self._permission_manager:
+            self._permission_manager.rename_user(old_username, new_username)
+
+        logger.info(
+            "User renamed",
+            old_username=old_username,
+            new_username=new_username,
+        )
+        return True
+
     def get_user(self, username: str) -> Optional[Dict[str, Any]]:
         """Get user info."""
         user = self._users.get(username)
@@ -277,4 +306,3 @@ class AuthManager:
             }
             for user in self._users.values()
         ]
-

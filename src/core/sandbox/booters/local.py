@@ -9,6 +9,7 @@ import shutil
 import subprocess
 from pathlib import Path
 from typing import Any, Dict, Optional, List
+from ...blocking_task_pool import run_in_blocking_pool
 from ...logger import get_logger
 from .base import ComputerBooter, ShellComponent, PythonComponent, FileSystemComponent
 logger = get_logger(__name__)
@@ -148,7 +149,7 @@ class LocalPythonComponent(PythonComponent):
                         return e
             try:
                 error = await asyncio.wait_for(
-                    asyncio.get_event_loop().run_in_executor(None, run_code),
+                    run_in_blocking_pool(run_code),
                     timeout=timeout
                 )
             except asyncio.TimeoutError:

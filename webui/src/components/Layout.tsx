@@ -1,6 +1,6 @@
 import { Link, useNavigate, useLocation } from 'react-router-dom'
 import { useTranslation } from 'react-i18next'
-import { useMemo } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { useAuthStore } from '@/store/authStore'
 import { useAppStore } from '@/store/appStore'
 import {
@@ -33,6 +33,32 @@ export default function Layout({ children }: LayoutProps) {
   const { t, i18n } = useTranslation()
   const { logout } = useAuthStore()
   const { sidebarOpen, setSidebarOpen } = useAppStore()
+  const [logoSrc, setLogoSrc] = useState<string>('https://github.com/ValkyrieEY.png')
+  const [logoError, setLogoError] = useState(false)
+  const logoTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  useEffect(() => {
+    if (logoTimeoutRef.current) {
+      clearTimeout(logoTimeoutRef.current)
+      logoTimeoutRef.current = null
+    }
+
+    if (logoSrc.startsWith('http://') || logoSrc.startsWith('https://')) {
+      logoTimeoutRef.current = setTimeout(() => {
+        if (!logoError) {
+          setLogoSrc('/logo.jpg')
+        }
+        logoTimeoutRef.current = null
+      }, 2000)
+    }
+
+    return () => {
+      if (logoTimeoutRef.current) {
+        clearTimeout(logoTimeoutRef.current)
+        logoTimeoutRef.current = null
+      }
+    }
+  }, [logoSrc, logoError])
 
   const handleLogout = () => {
     logout()
@@ -77,8 +103,37 @@ export default function Layout({ children }: LayoutProps) {
                 {sidebarOpen ? <X className="w-5 h-5" /> : <Menu className="w-5 h-5" />}
               </button>
               <Link to="/dashboard" className="flex items-center gap-3">
-                <div className="w-9 h-9 bg-gradient-to-br from-primary-500 to-primary-600 rounded-xl flex items-center justify-center shadow-sm">
-                  <span className="text-white font-extrabold text-sm tracking-widest">XQ</span>
+                <div className="w-10 h-10 rounded-xl overflow-hidden bg-gray-100 flex items-center justify-center shadow-sm shrink-0">
+                  {logoError ? (
+                    <div className="w-full h-full flex items-center justify-center bg-gradient-to-br from-primary-400 to-primary-600">
+                      <span className="text-white text-lg font-bold">R</span>
+                    </div>
+                  ) : (
+                    <img
+                      src={logoSrc}
+                      alt="RuaBot Logo"
+                      className="w-full h-full object-cover"
+                      onLoad={() => {
+                        if (logoTimeoutRef.current) {
+                          clearTimeout(logoTimeoutRef.current)
+                          logoTimeoutRef.current = null
+                        }
+                      }}
+                      onError={(e) => {
+                        const target = e.currentTarget
+                        if (logoTimeoutRef.current) {
+                          clearTimeout(logoTimeoutRef.current)
+                          logoTimeoutRef.current = null
+                        }
+                        if (logoSrc.startsWith('http://') || logoSrc.startsWith('https://')) {
+                          setLogoSrc('/logo.jpg')
+                        } else {
+                          setLogoError(true)
+                          target.style.display = 'none'
+                        }
+                      }}
+                    />
+                  )}
                 </div>
                 <span className="font-bold text-xl tracking-tight hidden sm:block">Xiaoyi_QQ</span>
               </Link>
@@ -164,8 +219,8 @@ export default function Layout({ children }: LayoutProps) {
 
         {/* Main Content */}
         <main className="flex-1 md:ml-64 max-w-full w-full bg-white">
-          {/* Check if this is ChatPage or AI (full height, no padding) or regular page (with padding) */}
-          {location.pathname === '/chat' || location.pathname.startsWith('/ai') ? (
+          {/* Check if this is a full-screen page (no outer padding) or regular page */}
+          {location.pathname === '/chat' || location.pathname === '/messages' || location.pathname === '/sandbox' || location.pathname.startsWith('/ai') || location.pathname === '/audit' ? (
             children
           ) : (
             <div className="p-4 sm:p-6 lg:p-8 min-h-[calc(100vh-4rem)] max-w-full overflow-x-hidden">

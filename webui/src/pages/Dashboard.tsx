@@ -100,6 +100,10 @@ interface LoginInfo {
 }
 
 export default function Dashboard() {
+  const THREADPOOL_POLL_MS = 1000
+  const STATUS_POLL_MS = 5000
+  const THREADPOOL_HISTORY_POINTS = 60
+
   const { t } = useTranslation()
   const [status, setStatus] = useState<SystemStatus | null>(null)
   const [loginInfo, setLoginInfo] = useState<LoginInfo | null>(null)
@@ -114,18 +118,21 @@ export default function Dashboard() {
     loadStatus()
     loadLoginInfo()
     loadThreadPoolStats()
-    const interval = setInterval(() => {
+    const statusInterval = setInterval(() => {
       loadStatus()
       loadLoginInfo()
+    }, STATUS_POLL_MS)
+    const poolInterval = setInterval(() => {
       loadThreadPoolStats()
-    }, 5000) // Refresh every 5 seconds
+    }, THREADPOOL_POLL_MS)
 
     const timeInterval = setInterval(() => {
       setCurrentTime(new Date())
     }, 1000)
 
     return () => {
-      clearInterval(interval)
+      clearInterval(statusInterval)
+      clearInterval(poolInterval)
       clearInterval(timeInterval)
     }
   }, [])
@@ -210,8 +217,8 @@ export default function Dashboard() {
           const lastTotal = history[history.length - 1].total || 0
           taskChange = Math.max(0, totalTasks - lastTotal)
         } else {
-          // First data point, use current total as initial value
-          taskChange = totalTasks
+          // First point has no baseline; start from 0 to avoid a fake spike.
+          taskChange = 0
         }
         
         // Add new data point with both total and change rate
@@ -223,7 +230,7 @@ export default function Dashboard() {
             total: totalTasks, // Keep total for next calculation
             timestamp: now
           }
-        ].slice(-12) // Keep only last 12 points (1 minute of data at 5s intervals)
+        ].slice(-THREADPOOL_HISTORY_POINTS) // Keep one minute of 1s samples
         
         // Update time labels
         return updated.map((item, index) => {
@@ -232,8 +239,8 @@ export default function Dashboard() {
           let timeLabel = ''
           if (index === totalPoints - 1) {
             timeLabel = 'Now'
-          } else if (position % 2 === 0 || position === 0) {
-            const seconds = position * 5
+          } else if (position % 5 === 0 || position === 0) {
+            const seconds = position
             timeLabel = seconds >= 60 ? `-${Math.floor(seconds / 60)}m` : `-${seconds}s`
           }
           return { 
@@ -245,11 +252,11 @@ export default function Dashboard() {
         })
       }
 
-      // Update plugin thread pool history - show trend (change rate) instead of cumulative
-      if (data.plugin_threadpool && data.plugin_threadpool.initialized) {
-        const totalTasks = data.plugin_threadpool.total_tasks || 0
+      // Update blocking task pool history - show trend (change rate) instead of cumulative
+      if (data.blocking_task_pool && data.blocking_task_pool.initialized) {
+        const totalTasks = data.blocking_task_pool.total_tasks || 0
         newHistory.plugin = processHistory(totalTasks, prev.plugin || [])
-      } else if (data.plugin_threadpool === null && prev.plugin && prev.plugin.length > 0) {
+      } else if (data.blocking_task_pool === null && prev.plugin && prev.plugin.length > 0) {
         // If thread pool is disabled, keep existing history
       }
       
@@ -274,7 +281,7 @@ export default function Dashboard() {
   const botOnline = status?.bot_status?.online
   const memoryPercent = status?.memory?.percent || 0
   const cpuPercent = status?.cpu?.usage || 0
-  const primaryThreadPoolStats = threadPoolStats?.plugin_threadpool ?? null
+  const primaryThreadPoolStats = threadPoolStats?.blocking_task_pool ?? null
   
   // Formatters
   const formatBytes = (bytes: number) => {
@@ -547,11 +554,11 @@ export default function Dashboard() {
             </div>
           </div>
 
-          {/* Thread Pool Monitor (plugin pool takes the primary slot) */}
+          {/* Thread Pool Monitor */}
           <div className="grid grid-cols-1 gap-6">
             <ThreadPoolMonitor
               stats={primaryThreadPoolStats}
-              title="Plugin Thread Pool"
+              title="Blocking Task Pool"
               color="#3b82f6"
               icon={<Puzzle className="w-5 h-5 text-blue-500" />}
               historyData={threadPoolHistory.plugin}

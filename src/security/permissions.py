@@ -177,6 +177,21 @@ class PermissionManager:
         
         return True
 
+    def rename_user(self, old_username: str, new_username: str) -> None:
+        """Move role assignments from one username to another."""
+        if old_username == new_username:
+            return
+
+        roles = self._user_roles.pop(old_username, set())
+        if roles:
+            self._user_roles[new_username] = roles
+            logger.info(
+                "User role assignments renamed",
+                old_username=old_username,
+                new_username=new_username,
+                roles=list(roles),
+            )
+
     def remove_role_from_user(self, username: str, role_name: str) -> bool:
         """Remove a role from a user."""
         if username in self._user_roles:

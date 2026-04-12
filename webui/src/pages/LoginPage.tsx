@@ -2,27 +2,28 @@ import { useState, FormEvent } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useTranslation } from 'react-i18next'
 import { useAuthStore } from '@/store/authStore'
-import { LogIn, AlertCircle } from 'lucide-react'
+import { LogIn } from 'lucide-react'
+import { useToast } from '@/components/Toast'
+import { collectClientFingerprint } from '@/utils/clientFingerprint'
 
 export default function LoginPage() {
   const { t } = useTranslation()
+  const toast = useToast()
   const navigate = useNavigate()
   const { login } = useAuthStore()
   const [username, setUsername] = useState('')
   const [password, setPassword] = useState('')
-  const [error, setError] = useState('')
   const [loading, setLoading] = useState(false)
 
   const handleSubmit = async (e: FormEvent) => {
     e.preventDefault()
-    setError('')
     setLoading(true)
 
     try {
-      await login(username, password)
+      await login(username, password, await collectClientFingerprint())
       navigate('/dashboard')
     } catch (err: any) {
-      setError(err.response?.data?.detail || t('login.loginFailed'))
+      toast.error(err.response?.data?.detail || t('login.loginFailed'), 5000)
     } finally {
       setLoading(false)
     }
@@ -43,13 +44,6 @@ export default function LoginPage() {
           </div>
 
           <form onSubmit={handleSubmit} className="space-y-6">
-            {error && (
-              <div className="bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded-lg flex items-center gap-2">
-                <AlertCircle className="w-5 h-5" />
-                <span>{error}</span>
-              </div>
-            )}
-
             <div>
               <label className="label">{t('login.username')}</label>
               <input

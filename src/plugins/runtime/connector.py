@@ -7,29 +7,48 @@ import asyncio
 import json
 import sys
 import os
+import inspect
 from pathlib import Path
 from typing import Optional, Dict, Any, Callable, Coroutine, List, Tuple
 import asyncio
 from datetime import datetime
 
+from ...core.blocking_task_pool import get_blocking_task_pool_manager, run_in_blocking_pool
 from ...core.logger import get_logger
 from ...core.event_bus import EventBus
 from ...core.database import DatabaseManager
+from ..manifest import load_plugin_manifest, plugin_manifest_exists
 from ..interceptor import InterceptorRegistry, MessageInterceptor, InterceptorResult, ExecutionMode
 
 logger = get_logger(__name__)
+
+
+def _get_blocking_task_pool(app: Any = None):
+    """Get the shared blocking task pool, preferring the app-bound instance."""
+    return getattr(app, "blocking_task_pool", None) or get_blocking_task_pool_manager()
+
+
+async def _load_plugin_manifest_async(plugin_dir: Path, thread_pool: Any = None) -> Dict[str, Any]:
+    """Load split plugin manifest files with optional thread-pool offloading."""
+    if thread_pool:
+        def read_manifest() -> Dict[str, Any]:
+            return load_plugin_manifest(plugin_dir)
+
+        return await thread_pool.run_in_executor(read_manifest)
+
+    return await run_in_blocking_pool(load_plugin_manifest, plugin_dir)
 
 
 async def install_plugin_dependencies(plugin_path: Path, plugin_metadata: Dict[str, Any]) -> bool:
     """Install plugin dependencies automatically.
     
     Supports two methods:
-    1. From plugin.json dependencies field
+    1. From plugin metadata dependencies field
     2. From requirements.txt file
     
     Args:
         plugin_path: Plugin directory path
-        plugin_metadata: Plugin metadata from plugin.json
+        plugin_metadata: Plugin metadata from metadata.yaml
         
     Returns:
         True if installation succeeded or no dependencies, False on error
@@ -39,7 +58,7 @@ async def install_plugin_dependencies(plugin_path: Path, plugin_metadata: Dict[s
     
     dependencies_to_install = []
     
-    # Method 1: Check plugin.json dependencies field
+    # Method 1: Check metadata.yaml dependencies field
     if 'dependencies' in plugin_metadata:
         deps = plugin_metadata['dependencies']
         if isinstance(deps, list):
@@ -98,7 +117,6 @@ async def install_plugin_dependencies(plugin_path: Path, plugin_metadata: Dict[s
         
         # Install each dependency (run in thread pool to avoid blocking)
         failed_deps = []
-        loop = asyncio.get_event_loop()
         
         def install_dep(dep: str) -> Tuple[str, bool, str]:
             """Install a single dependency synchronously."""
@@ -127,7 +145,7 @@ async def install_plugin_dependencies(plugin_path: Path, plugin_metadata: Dict[s
         
         # Install dependencies sequentially (to avoid conflicts)
         for dep in dependencies_to_install:
-            dep_name, success, error = await loop.run_in_executor(None, install_dep, dep)
+            dep_name, success, error = await run_in_blocking_pool(install_dep, dep)
             if not success:
                 failed_deps.append(dep_name)
         
@@ -237,6 +255,7 @@ class PluginRuntimeConnector:
         # Runtime process
         self.runtime_process: Optional[asyncio.subprocess.Process] = None
         self.runtime_task: Optional[asyncio.Task] = None
+        self.runtime_stderr_task: Optional[asyncio.Task] = None
         self.heartbeat_task: Optional[asyncio.Task] = None
         
         # Runtime script path
@@ -279,16 +298,120 @@ class PluginRuntimeConnector:
         
         # Cleanup task for expired requests
         self._cleanup_task: Optional[asyncio.Task] = None
+
+    def _is_runtime_process_alive(self) -> bool:
+        """Check whether runtime process is alive."""
+        if not self.runtime_process:
+            return False
+
+        try:
+            if hasattr(self.runtime_process, 'returncode'):
+                return self.runtime_process.returncode is None
+            if hasattr(self.runtime_process, 'poll'):
+                return self.runtime_process.poll() is None
+        except Exception as e:
+            logger.debug(f"Failed to check runtime process state: {e}")
+            return False
+
+        # Unknown process wrapper type: assume alive until proven otherwise.
+        return True
+
+    def _get_runtime_returncode(self) -> Optional[int]:
+        """Best-effort runtime process return code."""
+        if not self.runtime_process:
+            return None
+        try:
+            if hasattr(self.runtime_process, 'returncode'):
+                return self.runtime_process.returncode
+            if hasattr(self.runtime_process, 'poll'):
+                return self.runtime_process.poll()
+        except Exception:
+            return None
+        return None
+
+    def _is_runtime_stdin_writable(self) -> bool:
+        """Check whether runtime stdin stream can still be written."""
+        if not self.runtime_process or not getattr(self.runtime_process, 'stdin', None):
+            return False
+
+        stdin = self.runtime_process.stdin
+
+        try:
+            if hasattr(stdin, 'is_closing') and stdin.is_closing():
+                return False
+        except Exception:
+            return False
+
+        closed = getattr(stdin, 'closed', None)
+        if closed is True:
+            return False
+
+        transport = getattr(stdin, 'transport', None) or getattr(stdin, '_transport', None)
+        if transport and hasattr(transport, 'is_closing'):
+            try:
+                if transport.is_closing():
+                    return False
+            except Exception:
+                return False
+
+        return True
+
+    async def _wait_for_runtime_process(self, timeout: Optional[float] = None) -> Optional[int]:
+        """Wait for runtime process termination for both asyncio and Popen wrappers."""
+        if not self.runtime_process or not hasattr(self.runtime_process, 'wait'):
+            return None
+
+        wait_method = self.runtime_process.wait
+
+        if inspect.iscoroutinefunction(wait_method):
+            if timeout is not None:
+                return await asyncio.wait_for(wait_method(), timeout=timeout)
+            return await wait_method()
+
+        blocking_pool = _get_blocking_task_pool(self.app)
+        wait_future = blocking_pool.run_in_executor(wait_method)
+        if timeout is not None:
+            return await asyncio.wait_for(wait_future, timeout=timeout)
+        return await wait_future
+
+    def _is_closed_transport_error(self, error: Exception) -> bool:
+        """Check whether an exception indicates a closed runtime transport."""
+        error_type = type(error).__name__
+        error_msg = str(error).lower()
+        return (
+            isinstance(error, (BrokenPipeError, ConnectionResetError, ConnectionAbortedError))
+            or "handler is closed" in error_msg
+            or "transport closed" in error_msg
+            or "connection lost" in error_msg
+            or "closed=true" in error_msg
+            or ("runtimeerror" in error_type.lower() and "closed" in error_msg)
+        )
+
+    def _is_frozen_runtime(self) -> bool:
+        """Return whether current process is running from a frozen executable."""
+        return bool(getattr(sys, "frozen", False))
+
+    def _build_runtime_command(self) -> List[str]:
+        """Build subprocess command for plugin runtime."""
+        if self._is_frozen_runtime():
+            # Frozen executable cannot execute arbitrary .py paths directly.
+            return [sys.executable, "--runtime-mode"]
+        return [sys.executable, "-m", "src.plugins.runtime.main"]
+
+    def _get_runtime_process_match_token(self) -> str:
+        """Token used to detect runtime subprocesses in process list."""
+        if self._is_frozen_runtime():
+            return "--runtime-mode"
+        return "src.plugins.runtime.main"
     
     def _get_resolved_plugin_base(self) -> Path:
         """Resolved absolute path to the configured plugins directory (``plugins/``)."""
-        from ...core.config import get_config
+        from ...core.config import get_config, get_runtime_base_dir
         
         config = get_config()
         plugin_dir = Path(config.plugin_dir)
         if not plugin_dir.is_absolute():
-            project_root = Path(__file__).parent.parent.parent.parent
-            plugin_dir = (project_root / config.plugin_dir).resolve()
+            plugin_dir = (get_runtime_base_dir() / config.plugin_dir).resolve()
         else:
             plugin_dir = plugin_dir.resolve()
         return plugin_dir
@@ -304,6 +427,122 @@ class PluginRuntimeConnector:
                 logger.info("Orphan plugin cleanup at startup: %s", pruned)
         except Exception as e:
             logger.warning("Orphan plugin prune failed (continuing startup): %s", e, exc_info=True)
+
+    async def _sync_plugin_records_from_disk(self, plugin_dir_name: Optional[str] = None) -> None:
+        """Register missing plugin settings by scanning manifest files from filesystem.
+
+        Args:
+            plugin_dir_name: Optional plugin directory name to sync only one plugin.
+        """
+        if not self.db_manager:
+            return
+
+        plugin_base = self._get_resolved_plugin_base()
+        if not plugin_base.exists() or not plugin_base.is_dir():
+            return
+
+        thread_pool = getattr(self.app, 'blocking_task_pool', None) if self.app else None
+
+        if thread_pool:
+            def scan_plugin_dirs():
+                dirs = [
+                    d for d in plugin_base.iterdir()
+                    if d.is_dir() and not d.name.startswith('.') and not d.name.startswith('_')
+                ]
+                if plugin_dir_name:
+                    dirs = [d for d in dirs if d.name == plugin_dir_name]
+                return dirs
+            plugin_dirs = await thread_pool.run_in_executor(scan_plugin_dirs)
+        else:
+            plugin_dirs = [
+                d for d in plugin_base.iterdir()
+                if d.is_dir() and not d.name.startswith('.') and not d.name.startswith('_')
+            ]
+            if plugin_dir_name:
+                plugin_dirs = [d for d in plugin_dirs if d.name == plugin_dir_name]
+
+        existing_by_key: Dict[Tuple[str, str], Any] = {}
+        try:
+            existing_rows = await self.db_manager.list_plugin_settings(enabled_only=False)
+            existing_by_key = {
+                (row.plugin_author, row.plugin_name): row
+                for row in existing_rows
+            }
+        except Exception as e:
+            logger.warning("Plugin sync failed to read existing settings: %s", e)
+
+        created = 0
+        updated = 0
+        synced_at = datetime.now().isoformat()
+
+        for plugin_dir in plugin_dirs:
+            if not plugin_manifest_exists(plugin_dir):
+                continue
+
+            try:
+                metadata = await _load_plugin_manifest_async(plugin_dir, thread_pool)
+            except Exception as e:
+                logger.warning("Skip plugin sync for invalid manifest %s: %s", plugin_dir, e)
+                continue
+
+            author = str(metadata.get('author', 'Unknown')).strip() or 'Unknown'
+            name = str(metadata.get('name', plugin_dir.name)).strip() or plugin_dir.name
+            version = str(metadata.get('version', '1.0.0'))
+            default_config = metadata.get('default_config', {})
+            if not isinstance(default_config, dict):
+                default_config = {}
+            try:
+                priority = int(metadata.get('priority', 100))
+            except (TypeError, ValueError):
+                priority = 100
+
+            try:
+                existing = existing_by_key.get((author, name))
+                if existing:
+                    install_info = existing.install_info or {}
+                    info_changed = False
+                    if install_info.get('version') != version:
+                        install_info['version'] = version
+                        info_changed = True
+                    install_info['last_synced_at'] = synced_at
+                    info_changed = True
+
+                    if info_changed:
+                        await self.db_manager.update_plugin_setting(
+                            author,
+                            name,
+                            install_info=install_info
+                        )
+                        updated += 1
+                    continue
+
+                install_info = {
+                    'source': 'filesystem',
+                    'version': version,
+                    'synced_at': synced_at,
+                }
+
+                await self.db_manager.create_plugin_setting(
+                    author=author,
+                    name=name,
+                    enabled=False,
+                    priority=priority,
+                    config=default_config,
+                    install_source='manual',
+                    install_info=install_info
+                )
+                created += 1
+            except Exception as e:
+                logger.warning("Failed syncing plugin setting for %s/%s: %s", author, name, e)
+
+        if created or updated:
+            scope = plugin_dir_name or "all"
+            logger.info(
+                "Plugin settings sync completed (%s): created=%s, updated=%s",
+                scope,
+                created,
+                updated,
+            )
     
     async def initialize(self):
         """Initialize plugin runtime."""
@@ -311,7 +550,7 @@ class PluginRuntimeConnector:
             logger.info("Plugin system is disabled")
             return
         
-        if not self.runtime_script.exists():
+        if not self._is_frozen_runtime() and not self.runtime_script.exists():
             logger.error(f"Plugin runtime script not found", path=str(self.runtime_script))
             return
         
@@ -327,6 +566,9 @@ class PluginRuntimeConnector:
             
             # DB rows for plugins whose directory was deleted manually (align with Web UI delete)
             await self._prune_orphaned_plugin_records()
+            
+            # Register plugins copied directly into plugins/ before loading enabled set.
+            await self._sync_plugin_records_from_disk()
             
             # Initialize plugins
             await self._initialize_plugins()
@@ -373,6 +615,23 @@ class PluginRuntimeConnector:
     
     async def _start_runtime_process(self):
         """Start plugin runtime process."""
+        # Stop existing reader tasks before starting a fresh runtime process.
+        if self.runtime_task and not self.runtime_task.done():
+            self.runtime_task.cancel()
+            try:
+                await self.runtime_task
+            except asyncio.CancelledError:
+                pass
+        self.runtime_task = None
+
+        if self.runtime_stderr_task and not self.runtime_stderr_task.done():
+            self.runtime_stderr_task.cancel()
+            try:
+                await self.runtime_stderr_task
+            except asyncio.CancelledError:
+                pass
+        self.runtime_stderr_task = None
+
         # Ensure old process is terminated before starting new one
         if self.runtime_process:
             # Check if process is still running
@@ -386,13 +645,13 @@ class PluginRuntimeConnector:
                 logger.warning("Old runtime process still running, terminating it first...")
                 try:
                     self.runtime_process.terminate()
-                    await asyncio.wait_for(self.runtime_process.wait(), timeout=2.0)
+                    await self._wait_for_runtime_process(timeout=2.0)
                     logger.info("Old runtime process terminated")
                 except (asyncio.TimeoutError, ProcessLookupError):
                     try:
                         logger.warning("Force killing old runtime process...")
                         self.runtime_process.kill()
-                        await self.runtime_process.wait()
+                        await self._wait_for_runtime_process()
                         logger.info("Old runtime process killed")
                     except Exception as e:
                         logger.error(f"Failed to kill old runtime process: {e}")
@@ -404,7 +663,7 @@ class PluginRuntimeConnector:
         try:
             import psutil
             current_pid = os.getpid()
-            runtime_script_str = str(self.runtime_script)
+            process_match_token = self._get_runtime_process_match_token()
             
             for proc in psutil.process_iter(['pid', 'name', 'cmdline']):
                 try:
@@ -412,7 +671,7 @@ class PluginRuntimeConnector:
                         continue
                     
                     cmdline = proc.info.get('cmdline', [])
-                    if cmdline and runtime_script_str in ' '.join(cmdline):
+                    if cmdline and process_match_token in ' '.join(cmdline):
                         logger.warning(f"Found orphaned plugin runtime process: PID {proc.info['pid']}, terminating...")
                         try:
                             proc_obj = psutil.Process(proc.info['pid'])
@@ -432,7 +691,15 @@ class PluginRuntimeConnector:
         except Exception as e:
             logger.warning(f"Error checking for orphaned processes: {e}")
         
-        logger.info("Starting plugin runtime process", script=str(self.runtime_script))
+        runtime_cmd = self._build_runtime_command()
+        from ...core.config import get_runtime_base_dir
+        runtime_cwd = str(get_runtime_base_dir())
+        logger.info(
+            "Starting plugin runtime process",
+            script=str(self.runtime_script),
+            command=" ".join(runtime_cmd),
+            cwd=runtime_cwd,
+        )
         
         # Start subprocess with stdio pipes
         # Windows + Python 3.13 compatibility: ensure ProactorEventLoop policy is set
@@ -448,11 +715,11 @@ class PluginRuntimeConnector:
         
         try:
             self.runtime_process = await asyncio.create_subprocess_exec(
-                sys.executable,
-                str(self.runtime_script),
+                *runtime_cmd,
                 stdin=asyncio.subprocess.PIPE,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
+                cwd=runtime_cwd,
             )
         except NotImplementedError as e:
             # Fallback to subprocess.Popen for Windows + Python 3.13
@@ -462,11 +729,12 @@ class PluginRuntimeConnector:
                     import subprocess
                     # Use subprocess.Popen as fallback
                     popen_process = subprocess.Popen(
-                        [sys.executable, str(self.runtime_script)],
+                        runtime_cmd,
                         stdin=subprocess.PIPE,
                         stdout=subprocess.PIPE,
                         stderr=subprocess.PIPE,
                         bufsize=0,  # Unbuffered
+                        cwd=runtime_cwd,
                     )
                     # Wrap Popen in a simple async-compatible interface
                     # Create a minimal wrapper that mimics asyncio.subprocess.Process
@@ -517,8 +785,9 @@ class PluginRuntimeConnector:
         
         self.is_running = True
         
-        # Start output reader task
+        # Start output readers
         self.runtime_task = asyncio.create_task(self._read_runtime_output())
+        self.runtime_stderr_task = asyncio.create_task(self._read_runtime_stderr())
         
         logger.info("Plugin runtime process started", pid=self.runtime_process.pid)
     
@@ -546,40 +815,40 @@ class PluginRuntimeConnector:
                             )
                         except asyncio.TimeoutError:
                             # Timeout is OK, just check if process is still alive
-                            if self.runtime_process and hasattr(self.runtime_process, 'poll'):
-                                if self.runtime_process.poll() is not None:
-                                    logger.warning("Runtime process terminated")
-                                    break
+                            if not self._is_runtime_process_alive():
+                                logger.warning("Runtime process terminated")
+                                should_call_disconnect = True
+                                break
                             # Continue reading
                             continue
                     else:
                         # Popen fallback - use sync readline in executor with timeout
-                        loop = asyncio.get_event_loop()
+                        blocking_pool = _get_blocking_task_pool(self.app)
                         try:
                             line = await asyncio.wait_for(
-                                loop.run_in_executor(None, self.runtime_process.stdout.readline),
+                                blocking_pool.run_in_executor(self.runtime_process.stdout.readline),
                                 timeout=60.0  # 60 second timeout
                             )
                         except asyncio.TimeoutError:
                             # Timeout is OK, check if process is still alive
-                            if self.runtime_process and hasattr(self.runtime_process, 'poll'):
-                                if self.runtime_process.poll() is not None:
-                                    logger.warning("Runtime process terminated")
-                                    break
+                            if not self._is_runtime_process_alive():
+                                logger.warning("Runtime process terminated")
+                                should_call_disconnect = True
+                                break
                             # Continue reading
                             continue
                     
                     if not line:
-                        # EOF - process may have closed stdout
+                        # EOF means runtime stdout pipe is no longer readable.
                         logger.warning("Runtime stdout closed (EOF)")
-                        # Check if process is still alive
-                        if self.runtime_process and hasattr(self.runtime_process, 'poll'):
-                            if self.runtime_process.poll() is not None:
-                                logger.warning("Runtime process terminated")
-                                break
-                        # Wait a bit before checking again (process might restart)
-                        await asyncio.sleep(1.0)
-                        continue
+                        if self._is_runtime_process_alive():
+                            logger.warning("Runtime stdout pipe closed while process is still alive")
+                        else:
+                            logger.warning(
+                                f"Runtime process terminated (returncode={self._get_runtime_returncode()})"
+                            )
+                        should_call_disconnect = True
+                        break
                     
                     # Reset error counter on successful read
                     consecutive_errors = 0
@@ -639,6 +908,8 @@ class PluginRuntimeConnector:
             # Mark as not running, but don't immediately call disconnect_callback
             # Let the heartbeat and other mechanisms handle reconnection
             self.is_running = False
+            if self.runtime_process and not self._is_runtime_process_alive():
+                self.runtime_process = None
             logger.warning("Runtime output reader stopped. Plugin runtime may be disconnected.")
             
             # Only call disconnect callback if we have one and it's a real disconnection
@@ -648,6 +919,39 @@ class PluginRuntimeConnector:
                     await self.disconnect_callback()
                 except Exception as callback_error:
                     logger.error(f"Error in disconnect callback: {callback_error}", exc_info=True)
+
+    async def _read_runtime_stderr(self):
+        """Read runtime stderr and forward it to framework logs."""
+        if not self.runtime_process or not self.runtime_process.stderr:
+            return
+
+        is_async_process = (
+            hasattr(self.runtime_process.stderr, 'readline')
+            and asyncio.iscoroutinefunction(self.runtime_process.stderr.readline)
+        )
+
+        try:
+            while self.is_running:
+                if is_async_process:
+                    line = await self.runtime_process.stderr.readline()
+                else:
+                    blocking_pool = _get_blocking_task_pool(self.app)
+                    line = await blocking_pool.run_in_executor(self.runtime_process.stderr.readline)
+
+                if not line:
+                    break
+
+                if isinstance(line, bytes):
+                    text = line.decode('utf-8', errors='replace').rstrip()
+                else:
+                    text = str(line).rstrip()
+
+                if text:
+                    logger.error(f"[Runtime stderr] {text}")
+        except asyncio.CancelledError:
+            pass
+        except Exception as e:
+            logger.error(f"Error reading runtime stderr: {e}", exc_info=True)
     
     async def _handle_runtime_message(self, message: Dict[str, Any]):
         """Handle message from plugin runtime.
@@ -746,7 +1050,7 @@ class PluginRuntimeConnector:
         elif msg_type == 'storage_request':
             # Plugin wants to access storage
             request_id = data.get('request_id')
-            action = data.get('action')  # 'get_binary', 'set_binary', 'delete_binary', 'list_binary_keys'
+            action = data.get('action')  # 'get_config_upload', 'get_binary', 'set_binary', 'delete_binary', 'list_binary_keys'
             plugin_id = data.get('plugin_id')
             
             logger.debug(f"Storage request: {action} from plugin {plugin_id}, request_id: {request_id}")
@@ -764,7 +1068,9 @@ class PluginRuntimeConnector:
             
             try:
                 # Call appropriate handler method
-                if action == 'get_binary':
+                if action == 'get_config_upload':
+                    result = await handler._handle_get_config_upload(handler_data)
+                elif action == 'get_binary':
                     result = await handler._handle_get_binary(handler_data)
                 elif action == 'set_binary':
                     result = await handler._handle_set_binary(handler_data)
@@ -955,18 +1261,36 @@ class PluginRuntimeConnector:
         else:
             logger.warning(f"Unknown message type from runtime: {msg_type}")
     
-    async def _send_to_runtime(self, message: Dict[str, Any]):
+    async def _send_to_runtime(self, message: Dict[str, Any]) -> bool:
         """Send message to plugin runtime.
         
         Args:
             message: Message dict to send
         """
-        if not self.runtime_process or not self.runtime_process.stdin:
+        msg_type = message.get('type', 'unknown')
+
+        if not self.is_running and msg_type != 'shutdown':
+            logger.debug(f"Skipping send to runtime because connector is not running: {msg_type}")
+            return False
+
+        if not self.runtime_process:
             logger.error("Cannot send to runtime: process not running")
-            return
-        
+            return False
+
+        if not self._is_runtime_process_alive():
+            logger.error(
+                f"Cannot send to runtime: process not running (returncode={self._get_runtime_returncode()})"
+            )
+            self.is_running = False
+            self.runtime_process = None
+            return False
+
+        if not self._is_runtime_stdin_writable():
+            logger.error("Cannot send to runtime: stdin transport is closed")
+            self.is_running = False
+            return False
+
         try:
-            msg_type = message.get('type', 'unknown')
             logger.debug(f"Sending to runtime: {msg_type}")
             if msg_type == 'api_response':
                 logger.debug(f"   Response data: {message.get('data', {})}")
@@ -980,13 +1304,21 @@ class PluginRuntimeConnector:
                 await stdin.drain()
             else:
                 # Popen fallback - sync IO, use executor
-                loop = asyncio.get_event_loop()
-                await loop.run_in_executor(None, stdin.write, data.encode())
-                await loop.run_in_executor(None, stdin.flush)
+                blocking_pool = _get_blocking_task_pool(self.app)
+                await blocking_pool.run_in_executor(stdin.write, data.encode())
+                await blocking_pool.run_in_executor(stdin.flush)
             
             logger.debug(f"Sent to runtime: {msg_type}")
+            return True
         except Exception as e:
+            if self._is_closed_transport_error(e):
+                self.is_running = False
+                if self.runtime_process and not self._is_runtime_process_alive():
+                    self.runtime_process = None
+                logger.warning(f"Runtime transport closed while sending {msg_type}: {e}")
+                return False
             logger.error(f"Error sending to runtime: {e}", exc_info=True)
+            return False
     
     async def _heartbeat_loop(self):
         """Send periodic heartbeat to runtime.
@@ -1002,23 +1334,27 @@ class PluginRuntimeConnector:
                 await asyncio.sleep(30)  # Every 30 seconds
                 
                 try:
-                    await self._send_to_runtime({
+                    sent = await self._send_to_runtime({
                         'type': 'heartbeat',
                         'data': {'timestamp': datetime.utcnow().isoformat()}
                     })
-                    consecutive_failures = 0  # Reset on success
-                    logger.debug("Heartbeat sent successfully")
+                    if sent:
+                        consecutive_failures = 0  # Reset on success
+                        logger.debug("Heartbeat sent successfully")
+                    else:
+                        consecutive_failures += 1
+                        logger.debug(f"Heartbeat failed ({consecutive_failures}/{max_consecutive_failures})")
                 except Exception as e:
                     consecutive_failures += 1
                     logger.debug(f"Heartbeat failed ({consecutive_failures}/{max_consecutive_failures}): {e}")
-                    
-                    # Only log warning after multiple failures
-                    if consecutive_failures >= max_consecutive_failures:
-                        logger.warning(
-                            f"Heartbeat failed {consecutive_failures} times consecutively. "
-                            f"Plugin runtime may be disconnected."
-                        )
-                        # Don't immediately disconnect - let the read loop detect actual disconnection
+
+                # Only log warning after multiple failures
+                if consecutive_failures >= max_consecutive_failures:
+                    logger.warning(
+                        f"Heartbeat failed {consecutive_failures} times consecutively. "
+                        f"Plugin runtime may be disconnected."
+                    )
+                    # Don't immediately disconnect - let the read loop detect actual disconnection
                         
         except asyncio.CancelledError:
             pass
@@ -1064,38 +1400,34 @@ class PluginRuntimeConnector:
             logger.info(f"Found {len(plugins)} enabled plugins")
             
             # Send init command to runtime
-            # Priority: database > plugin.json > default (100)
+            # Priority: database > metadata.yaml > default (100)
             plugin_list = []
             plugin_dir = self._get_resolved_plugin_base()
+            thread_pool = getattr(self.app, 'blocking_task_pool', None) if self.app else None
             for p in plugins:
-                # Try to get priority from plugin.json
-                priority_from_json = None
+                plugin_path = plugin_dir / p.plugin_name
+                if not plugin_manifest_exists(plugin_path):
+                    logger.warning(
+                        "Skipping enabled plugin %s/%s: manifest missing in %s",
+                        p.plugin_author,
+                        p.plugin_name,
+                        plugin_path,
+                    )
+                    continue
+
+                # Try to get priority from metadata.yaml
+                priority_from_manifest = None
                 try:
-                    plugin_path = plugin_dir / p.plugin_name
-                    plugin_json = plugin_path / "plugin.json"
-                    if plugin_json.exists():
-                        import json
-                        with open(plugin_json, 'r', encoding='utf-8') as f:
-                            plugin_metadata = json.load(f)
-                            priority_from_json = plugin_metadata.get('priority')
+                    plugin_metadata = await _load_plugin_manifest_async(plugin_path, thread_pool)
+                    priority_from_manifest = plugin_metadata.get('priority')
                 except Exception:
                     pass
                 
-                # Priority: database > plugin.json > default
+                # Priority: database > metadata.yaml > default
                 final_priority = p.priority
-                if p.priority == 100 and priority_from_json is not None:
-                    # Database has default, use plugin.json if available
-                    final_priority = priority_from_json
-                
-                manifest_path = plugin_dir / p.plugin_name / "plugin.json"
-                if not manifest_path.is_file():
-                    logger.warning(
-                        "Skipping enabled plugin %s/%s: manifest missing at %s",
-                        p.plugin_author,
-                        p.plugin_name,
-                        manifest_path,
-                    )
-                    continue
+                if p.priority == 100 and priority_from_manifest is not None:
+                    # Database has default, use metadata.yaml if available
+                    final_priority = priority_from_manifest
                 
                 plugin_list.append({
                     'author': p.plugin_author,
@@ -1296,9 +1628,7 @@ class PluginRuntimeConnector:
         logger.info(f"Installing plugin: {author}/{name} from {source}")
         
         try:
-            from ...core.config import get_config
-            config = get_config()
-            plugins_dir = Path(config.plugin_dir)
+            plugins_dir = self._get_resolved_plugin_base()
             plugin_path = plugins_dir / name
             
             # 
@@ -1366,16 +1696,18 @@ class PluginRuntimeConnector:
                             # 
                             extracted_root = extract_dir / root_dir
                             if extracted_root.exists():
-                                # plugin.json
-                                if (extracted_root / "plugin.json").exists():
+                                # metadata.yaml + settings.json
+                                if plugin_manifest_exists(extracted_root):
                                     source_path = extracted_root
                                 else:
-                                    # plugin.json
-                                    plugin_dirs = [d for d in extracted_root.iterdir() if d.is_dir() and (d / "plugin.json").exists()]
+                                    plugin_dirs = [
+                                        d for d in extracted_root.iterdir()
+                                        if d.is_dir() and plugin_manifest_exists(d)
+                                    ]
                                     if plugin_dirs:
                                         source_path = plugin_dirs[0]
                                     else:
-                                        logger.error("Could not find plugin.json in downloaded archive")
+                                        logger.error("Could not find metadata.yaml/settings.json in downloaded archive")
                                         import shutil
                                         shutil.rmtree(temp_dir, ignore_errors=True)
                                         return False
@@ -1429,20 +1761,15 @@ class PluginRuntimeConnector:
                 logger.error(f"Source not found: {source}")
                 return False
             
-            # plugin.json
-            plugin_json = plugin_path / "plugin.json"
-            if not plugin_json.exists():
-                logger.error(f"Plugin {name} missing plugin.json, installation failed")
+            if not plugin_manifest_exists(plugin_path):
+                logger.error(f"Plugin {name} missing metadata.yaml/settings.json, installation failed")
                 # 
                 import shutil
                 if plugin_path.exists():
                     shutil.rmtree(plugin_path)
                 return False
             
-            # plugin.json
-            import json
-            with open(plugin_json, 'r', encoding='utf-8') as f:
-                plugin_metadata = json.load(f)
+            plugin_metadata = load_plugin_manifest(plugin_path)
             
             # 
             logger.info(f"Checking dependencies for plugin: {author}/{name}")
@@ -1532,27 +1859,24 @@ class PluginRuntimeConnector:
             # 1. runtime
             await self.unload_plugin(plugin_id)
             
-            from ...core.config import get_config
-            config = get_config()
-            plugins_dir = Path(config.plugin_dir)
+            plugins_dir = self._get_resolved_plugin_base()
             plugin_path = plugins_dir / name
             
             # 2. Read manifest before deleting directory (for Web UI upload keys in default_config)
             manifest_default_config: Optional[Dict[str, Any]] = None
-            plugin_json = plugin_path / "plugin.json"
-            if plugin_json.is_file():
+            if plugin_manifest_exists(plugin_path):
                 try:
-                    with open(plugin_json, encoding="utf-8") as f:
-                        manifest_default_config = json.load(f).get("default_config") or None
+                    manifest_default_config = load_plugin_manifest(plugin_path).get("default_config") or None
                 except Exception as e:
-                    logger.warning(f"Failed to read plugin.json before uninstall: {e}")
+                    logger.warning(f"Failed to read plugin manifest before uninstall: {e}")
             
             # 3. Database cleanup (before rmtree)
             if self.db_manager:
-                # 3.0 Web UI config-file uploads (system/plugin_config)
+                # 3.0 Web UI config-file uploads stored in this plugin's private binary storage
                 try:
                     existing = await self.db_manager.get_plugin_setting(author, name)
                     await self.db_manager.delete_plugin_config_upload_blobs(
+                        plugin_id,
                         existing.config if existing else None,
                         manifest_default_config,
                     )
@@ -1646,6 +1970,10 @@ class PluginRuntimeConnector:
         logger.info(f"Reloading single plugin: {plugin_name}")
         
         try:
+            # Refresh DB metadata for this plugin when users click reload.
+            target_dir_name = plugin_name.split('/', 1)[1] if '/' in plugin_name else plugin_name
+            await self._sync_plugin_records_from_disk(plugin_dir_name=target_dir_name)
+
             # Get fresh config from database to pass to runtime
             # This avoids SQLite cross-process caching issues
             plugin_config = {}  # None
@@ -1655,24 +1983,11 @@ class PluginRuntimeConnector:
                 if '/' in plugin_name:
                     author, name = plugin_name.split('/', 1)
                 else:
-                    # Try to get author from plugin.json
-                    from ...core.config import get_config
-                    config = get_config()
-                    plugin_path = Path(config.plugin_dir) / plugin_name
-                    plugin_json = plugin_path / "plugin.json"
-                    if plugin_json.exists():
-                        import json
-                        # Use thread pool for synchronous file IO
-                        thread_pool = getattr(self.app, 'plugin_thread_pool', None)
-                        if thread_pool:
-                            def read_plugin_json():
-                                with open(plugin_json, 'r', encoding='utf-8') as f:
-                                    return json.load(f)
-                            metadata = await thread_pool.run_in_executor(read_plugin_json)
-                        else:
-                            # Fallback to sync operation if thread pool not available
-                            with open(plugin_json, 'r', encoding='utf-8') as f:
-                                metadata = json.load(f)
+                    # Try to get author from metadata.yaml
+                    plugin_path = self._get_resolved_plugin_base() / plugin_name
+                    if plugin_manifest_exists(plugin_path):
+                        thread_pool = getattr(self.app, 'blocking_task_pool', None)
+                        metadata = await _load_plugin_manifest_async(plugin_path, thread_pool)
                         author = metadata.get('author', 'Unknown')
                         name = plugin_name
                     else:
@@ -1776,6 +2091,14 @@ class PluginRuntimeConnector:
             except asyncio.CancelledError:
                 pass
             self.runtime_task = None
+
+        if self.runtime_stderr_task and not self.runtime_stderr_task.done():
+            self.runtime_stderr_task.cancel()
+            try:
+                await self.runtime_stderr_task
+            except asyncio.CancelledError:
+                pass
+        self.runtime_stderr_task = None
         
         # Terminate process
         if self.runtime_process:
@@ -1791,12 +2114,12 @@ class PluginRuntimeConnector:
                     # Try graceful termination first
                     self.runtime_process.terminate()
                     try:
-                        await asyncio.wait_for(self.runtime_process.wait(), timeout=3.0)
+                        await self._wait_for_runtime_process(timeout=3.0)
                         logger.info("Runtime process terminated gracefully")
                     except asyncio.TimeoutError:
                         logger.warning("Runtime process didn't terminate, killing it...")
                         self.runtime_process.kill()
-                        await self.runtime_process.wait()
+                        await self._wait_for_runtime_process()
                         logger.info("Runtime process killed")
             except ProcessLookupError:
                 # Process already terminated
@@ -1825,7 +2148,7 @@ class PluginRuntimeConnector:
         try:
             import psutil
             current_pid = os.getpid()
-            runtime_script_str = str(self.runtime_script)
+            process_match_token = self._get_runtime_process_match_token()
             
             for proc in psutil.process_iter(['pid', 'name', 'cmdline']):
                 try:
@@ -1833,7 +2156,7 @@ class PluginRuntimeConnector:
                         continue
                     
                     cmdline = proc.info.get('cmdline', [])
-                    if cmdline and runtime_script_str in ' '.join(cmdline):
+                    if cmdline and process_match_token in ' '.join(cmdline):
                         logger.info(f"Found orphaned plugin runtime process: PID {proc.info['pid']}, terminating...")
                         try:
                             proc_obj = psutil.Process(proc.info['pid'])

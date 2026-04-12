@@ -1,7 +1,9 @@
 import { useState, FormEvent, useEffect, useRef } from 'react'
 import { useTranslation } from 'react-i18next'
 import { api } from '@/utils/api'
-import { Settings as SettingsIcon, Lock, Save, AlertCircle, CheckCircle } from 'lucide-react'
+import { Settings as SettingsIcon, Lock, Save, AlertCircle, User } from 'lucide-react'
+import { useToast } from '@/components/Toast'
+import { useAuthStore } from '@/store/authStore'
 
 interface SystemConfig {
   app_name: string
@@ -10,27 +12,31 @@ interface SystemConfig {
   log_level: string
   plugin_auto_load: boolean
   web_ui_enabled: boolean
-  plugin_thread_pool_enabled?: boolean
+  web_ui_username?: string
+  blocking_task_pool_enabled?: boolean
+  blocking_task_pool_max_workers?: number
 }
 
 export default function SystemPage() {
   const { t } = useTranslation()
+  const toast = useToast()
+  const checkAuth = useAuthStore((state) => state.checkAuth)
   const [config, setConfig] = useState<SystemConfig | null>(null)
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
-  const [success, setSuccess] = useState(false)
   const [error, setError] = useState('')
   
-  // Password reset
+  // Admin account
+  const [adminUsername, setAdminUsername] = useState('')
+  const [savingUsername, setSavingUsername] = useState(false)
   const [showPasswordReset, setShowPasswordReset] = useState(false)
   const [newPassword, setNewPassword] = useState('')
   const [confirmPassword, setConfirmPassword] = useState('')
   const [resettingPassword, setResettingPassword] = useState(false)
-  const [passwordSuccess, setPasswordSuccess] = useState(false)
-  const [passwordError, setPasswordError] = useState('')
   
-  // Plugin Thread Pool config
-  const [pluginThreadPoolEnabled, setPluginThreadPoolEnabled] = useState(true)
+  // Blocking Task Pool config
+  const [blockingTaskPoolEnabled, setBlockingTaskPoolEnabled] = useState(true)
+  const [blockingTaskPoolMaxWorkers, setBlockingTaskPoolMaxWorkers] = useState(0)
   
   // 
   const loadingRequestRef = useRef(0)
@@ -58,8 +64,10 @@ export default function SystemPage() {
       }
       
       setConfig(data)
-      // Load Plugin Thread Pool config
-      setPluginThreadPoolEnabled(data.plugin_thread_pool_enabled !== undefined ? data.plugin_thread_pool_enabled : true)
+      setAdminUsername(data.web_ui_username || 'admin')
+      // Load Blocking Task Pool config
+      setBlockingTaskPoolEnabled(data.blocking_task_pool_enabled !== undefined ? data.blocking_task_pool_enabled : true)
+      setBlockingTaskPoolMaxWorkers(data.blocking_task_pool_max_workers !== undefined ? data.blocking_task_pool_max_workers : 0)
     } catch (err: any) {
       // 
       if (currentRequest !== loadingRequestRef.current) {
@@ -84,25 +92,56 @@ export default function SystemPage() {
     if (!config) return
 
     setSaving(true)
-    setSuccess(false)
     setError('')
 
     try {
       const updateData: any = {
         web_ui_enabled: config.web_ui_enabled,
         log_level: config.log_level,
-        plugin_thread_pool_enabled: pluginThreadPoolEnabled,
+        blocking_task_pool_enabled: blockingTaskPoolEnabled,
+        blocking_task_pool_max_workers: blockingTaskPoolMaxWorkers,
       }
       
       await api.updateSystemConfig(updateData)
-      setSuccess(true)
+      toast.success(t('system.settingsSaved'))
       // Reload config after saving to ensure UI reflects saved values
       await loadConfig()
-      setTimeout(() => setSuccess(false), 3000)
     } catch (err: any) {
-      setError(err.response?.data?.detail || t('system.saveFailed'))
+      const message = err.response?.data?.detail || t('system.saveFailed')
+      toast.error(message)
     } finally {
       setSaving(false)
+    }
+  }
+
+  const handleUsernameUpdate = async (e: FormEvent) => {
+    e.preventDefault()
+    if (!config) return
+
+    const nextUsername = adminUsername.trim()
+    if (nextUsername.length < 3 || nextUsername.length > 64) {
+      toast.warning(t('system.usernameInvalid'))
+      return
+    }
+    if (/\s/.test(nextUsername)) {
+      toast.warning(t('system.usernameNoWhitespace'))
+      return
+    }
+
+    setSavingUsername(true)
+
+    try {
+      const result = await api.updateAdminUsername({ username: nextUsername })
+      const savedUsername = result?.username || nextUsername
+      setConfig({ ...config, web_ui_username: savedUsername })
+      setAdminUsername(savedUsername)
+      await checkAuth()
+      toast.success(t('system.usernameUpdateSuccess'))
+    } catch (err: any) {
+      const message = err.response?.data?.detail || t('system.usernameUpdateFailed')
+      toast.error(message)
+    } finally {
+      setSavingUsername(false)
     }
   }
 
@@ -110,28 +149,26 @@ export default function SystemPage() {
     e.preventDefault()
     
     if (newPassword.length < 6) {
-      setPasswordError(t('system.passwordTooShort'))
+      toast.warning(t('system.passwordTooShort'))
       return
     }
     
     if (newPassword !== confirmPassword) {
-      setPasswordError(t('system.passwordMismatch'))
+      toast.warning(t('system.passwordMismatch'))
       return
     }
 
     setResettingPassword(true)
-    setPasswordError('')
-    setPasswordSuccess(false)
 
     try {
       await api.resetAdminPassword({ password: newPassword })
-      setPasswordSuccess(true)
+      toast.success(t('system.passwordResetSuccess'))
       setNewPassword('')
       setConfirmPassword('')
       setShowPasswordReset(false)
-      setTimeout(() => setPasswordSuccess(false), 3000)
     } catch (err: any) {
-      setPasswordError(err.response?.data?.detail || t('system.passwordResetFailed'))
+      const message = err.response?.data?.detail || t('system.passwordResetFailed')
+      toast.error(message)
     } finally {
       setResettingPassword(false)
     }
@@ -177,13 +214,6 @@ export default function SystemPage() {
           <h2 className="text-xl font-semibold text-gray-900">{t('system.systemSettings')}</h2>
         </div>
 
-        {success && (
-          <div className="bg-green-50 border border-green-200 text-green-700 px-4 py-3 rounded-lg flex items-center gap-2">
-            <CheckCircle className="w-5 h-5" />
-            <span>{t('system.settingsSaved')}</span>
-          </div>
-        )}
-
         {error && (
           <div className="bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded-lg flex items-center gap-2">
             <AlertCircle className="w-5 h-5" />
@@ -227,30 +257,43 @@ export default function SystemPage() {
           </select>
         </div>
 
-        {/* Plugin Thread Pool Settings */}
+        {/* Blocking Task Pool Settings */}
         <div className="border-t border-gray-200 pt-4 mt-4">
-          <h3 className="text-sm font-medium text-gray-900 mb-3">{t('system.pluginThreadPool')}</h3>
+          <h3 className="text-sm font-medium text-gray-900 mb-3">{t('system.blockingTaskPool')}</h3>
           
-          {/* Plugin Thread Pool Enabled */}
+          {/* Blocking Task Pool Enabled */}
           <div className="flex items-center justify-between gap-3 py-3">
             <div className="min-w-0 pr-2">
-              <label className="text-sm font-medium text-gray-900 whitespace-nowrap">{t('system.enablePluginThreadPool')}</label>
-              <p className="text-xs text-gray-500 mt-1 truncate">{t('system.pluginThreadPoolDesc')}</p>
+              <label className="text-sm font-medium text-gray-900 whitespace-nowrap">{t('system.enableBlockingTaskPool')}</label>
+              <p className="text-xs text-gray-500 mt-1 truncate">{t('system.blockingTaskPoolDesc')}</p>
             </div>
             <div className="flex-shrink-0">
               <button
                 type="button"
-                onClick={() => setPluginThreadPoolEnabled(!pluginThreadPoolEnabled)}
+                onClick={() => setBlockingTaskPoolEnabled(!blockingTaskPoolEnabled)}
                 className="relative inline-flex h-6 w-11 items-center rounded-full transition-colors focus:outline-none focus:ring-2 focus:ring-primary-500 focus:ring-offset-2"
-                style={{ backgroundColor: pluginThreadPoolEnabled ? '#f59e0b' : '#d1d5db' }}
+                style={{ backgroundColor: blockingTaskPoolEnabled ? '#f59e0b' : '#d1d5db' }}
               >
                 <span
                   className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${
-                    pluginThreadPoolEnabled ? 'translate-x-6' : 'translate-x-1'
+                    blockingTaskPoolEnabled ? 'translate-x-6' : 'translate-x-1'
                   }`}
                 />
               </button>
             </div>
+          </div>
+
+          <div className="space-y-2">
+            <label className="text-sm font-medium text-gray-900">{t('system.blockingTaskPoolWorkers')}</label>
+            <input
+              type="number"
+              min="0"
+              step="1"
+              value={blockingTaskPoolMaxWorkers}
+              onChange={(e) => setBlockingTaskPoolMaxWorkers(Math.max(0, Number.parseInt(e.target.value || '0', 10) || 0))}
+              className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent"
+            />
+            <p className="text-xs text-gray-500">{t('system.blockingTaskPoolWorkersDesc')}</p>
           </div>
         </div>
 
@@ -264,26 +307,43 @@ export default function SystemPage() {
         </button>
       </form>
 
-      {/* Admin Password Reset */}
+      {/* Admin Account */}
       <div className="card space-y-6">
         <div className="flex items-center gap-3 mb-4">
-          <Lock className="w-6 h-6 text-primary-600" />
-          <h2 className="text-xl font-semibold text-gray-900">{t('system.adminPassword')}</h2>
+          <User className="w-6 h-6 text-primary-600" />
+          <h2 className="text-xl font-semibold text-gray-900">{t('system.adminAccount')}</h2>
         </div>
 
-        {passwordSuccess && (
-          <div className="bg-green-50 border border-green-200 text-green-700 px-4 py-3 rounded-lg flex items-center gap-2">
-            <CheckCircle className="w-5 h-5" />
-            <span>{t('system.passwordResetSuccess')}</span>
+        <form onSubmit={handleUsernameUpdate} className="space-y-4">
+          <div>
+            <label className="label">{t('system.adminUsername')}</label>
+            <input
+              type="text"
+              value={adminUsername}
+              onChange={(e) => setAdminUsername(e.target.value)}
+              placeholder={t('system.adminUsernamePlaceholder')}
+              className="input"
+              required
+              minLength={3}
+              maxLength={64}
+            />
+            <p className="text-xs text-gray-500 mt-2">{t('system.adminUsernameHelp')}</p>
           </div>
-        )}
+          <button
+            type="submit"
+            disabled={savingUsername || adminUsername.trim() === (config.web_ui_username || 'admin')}
+            className="btn btn-secondary w-full flex items-center justify-center gap-2"
+          >
+            <User className="w-5 h-5" />
+            {savingUsername ? t('system.savingUsername') : t('system.saveAdminUsername')}
+          </button>
+        </form>
 
-        {passwordError && (
-          <div className="bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded-lg flex items-center gap-2">
-            <AlertCircle className="w-5 h-5" />
-            <span>{passwordError}</span>
+        <div className="border-t border-gray-200 pt-6">
+          <div className="flex items-center gap-3 mb-4">
+            <Lock className="w-5 h-5 text-primary-600" />
+            <h3 className="text-base font-semibold text-gray-900">{t('system.adminPassword')}</h3>
           </div>
-        )}
 
         {!showPasswordReset ? (
           <button
@@ -334,7 +394,6 @@ export default function SystemPage() {
                   setShowPasswordReset(false)
                   setNewPassword('')
                   setConfirmPassword('')
-                  setPasswordError('')
                 }}
                 className="btn btn-secondary flex-1"
               >
@@ -343,6 +402,7 @@ export default function SystemPage() {
             </div>
           </form>
         )}
+        </div>
       </div>
 
       {/* System Info (Read-only) */}

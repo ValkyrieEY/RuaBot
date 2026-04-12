@@ -1,6 +1,6 @@
 [app]
 name = "XQNEXT Framework"
-version = "0.1"
+version = "0.1.2"
 environment = "development"
 log_level = "INFO"
 
@@ -37,7 +37,8 @@ backup_count = 5
 [plugins]
 dir = "./plugins"
 auto_load = true
-thread_pool_enabled = true
+blocking_task_pool_enabled = true
+blocking_task_pool_max_workers = 0
 auto_reload = false
 
 [plugins.interceptor]
@@ -59,11 +60,16 @@ secret_key = ""
 [ai]
 thread_pool_enabled = true
 
+[message_event]
+retention_days = 30
+max_rows = 0
+cleanup_interval_seconds = 86400
+
 [napcat]
-install_path = ""
+install_path = "D:\\zhuomian\\XQNEXT\\napcat\\bootmain"
 installer_base = ""
 installer_bases = []
 test = "value"
 
 [ai_workspace]
-mode = "agent"
+mode = "assistant"

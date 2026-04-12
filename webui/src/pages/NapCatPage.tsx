@@ -1,1472 +1,1417 @@
-import { useState, useEffect, useRef } from 'react'
-import { useTranslation } from 'react-i18next'
-import { api } from '@/utils/api'
+import { useEffect, useRef, useState } from 'react'
 import {
-  Server,
-  Download,
-  Play,
-  Square,
-  Terminal,
-  ExternalLink,
   AlertCircle,
-  CheckCircle,
-  Info,
+  CheckCircle2,
+  Download,
+  ExternalLink,
+  Globe,
   Loader2,
+  Play,
+  QrCode,
   RefreshCw,
   Settings,
-  Code,
-  FolderOpen,
-  Plus,
-  Trash2,
-  Copy,
-  Check,
+  Square,
+  Terminal,
   X,
-  ChevronRight,
-  Home
+  type LucideIcon,
 } from 'lucide-react'
+import { api } from '@/utils/api'
+import { useToast } from '@/components/Toast'
 
-interface SystemInfo {
-  platform: string
-  system: string
-  release: string
-  machine: string
-  python: string
-  is_admin: boolean
-  has_sudo: boolean
-  commands: {
-    curl: boolean
-    wget: boolean
-    bash: boolean
-    docker: boolean
-    powershell: boolean
-  }
+type NapCatTab = 'webui' | 'logs' | 'install' | 'config' | 'tools'
+
+interface NapCatWebUIInfo {
+  ok: boolean
+  url: string
+  port?: number
+  token?: string
+  source?: string
 }
 
 interface NapCatStatus {
+  installed: boolean
   running: boolean
+  platform: string
   install_path: string
+  workdir: string
+  entry: string
+  webui?: NapCatWebUIInfo
 }
 
-interface InstallProgress {
+interface NapCatLoginStatus {
+  napcat?: NapCatStatus
+  qrcode?: {
+    exists?: boolean
+    version?: string
+    mtime?: number
+    size?: number
+  }
+  webui?: NapCatWebUIInfo
+  onebot?: {
+    available?: boolean
+    running?: boolean
+    connected?: boolean
+    connection_type?: string
+    self_id?: string
+    self_nickname?: string
+    login_info?: any
+    error?: string
+  }
+}
+
+interface NapCatJob {
   job_id: string
-  platform: string
-  status: string
+  status: 'queued' | 'running' | 'done' | 'error'
   percent: number
   message: string
-  script: string
+  platform: string
   logs: string[]
   created_at: number
 }
 
-interface NapCatConfig {
-  ok: boolean
-  installer_base: string
-  bases: string[]
-  custom_bases: string[]
-  recommended_bases: string[]
-}
-
-interface DockerContainerInfo {
-  name: string
-  image: string
-  status: string
-  running: boolean
-  is_napcat: boolean
-}
-
-// 
-function PathBrowser({ 
-  onSelect, 
-  onClose,
-  initialPath = ''
-}: { 
-  onSelect: (path: string) => void
-  onClose: () => void
-  initialPath?: string
-}) {
-  const { t } = useTranslation()
-  const [currentPath, setCurrentPath] = useState(initialPath || '')
-  const [inputPath, setInputPath] = useState(currentPath)
-  const [items, setItems] = useState<any[]>([])
-  const [loading, setLoading] = useState(false)
-  const [error, setError] = useState('')
-
-  useEffect(() => {
-    loadDirectory(currentPath)
-  }, [])
-
-  useEffect(() => {
-    setInputPath(currentPath)
-  }, [currentPath])
-
-  const loadDirectory = async (path: string) => {
-    setLoading(true)
-    setError('')
-    try {
-      const data = await api.listDirectory({ path })
-      if (data.ok) {
-        setItems(data.items || [])
-        setCurrentPath(data.path)
-      } else {
-        setError(data.error || t('napcat.permissionDenied'))
-      }
-    } catch (err: any) {
-      setError(err.response?.data?.detail || t('common.error'))
-    } finally {
-      setLoading(false)
-    }
-  }
-
-  const handleItemClick = (item: any) => {
-    if (item.is_dir) {
-      loadDirectory(item.path)
-    }
-  }
-
-  const handleGoUp = () => {
-    const parentItem = items.find(item => item.is_parent)
-    if (parentItem) {
-      loadDirectory(parentItem.path)
-    }
-  }
-
-  const handleGoHome = () => {
-    // Let backend decide root listing by platform to avoid client-side path mismatch.
-    loadDirectory('')
-  }
-
-  const handleInputConfirm = () => {
-    if (inputPath) {
-      loadDirectory(inputPath)
-    }
-  }
-
-  return (
-    <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
-      <div className="bg-white rounded-lg max-w-3xl w-full max-h-[80vh] overflow-hidden flex flex-col">
-        <div className="flex items-center justify-between p-4 border-b border-gray-200">
-          <h3 className="text-lg font-semibold text-gray-900">{t('napcat.selectFolder')}</h3>
-          <button onClick={onClose} className="text-gray-400 hover:text-gray-600">
-            <X className="w-5 h-5" />
-          </button>
-        </div>
-        
-        <div className="p-4 border-b border-gray-200">
-          <div className="flex gap-2 mb-3">
-            <button
-              onClick={handleGoUp}
-              className="btn btn-secondary btn-sm"
-              title={t('napcat.parentFolder')}
-              disabled={!items.some(item => item.is_parent)}
-            >
-              <ChevronRight className="w-4 h-4 rotate-180" />
-            </button>
-            <button
-              onClick={handleGoHome}
-              className="btn btn-secondary btn-sm"
-              title={t('napcat.home')}
-            >
-              <Home className="w-4 h-4" />
-            </button>
-            <button
-              onClick={() => loadDirectory(currentPath)}
-              className="btn btn-secondary btn-sm"
-              title={t('common.refresh')}
-            >
-              <RefreshCw className="w-4 h-4" />
-            </button>
-          </div>
-          
-          <div className="flex gap-2">
-            <input
-              type="text"
-              value={inputPath}
-              onChange={(e) => setInputPath(e.target.value)}
-              onKeyDown={(e) => e.key === 'Enter' && handleInputConfirm()}
-              className="input flex-1 text-sm font-mono"
-              placeholder={t('napcat.enterPath')}
-            />
-            <button onClick={handleInputConfirm} className="btn btn-primary btn-sm">
-              {t('common.confirm')}
-            </button>
-          </div>
-        </div>
-
-        <div className="flex-1 overflow-y-auto p-4">
-          {error && (
-            <div className="bg-red-50 border border-red-200 text-red-700 px-3 py-2 rounded text-sm mb-3">
-              {error}
-            </div>
-          )}
-
-          {loading ? (
-            <div className="flex items-center justify-center py-12">
-              <Loader2 className="w-8 h-8 animate-spin text-primary-600" />
-            </div>
-          ) : items.length === 0 ? (
-            <div className="text-center py-12 text-gray-500">
-              {t('napcat.noItems')}
-            </div>
-          ) : (
-            <div className="space-y-1">
-              {items.map((item, index) => (
-                <button
-                  key={index}
-                  onClick={() => handleItemClick(item)}
-                  className={`w-full flex items-center gap-3 px-3 py-2 rounded-lg text-left transition-colors ${
-                    item.is_dir
-                      ? 'hover:bg-primary-50 cursor-pointer'
-                      : 'opacity-50 cursor-not-allowed'
-                  }`}
-                  disabled={!item.is_dir}
-                >
-                  {item.is_parent ? (
-                    <ChevronRight className="w-5 h-5 text-gray-400 rotate-180 flex-shrink-0" />
-                  ) : item.is_dir ? (
-                    <FolderOpen className="w-5 h-5 text-primary-600 flex-shrink-0" />
-                  ) : (
-                    <div className="w-5 h-5 flex-shrink-0" />
-                  )}
-                  <span className="text-sm font-medium text-gray-900 truncate flex-1">
-                    {item.name}
-                  </span>
-                  {item.is_dir && !item.is_parent && (
-                    <ChevronRight className="w-4 h-4 text-gray-400 flex-shrink-0" />
-                  )}
-                </button>
-              ))}
-            </div>
-          )}
-        </div>
-
-        <div className="flex justify-between items-center gap-2 p-4 border-t border-gray-200">
-          <div className="text-sm text-gray-600 truncate flex-1">
-            {currentPath || t('napcat.selectFolder')}
-          </div>
-          <div className="flex gap-2">
-            <button onClick={onClose} className="btn btn-secondary">
-              {t('common.cancel')}
-            </button>
-            <button 
-              onClick={() => onSelect(currentPath)} 
-              className="btn btn-primary"
-              disabled={!currentPath}
-            >
-              {t('napcat.selectThis')}
-            </button>
-          </div>
-        </div>
-      </div>
-    </div>
-  )
-}
-
-function DockerContainerPicker({
-  onSelect,
-  onClose
-}: {
-  onSelect: (containerName: string) => void
-  onClose: () => void
-}) {
-  const { t } = useTranslation()
-  const [loading, setLoading] = useState(true)
-  const [error, setError] = useState('')
-  const [containers, setContainers] = useState<DockerContainerInfo[]>([])
-
-  useEffect(() => {
-    const loadContainers = async () => {
-      setLoading(true)
-      setError('')
-      try {
-        const data = await api.listNapCatDockerContainers()
-        if (data.ok) {
-          setContainers(data.containers || [])
-        } else {
-          setError(data.error || t('common.error'))
-        }
-      } catch (err: any) {
-        setError(err.response?.data?.detail || t('common.error'))
-      } finally {
-        setLoading(false)
-      }
-    }
-    loadContainers()
-  }, [])
-
-  return (
-    <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
-      <div className="bg-white rounded-lg max-w-2xl w-full max-h-[80vh] overflow-hidden flex flex-col">
-        <div className="flex items-center justify-between p-4 border-b border-gray-200">
-          <h3 className="text-lg font-semibold text-gray-900">{t('napcat.selectDockerContainer')}</h3>
-          <button onClick={onClose} className="text-gray-400 hover:text-gray-600">
-            <X className="w-5 h-5" />
-          </button>
-        </div>
-
-        <div className="p-4 flex-1 overflow-y-auto">
-          {loading ? (
-            <div className="flex items-center justify-center py-10">
-              <Loader2 className="w-8 h-8 animate-spin text-primary-600" />
-            </div>
-          ) : error ? (
-            <div className="bg-red-50 border border-red-200 text-red-700 px-3 py-2 rounded text-sm">
-              {error}
-            </div>
-          ) : containers.length === 0 ? (
-            <div className="text-center py-10 text-gray-500">{t('napcat.noDockerContainers')}</div>
-          ) : (
-            <div className="space-y-2">
-              {containers.map((item) => (
-                <button
-                  key={item.name}
-                  onClick={() => onSelect(item.name)}
-                  className="w-full text-left border border-gray-200 rounded-lg p-3 hover:bg-primary-50 hover:border-primary-300 transition-colors"
-                >
-                  <div className="flex items-center justify-between">
-                    <span className="font-medium text-gray-900">{item.name}</span>
-                    <span className={`text-xs px-2 py-1 rounded ${item.running ? 'bg-green-100 text-green-700' : 'bg-gray-100 text-gray-600'}`}>
-                      {item.running ? t('napcat.running') : t('napcat.stopped')}
-                    </span>
-                  </div>
-                  <div className="text-xs text-gray-600 mt-1 truncate">{item.image}</div>
-                  <div className="text-xs text-gray-500 mt-1 truncate">{item.status}</div>
-                </button>
-              ))}
-            </div>
-          )}
-        </div>
-
-        <div className="p-4 border-t border-gray-200 flex justify-end">
-          <button onClick={onClose} className="btn btn-secondary">
-            {t('common.close')}
-          </button>
-        </div>
-      </div>
-    </div>
-  )
-}
+const tabs: Array<{ key: NapCatTab; label: string; icon: LucideIcon }> = [
+  { key: 'webui', label: 'WebUI', icon: Globe },
+  { key: 'logs', label: '运行日志', icon: Terminal },
+  { key: 'install', label: '安装应用', icon: Download },
+  { key: 'config', label: '配置中心', icon: Settings },
+  { key: 'tools', label: '状态调试', icon: Terminal },
+]
 
 export default function NapCatPage() {
-  const { t } = useTranslation()
-  const [loading, setLoading] = useState(true)
-  const [systemInfo, setSystemInfo] = useState<SystemInfo | null>(null)
+  const toast = useToast()
+  const [activeTab, setActiveTab] = useState<NapCatTab>('webui')
   const [status, setStatus] = useState<NapCatStatus | null>(null)
-  const [config, setConfig] = useState<NapCatConfig | null>(null)
-  const [installing, setInstalling] = useState(false)
-  const [installProgress, setInstallProgress] = useState<InstallProgress | null>(null)
+  const [webui, setWebui] = useState<NapCatWebUIInfo | null>(null)
   const [runtimeLogs, setRuntimeLogs] = useState<string[]>([])
-  const [autoRefresh, setAutoRefresh] = useState(true)
+  const [job, setJob] = useState<NapCatJob | null>(null)
+  const [loading, setLoading] = useState(true)
+  const [actionLoading, setActionLoading] = useState('')
   const [error, setError] = useState('')
-  const [success, setSuccess] = useState('')
-  const [showScript, setShowScript] = useState(false)
-  const [scriptPreview, setScriptPreview] = useState('')
-  const [copiedScript, setCopiedScript] = useState(false)
-  const [showPathBrowser, setShowPathBrowser] = useState(false)
-  const [showDockerPicker, setShowDockerPicker] = useState(false)
-  const [showSudoPasswordDialog, setShowSudoPasswordDialog] = useState(false)
-  const [sudoPassword, setSudoPassword] = useState('')
-  
-  // 
-  const [selectedPlatform, setSelectedPlatform] = useState('auto')
-  const [useAutoPath, setUseAutoPath] = useState(true)
-  const [installPath, setInstallPath] = useState('')
-  const [selectedInstallerBase, setSelectedInstallerBase] = useState('')
-  const [newCustomBase, setNewCustomBase] = useState('')
-  
-  // Docker 
-  const [dockerQQ, setDockerQQ] = useState('')
-  const [dockerMode, setDockerMode] = useState('ws')
-  const [dockerProxy, setDockerProxy] = useState('')
-  
-  const deployLogsEndRef = useRef<HTMLDivElement>(null)
-  const runtimeLogsEndRef = useRef<HTMLDivElement>(null)
-  const deployLogsContainerRef = useRef<HTMLDivElement>(null)
-  const runtimeLogsContainerRef = useRef<HTMLDivElement>(null)
-  const progressIntervalRef = useRef<number | null>(null)
-  const logsIntervalRef = useRef<number | null>(null)
+  const [qrcodeUrl, setQrcodeUrl] = useState('')
+  const [qrcodeError, setQrcodeError] = useState('')
+  const [qrcodeLoading, setQrcodeLoading] = useState(false)
+  const [qrcodeVersion, setQrcodeVersion] = useState('')
+  const [configDraft, setConfigDraft] = useState<any>({ webui: {}, napcat: {}, onebot: {} })
+  const [configMeta, setConfigMeta] = useState<any>(null)
+  const [configLoading, setConfigLoading] = useState(false)
+  const [configSaving, setConfigSaving] = useState('')
+  const [configError, setConfigError] = useState('')
+  const [loginStatus, setLoginStatus] = useState<NapCatLoginStatus | null>(null)
+  const [loginStatusLoading, setLoginStatusLoading] = useState(false)
+  const [debugAction, setDebugAction] = useState('get_login_info')
+  const [debugParamsText, setDebugParamsText] = useState('{}')
+  const [debugResultText, setDebugResultText] = useState('')
+  const [debugLoading, setDebugLoading] = useState(false)
+  const [debugError, setDebugError] = useState('')
+  const progressTimer = useRef<number | null>(null)
+  const logsTimer = useRef<number | null>(null)
+  const qrcodeTimer = useRef<number | null>(null)
+  const logsRef = useRef<HTMLDivElement>(null)
+  const installLogsRef = useRef<HTMLDivElement>(null)
+  const qrcodeObjectUrlRef = useRef('')
 
-  useEffect(() => {
-    loadData()
-    return () => {
-      if (progressIntervalRef.current) clearInterval(progressIntervalRef.current)
-      if (logsIntervalRef.current) clearInterval(logsIntervalRef.current)
+  const loadStatus = async () => {
+    const data = await api.getNapCatStatus()
+    setStatus(data)
+    if (data.webui?.ok) {
+      setWebui(data.webui)
+    } else if (!data.running) {
+      setWebui(null)
     }
-  }, [])
+  }
 
-  useEffect(() => {
-    if (autoRefresh && status?.running) {
-      startLogsPolling()
-    } else {
-      if (logsIntervalRef.current) {
-        clearInterval(logsIntervalRef.current)
-        logsIntervalRef.current = null
-      }
-    }
-  }, [autoRefresh, status?.running])
-
-  useEffect(() => {
-    // 
-    if (deployLogsContainerRef.current && installProgress?.logs.length) {
-      const el = deployLogsContainerRef.current
-      el.scrollTop = el.scrollHeight
-    }
-  }, [installProgress?.logs])
-
-  useEffect(() => {
-    // 
-    if (autoRefresh && runtimeLogsContainerRef.current && runtimeLogs.length) {
-      const el = runtimeLogsContainerRef.current
-      el.scrollTop = el.scrollHeight
-    }
-  }, [runtimeLogs, autoRefresh])
-
-  const loadData = async () => {
+  const loadAll = async () => {
     setLoading(true)
     setError('')
     try {
-      const [sysInfo, napStatus, napConfig] = await Promise.all([
-        api.getNapCatSystemInfo(),
-        api.getNapCatStatus(),
-        api.getNapCatConfig()
-      ])
-      setSystemInfo(sysInfo)
-      setStatus(napStatus)
-      setConfig(napConfig)
-      setSelectedInstallerBase(napConfig.installer_base || '')
-      if (napStatus.install_path) {
-        setInstallPath(napStatus.install_path)
-        setUseAutoPath(false)
-      }
+      await Promise.all([loadStatus(), loadLogs()])
     } catch (err: any) {
-      setError(err.response?.data?.detail || t('napcat.loadFailed'))
+      setError(err.response?.data?.detail || err.message || '加载 NapCat 状态失败')
     } finally {
       setLoading(false)
     }
   }
 
-  const startLogsPolling = async () => {
-    if (logsIntervalRef.current) return
-    
-    const fetchLogs = async () => {
-      try {
-        const data = await api.getNapCatLogs()
-        setRuntimeLogs(data.logs || [])
-      } catch (err) {
-        console.error('Failed to fetch logs:', err)
-      }
-    }
-    
-    // Load logs immediately when starting
-    await fetchLogs()
-    logsIntervalRef.current = window.setInterval(fetchLogs, 2000)
+  const loadLogs = async () => {
+    const data = await api.getNapCatLogs()
+    setRuntimeLogs(data.logs || [])
   }
 
-  const handleGenerateScript = async () => {
-    setError('')
-    setScriptPreview('')
-    
-    //  Docker 
-    if (selectedPlatform === 'docker') {
-      if (!dockerQQ || !dockerQQ.match(/^\d+$/)) {
-        setError('Docker 模式需要提供有效的 QQ 号')
-        return
+  const loadWebUI = async () => {
+    try {
+      const data = await api.getNapCatWebUIInfo()
+      setWebui(data.ok ? data : null)
+    } catch (err: any) {
+      setWebui(null)
+      toast.error(err.response?.data?.detail || 'NapCat WebUI 还没准备好')
+    }
+  }
+
+  useEffect(() => {
+    void loadAll()
+
+    logsTimer.current = window.setInterval(() => {
+      void loadStatus().catch(() => undefined)
+      void loadLogs().catch(() => undefined)
+    }, 2500)
+
+    return () => {
+      if (logsTimer.current) window.clearInterval(logsTimer.current)
+      if (progressTimer.current) window.clearInterval(progressTimer.current)
+      if (qrcodeTimer.current) window.clearInterval(qrcodeTimer.current)
+      if (qrcodeObjectUrlRef.current) URL.revokeObjectURL(qrcodeObjectUrlRef.current)
+    }
+  }, [])
+
+  useEffect(() => {
+    if (!qrcodeUrl) {
+      if (qrcodeTimer.current) {
+        window.clearInterval(qrcodeTimer.current)
+        qrcodeTimer.current = null
+      }
+      return
+    }
+
+    qrcodeTimer.current = window.setInterval(() => {
+      void refreshQRCodeIfChanged()
+    }, 2500)
+
+    return () => {
+      if (qrcodeTimer.current) {
+        window.clearInterval(qrcodeTimer.current)
+        qrcodeTimer.current = null
+      }
+    }
+  }, [qrcodeUrl, qrcodeVersion])
+
+  useEffect(() => {
+    if (logsRef.current) logsRef.current.scrollTop = logsRef.current.scrollHeight
+  }, [runtimeLogs])
+
+  useEffect(() => {
+    if (installLogsRef.current) installLogsRef.current.scrollTop = installLogsRef.current.scrollHeight
+  }, [job?.logs])
+
+  useEffect(() => {
+    if (activeTab === 'config') {
+      void loadNapCatConfig()
+    }
+    if (activeTab === 'tools') {
+      void loadNapCatLoginStatus()
+    }
+  }, [activeTab])
+
+  const pollJob = (jobId: string) => {
+    if (progressTimer.current) window.clearInterval(progressTimer.current)
+
+    const tick = async () => {
+      const data = await api.getNapCatProgress(jobId)
+      setJob(data)
+      if (['done', 'error'].includes(data.status)) {
+        if (progressTimer.current) {
+          window.clearInterval(progressTimer.current)
+          progressTimer.current = null
+        }
+        setActionLoading('')
+        await loadStatus()
       }
     }
 
-    try {
-      const payload: any = {
-        platform: selectedPlatform,
-        action: 'script'
-      }
-      
-      // Docker 
-      if (selectedPlatform === 'docker') {
-        payload.docker = true
-        payload.qq = dockerQQ
-        payload.mode = dockerMode
-        if (dockerProxy) payload.proxy = parseInt(dockerProxy)
-      } else {
-        //  Docker 
-        if (!useAutoPath && installPath) payload.path = installPath
-      }
-      
-      const data = await api.deployNapCat(payload)
-      setScriptPreview(data.script || '')
-      setShowScript(true)
-    } catch (err: any) {
-      setError(err.response?.data?.detail || t('napcat.scriptGenerateFailed'))
-    }
+    void tick()
+    progressTimer.current = window.setInterval(() => {
+      void tick().catch((err) => toast.error(err.response?.data?.detail || '安装进度读取失败'))
+    }, 1000)
   }
 
   const handleInstall = async () => {
-    setInstalling(true)
     setError('')
-    setSuccess('')
-    setInstallProgress(null)
-
-    //  Docker 
-    if (selectedPlatform === 'docker') {
-      if (!dockerQQ || !dockerQQ.match(/^\d+$/)) {
-        setError('Docker 模式需要提供有效的 QQ 号')
-        setInstalling(false)
-        return
-      }
-    }
-
+    setActionLoading('install')
+    setActiveTab('install')
     try {
-      const payload: any = {
-        platform: selectedPlatform,
-        action: 'auto'
-      }
-      
-      // Docker 
-      if (selectedPlatform === 'docker') {
-        payload.docker = true
-        payload.qq = dockerQQ
-        payload.mode = dockerMode
-        if (dockerProxy) payload.proxy = parseInt(dockerProxy)
-      } else {
-        //  Docker 
-        if (!useAutoPath && installPath) payload.path = installPath
-      }
-
-      const data = await api.deployNapCat(payload)
-
-      if (data.downgraded) {
-        setScriptPreview(data.script || '')
-        setShowScript(true)
-        setError(t('napcat.sudoNotAvailable'))
-        setInstalling(false)
-        return
-      }
-
-      if (data.job_id) {
-        setInstallProgress({
-          job_id: data.job_id,
-          platform: data.platform,
-          status: 'queued',
-          percent: 0,
-          message: t('napcat.queued'),
-          script: data.script || '',
-          logs: [],
-          created_at: Date.now()
-        })
-        startProgressPolling(data.job_id)
-      } else {
-        setError(t('napcat.noJobId'))
-        setInstalling(false)
-      }
+      const data = await api.installNapCat()
+      setJob(data)
+      toast.info('NapCat 安装任务已启动')
+      pollJob(data.job_id)
     } catch (err: any) {
-      setError(err.response?.data?.detail || t('napcat.installFailed'))
-      setInstalling(false)
-    }
-  }
-
-  const startProgressPolling = (jobId: string) => {
-    if (progressIntervalRef.current) clearInterval(progressIntervalRef.current)
-
-    const checkProgress = async () => {
-      try {
-        const data = await api.getNapCatProgress(jobId)
-        setInstallProgress(data)
-
-        if (data.status === 'done') {
-          setSuccess(t('napcat.installSuccess'))
-          setInstalling(false)
-          if (progressIntervalRef.current) clearInterval(progressIntervalRef.current)
-          // Reload data to get the auto-saved install_path
-          await loadData()
-          // Show success message with path info if available
-          const logs = data.logs || []
-          const savedPathLog = logs.find((log: string) => log.includes('[auto_saved] install_path'))
-          if (savedPathLog) {
-            const pathMatch = savedPathLog.match(/install_path = (.+)/)
-            if (pathMatch) {
-              setSuccess(`${t('napcat.installSuccess')} - ${t('napcat.pathAutoSaved')}: ${pathMatch[1]}`)
-            }
-          }
-        } else if (data.status === 'error' || data.status === 'canceled') {
-          setError(data.message || t('napcat.installFailed'))
-          setInstalling(false)
-          if (progressIntervalRef.current) clearInterval(progressIntervalRef.current)
-        }
-      } catch (err: any) {
-        console.error('Failed to check progress:', err)
-      }
-    }
-
-    checkProgress()
-    progressIntervalRef.current = window.setInterval(checkProgress, 1000)
-  }
-
-  const handleCancelInstall = async () => {
-    if (!installProgress?.job_id) return
-
-    try {
-      await api.cancelNapCatInstall({ job_id: installProgress.job_id })
-      setInstalling(false)
-      if (progressIntervalRef.current) clearInterval(progressIntervalRef.current)
-      setInstallProgress(null)
-      setSuccess(t('napcat.installCanceled'))
-    } catch (err: any) {
-      setError(err.response?.data?.detail || t('napcat.cancelFailed'))
+      setActionLoading('')
+      toast.error(err.response?.data?.detail || '启动安装任务失败')
     }
   }
 
   const handleStart = async () => {
     setError('')
-    setSuccess('')
+    setActionLoading('start')
     try {
       await api.startNapCat()
-      setSuccess(t('napcat.startSuccess'))
-      setTimeout(() => loadData(), 1000)
+      await loadAll()
+      await loadWebUI()
+      toast.success('NapCat 已启动')
     } catch (err: any) {
-      setError(err.response?.data?.detail || t('napcat.startFailed'))
+      toast.error(err.response?.data?.detail || '启动 NapCat 失败')
+    } finally {
+      setActionLoading('')
     }
   }
 
   const handleStop = async () => {
     setError('')
-    setSuccess('')
+    setActionLoading('stop')
     try {
       await api.stopNapCat()
-      setSuccess(t('napcat.stopSuccess'))
-      setTimeout(() => loadData(), 1000)
+      setWebui(null)
+      await loadAll()
+      toast.success('NapCat 已停止')
     } catch (err: any) {
-      setError(err.response?.data?.detail || t('napcat.stopFailed'))
+      toast.error(err.response?.data?.detail || '停止 NapCat 失败')
+    } finally {
+      setActionLoading('')
     }
   }
 
-  const handleOpenWebUI = async () => {
+  const closeQRCode = () => {
+    if (qrcodeObjectUrlRef.current) URL.revokeObjectURL(qrcodeObjectUrlRef.current)
+    qrcodeObjectUrlRef.current = ''
+    setQrcodeUrl('')
+    setQrcodeError('')
+    setQrcodeVersion('')
+  }
+
+  const loadQRCodeImage = async (nextVersion?: string) => {
+    const blob = await api.getNapCatQRCode()
+    if (qrcodeObjectUrlRef.current) URL.revokeObjectURL(qrcodeObjectUrlRef.current)
+    const objectUrl = URL.createObjectURL(blob)
+    qrcodeObjectUrlRef.current = objectUrl
+    setQrcodeUrl(objectUrl)
+    if (nextVersion) setQrcodeVersion(nextVersion)
+  }
+
+  const refreshQRCodeIfChanged = async () => {
     try {
-      const data = await api.getNapCatWebUIInfo()
-      if (data.ok && data.url) {
-        window.open(data.url, '_blank')
-      } else {
-        setError(data.error || t('napcat.webUINotAvailable'))
+      const info = await api.getNapCatQRCodeInfo()
+      if (!info.exists) {
+        setQrcodeError('二维码已过期或暂未生成，请等待 NapCat 刷新')
+        return
+      }
+      if (!qrcodeVersion || info.version !== qrcodeVersion) {
+        await loadQRCodeImage(info.version)
+        setQrcodeError('')
       }
     } catch (err: any) {
-      setError(err.response?.data?.detail || t('napcat.webUIFailed'))
+      setQrcodeError(err.response?.data?.detail || '二维码刷新失败')
     }
   }
 
-  const handlePathSelect = (path: string) => {
-    setInstallPath(path)
-    setShowPathBrowser(false)
-  }
-
-  const handleDockerContainerSelect = (containerName: string) => {
-    setInstallPath(`docker://${containerName}`)
-    setShowDockerPicker(false)
-  }
-
-  const handleSaveInstallerBase = async () => {
+  const handleShowQRCode = async () => {
+    setQrcodeLoading(true)
+    setQrcodeError('')
     try {
-      await api.updateNapCatConfig({ installer_base: selectedInstallerBase })
-      setSuccess(t('napcat.configSaved'))
-      await loadData()
+      const info = await api.getNapCatQRCodeInfo()
+      if (!info.exists) {
+        throw new Error('二维码还没生成，请先启动 NapCat')
+      }
+      await loadQRCodeImage(info.version)
     } catch (err: any) {
-      setError(err.response?.data?.detail || t('napcat.configSaveFailed'))
+      setQrcodeError(err.response?.data?.detail || '二维码还没生成，请先启动 NapCat')
+    } finally {
+      setQrcodeLoading(false)
     }
   }
 
-  const handleAddCustomBase = async () => {
-    if (!newCustomBase.trim()) return
+  const formatJson = (value: any) => JSON.stringify(value ?? {}, null, 2)
+
+  const toBool = (value: any) => value === true || value === 'true'
+  const toNumber = (value: any, fallback = 0) => {
+    const parsed = Number(value)
+    return Number.isFinite(parsed) ? parsed : fallback
+  }
+  const toLines = (value: any) => Array.isArray(value) ? value.join('\n') : ''
+  const fromLines = (value: string) => value.split(/\r?\n/).map((item) => item.trim()).filter(Boolean)
+
+  const updateConfigValue = (section: 'webui' | 'napcat' | 'onebot', path: Array<string | number>, value: any) => {
+    setConfigDraft((current: any) => {
+      const next = structuredClone(current || {})
+      if (!next[section]) next[section] = {}
+      let cursor = next[section]
+      for (let index = 0; index < path.length - 1; index += 1) {
+        const key = path[index]
+        const nextKey = path[index + 1]
+        if (cursor[key] === undefined || cursor[key] === null) {
+          cursor[key] = typeof nextKey === 'number' ? [] : {}
+        }
+        cursor = cursor[key]
+      }
+      cursor[path[path.length - 1]] = value
+      return next
+    })
+  }
+
+  const getOneBotNetwork = () => configDraft.onebot?.network || {}
+  const getOneBotMode = () => {
+    const network = getOneBotNetwork()
+    if ((network.websocketServers || []).length) return 'websocketServer'
+    if ((network.websocketClients || []).length) return 'websocketClient'
+    if ((network.httpServers || []).length) return 'httpServer'
+    return 'disabled'
+  }
+
+  const firstEndpoint = (key: string) => (getOneBotNetwork()[key] || [])[0] || {}
+
+  const setOneBotMode = (mode: string) => {
+    setConfigDraft((current: any) => {
+      const next = structuredClone(current || {})
+      const onebot = next.onebot || {}
+      const network = onebot.network || {}
+      const token = (
+        network.websocketServers?.[0]?.token ||
+        network.websocketClients?.[0]?.token ||
+        network.httpServers?.[0]?.token ||
+        ''
+      )
+      network.httpServers = []
+      network.websocketServers = []
+      network.websocketClients = []
+      if (mode === 'websocketServer') {
+        network.websocketServers = [{
+          enable: true,
+          name: 'WebSocket',
+          host: '127.0.0.1',
+          port: 3001,
+          reportSelfMessage: false,
+          enableForcePushEvent: true,
+          messagePostFormat: 'array',
+          token,
+          debug: false,
+          heartInterval: 30000,
+        }]
+      } else if (mode === 'websocketClient') {
+        network.websocketClients = [{
+          enable: true,
+          name: 'WebSocket Client',
+          url: 'ws://127.0.0.1:8080/onebot/v11/ws',
+          messagePostFormat: 'array',
+          reportSelfMessage: false,
+          reconnectInterval: 5000,
+          token,
+          debug: false,
+          heartInterval: 30000,
+        }]
+      } else if (mode === 'httpServer') {
+        network.httpServers = [{
+          enable: true,
+          name: 'HTTP',
+          host: '127.0.0.1',
+          port: 3000,
+          enableCors: true,
+          enableWebsocket: false,
+          messagePostFormat: 'array',
+          token,
+          debug: false,
+        }]
+      }
+      onebot.network = network
+      next.onebot = onebot
+      return next
+    })
+  }
+
+  const updateOneBotEndpoint = (key: 'websocketServers' | 'websocketClients' | 'httpServers', field: string, value: any) => {
+    setConfigDraft((current: any) => {
+      const next = structuredClone(current || {})
+      if (!next.onebot) next.onebot = {}
+      if (!next.onebot.network) next.onebot.network = {}
+      const list = [...(next.onebot.network[key] || [])]
+      list[0] = { ...(list[0] || {}), [field]: value }
+      next.onebot.network[key] = list
+      return next
+    })
+  }
+
+  const loadNapCatConfig = async () => {
+    setConfigLoading(true)
+    setConfigError('')
     try {
-      await api.updateNapCatConfig({ installer_base: newCustomBase.trim() })
-      setNewCustomBase('')
-      setSuccess(t('napcat.baseAdded'))
-      await loadData()
+      const data = await api.getNapCatConfig()
+      setConfigMeta(data)
+      setConfigDraft({
+        webui: data.webui || {},
+        napcat: data.napcat || {},
+        onebot: data.onebot || {},
+      })
     } catch (err: any) {
-      setError(err.response?.data?.detail || t('napcat.baseAddFailed'))
+      setConfigError(err.response?.data?.detail || '读取 NapCat 配置失败')
+    } finally {
+      setConfigLoading(false)
     }
   }
 
-  const handleRemoveBase = async (base: string) => {
+  const parseConfigText = () => ({
+    webui: configDraft.webui || {},
+    napcat: configDraft.napcat || {},
+    onebot: configDraft.onebot || {},
+  })
+
+  const handleSaveNapCatConfig = async () => {
+    setConfigSaving('save')
+    setConfigError('')
     try {
-      await api.updateNapCatConfig({ remove_base: base })
-      setSuccess(t('napcat.baseRemoved'))
-      await loadData()
+      const payload = parseConfigText()
+      const data = await api.saveNapCatConfig(payload)
+      setConfigMeta(data)
+      toast.success('配置已保存，部分配置需要重启 NapCat 后生效')
     } catch (err: any) {
-      setError(err.response?.data?.detail || t('napcat.baseRemoveFailed'))
+      toast.error(err instanceof SyntaxError ? 'JSON 格式不正确，请检查配置内容' : (err.response?.data?.detail || '保存 NapCat 配置失败'))
+    } finally {
+      setConfigSaving('')
     }
   }
 
-  const copyScript = () => {
-    navigator.clipboard.writeText(scriptPreview)
-    setCopiedScript(true)
-    setTimeout(() => setCopiedScript(false), 2000)
+  const handleApplyFrameworkOneBot = async () => {
+    setConfigSaving('onebot')
+    setConfigError('')
+    try {
+      const data = await api.applyFrameworkOneBotToNapCat()
+      setConfigDraft((current: any) => ({ ...(current || {}), onebot: data.onebot || {} }))
+      toast.success(data.message || 'OneBot 配置已写入，重启 NapCat 后生效')
+      await loadNapCatConfig()
+    } catch (err: any) {
+      toast.error(err.response?.data?.detail || '一键写入 OneBot 配置失败')
+    } finally {
+      setConfigSaving('')
+    }
   }
 
-  if (loading) {
+  const loadNapCatLoginStatus = async () => {
+    setLoginStatusLoading(true)
+    try {
+      const data = await api.getNapCatLoginStatus()
+      setLoginStatus(data)
+    } catch (err: any) {
+      setLoginStatus({
+        onebot: {
+          available: false,
+          running: false,
+          connected: false,
+          error: err.response?.data?.detail || '读取登录状态失败',
+        },
+      })
+    } finally {
+      setLoginStatusLoading(false)
+    }
+  }
+
+  const handleDebugOneBotApi = async () => {
+    setDebugLoading(true)
+    setDebugError('')
+    try {
+      const params = JSON.parse(debugParamsText || '{}')
+      if (!params || Array.isArray(params) || typeof params !== 'object') {
+        throw new Error('参数必须是 JSON 对象，比如 {}')
+      }
+      const data = await api.callNapCatOneBotApi({ action: debugAction, params, timeout: 20 })
+      setDebugResultText(formatJson(data))
+      await loadNapCatLoginStatus()
+    } catch (err: any) {
+      const message = err instanceof SyntaxError
+        ? '参数 JSON 格式不正确'
+        : (err.response?.data?.detail || err.message || '调用 OneBot API 失败')
+      setDebugError(message)
+      setDebugResultText('')
+    } finally {
+      setDebugLoading(false)
+    }
+  }
+
+  const openWebUI = () => {
+    if (webui?.url) window.open(webui.url, '_blank')
+  }
+
+  const isInstalling = actionLoading === 'install' || job?.status === 'queued' || job?.status === 'running'
+
+  const StatusPill = () => {
+    if (!status?.installed) {
+      return <span className="rounded-full bg-slate-100 px-3 py-1 text-sm text-slate-500">未安装</span>
+    }
+    if (status.running) {
+      return <span className="rounded-full bg-emerald-50 px-3 py-1 text-sm font-medium text-emerald-700">运行中</span>
+    }
+    return <span className="rounded-full bg-amber-50 px-3 py-1 text-sm font-medium text-amber-700">已安装，未启动</span>
+  }
+
+  const renderWebUI = () => {
+    if (loading) {
+      return (
+        <div className="flex h-full items-center justify-center text-slate-500">
+          <Loader2 className="mr-3 h-5 w-5 animate-spin" />
+          正在读取 NapCat 状态
+        </div>
+      )
+    }
+
+    if (!status?.installed) {
+      return (
+        <div className="flex h-full items-center justify-center px-6">
+          <div className="max-w-md text-center">
+            <Download className="mx-auto mb-4 h-12 w-12 text-slate-300" />
+            <div className="text-xl font-semibold text-slate-900">还没有安装 NapCat</div>
+            <div className="mt-3 text-sm leading-6 text-slate-500">
+              点击安装后会自动安装到当前框架目录下的 <span className="font-mono text-slate-800">./napcat</span>。
+            </div>
+            <button
+              type="button"
+              onClick={handleInstall}
+              disabled={isInstalling}
+              className="mt-6 inline-flex items-center gap-2 rounded-full bg-slate-900 px-5 py-2.5 text-sm font-medium text-white transition hover:bg-slate-800 disabled:opacity-60"
+            >
+              {isInstalling ? <Loader2 className="h-4 w-4 animate-spin" /> : <Download className="h-4 w-4" />}
+              安装 NapCat
+            </button>
+          </div>
+        </div>
+      )
+    }
+
+    if (!status.running) {
+      return (
+        <div className="flex h-full items-center justify-center px-6">
+          <div className="max-w-md text-center">
+            <Play className="mx-auto mb-4 h-12 w-12 text-emerald-300" />
+            <div className="text-xl font-semibold text-slate-900">NapCat 已安装，当前未启动</div>
+            <div className="mt-3 text-sm leading-6 text-slate-500">
+              启动后这里会自动内嵌 NapCat WebUI。OneBot 连接配置暂时仍然在 NapCat WebUI 里手动填写。
+            </div>
+            <button
+              type="button"
+              onClick={handleStart}
+              disabled={actionLoading === 'start'}
+              className="mt-6 inline-flex items-center gap-2 rounded-full bg-emerald-600 px-5 py-2.5 text-sm font-medium text-white transition hover:bg-emerald-700 disabled:opacity-60"
+            >
+              {actionLoading === 'start' ? <Loader2 className="h-4 w-4 animate-spin" /> : <Play className="h-4 w-4" />}
+              启动 NapCat
+            </button>
+          </div>
+        </div>
+      )
+    }
+
+    if (!webui?.url) {
+      return (
+        <div className="flex h-full items-center justify-center px-6">
+          <div className="max-w-md text-center">
+            <AlertCircle className="mx-auto mb-4 h-12 w-12 text-amber-300" />
+            <div className="text-xl font-semibold text-slate-900">NapCat 已启动，等待 WebUI 地址</div>
+            <div className="mt-3 text-sm leading-6 text-slate-500">
+              WebUI token 通常会从 NapCat 日志里解析。你可以先去运行日志页看启动输出。
+            </div>
+            <button
+              type="button"
+              onClick={() => void loadWebUI()}
+              className="mt-6 inline-flex items-center gap-2 rounded-full border border-slate-200 bg-white px-5 py-2.5 text-sm font-medium text-slate-700 transition hover:bg-slate-50"
+            >
+              <RefreshCw className="h-4 w-4" />
+              刷新 WebUI
+            </button>
+          </div>
+        </div>
+      )
+    }
+
     return (
-      <div className="flex items-center justify-center h-64">
-        <Loader2 className="w-12 h-12 animate-spin text-primary-600" />
+      <div className="flex h-full flex-col bg-slate-950">
+        <div className="flex h-12 shrink-0 items-center justify-between border-b border-slate-800 px-4">
+          <div className="min-w-0 truncate text-sm text-slate-300">{webui.url}</div>
+          <div className="flex shrink-0 items-center gap-2">
+            <button
+              type="button"
+              onClick={() => void loadWebUI()}
+              className="inline-flex items-center gap-2 rounded-full border border-white/10 px-3 py-1.5 text-xs text-slate-300 hover:bg-white/10"
+            >
+              <RefreshCw className="h-3.5 w-3.5" />
+              刷新
+            </button>
+            <button
+              type="button"
+              onClick={openWebUI}
+              className="inline-flex items-center gap-2 rounded-full bg-white px-3 py-1.5 text-xs font-medium text-slate-900 hover:bg-slate-100"
+            >
+              <ExternalLink className="h-3.5 w-3.5" />
+              外部打开
+            </button>
+          </div>
+        </div>
+        <iframe title="NapCat WebUI" src={webui.url} className="h-full w-full border-0 bg-white" />
       </div>
     )
   }
 
-  return (
-    <div className="space-y-6">
-      {/* Header */}
-      <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-2xl font-bold text-gray-900">{t('napcat.title')}</h1>
-          <p className="text-gray-500 mt-1">{t('napcat.description')}</p>
-        </div>
-        <button onClick={loadData} className="btn btn-secondary flex items-center gap-2">
-          <RefreshCw className="w-4 h-4" />
-          {t('common.refresh')}
-        </button>
-      </div>
-
-      {/* Alerts */}
-      {error && (
-        <div className="bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded-lg flex items-center justify-between gap-2">
-          <div className="flex items-center gap-2">
-            <AlertCircle className="w-5 h-5 flex-shrink-0" />
-            <span>{error}</span>
-          </div>
-          <button onClick={() => setError('')} className="text-red-700 hover:text-red-900">
-            <X className="w-4 h-4" />
-          </button>
-        </div>
-      )}
-
-      {success && (
-        <div className="bg-green-50 border border-green-200 text-green-700 px-4 py-3 rounded-lg flex items-center justify-between gap-2">
-          <div className="flex items-center gap-2">
-            <CheckCircle className="w-5 h-5 flex-shrink-0" />
-            <span>{success}</span>
-          </div>
-          <button onClick={() => setSuccess('')} className="text-green-700 hover:text-green-900">
-            <X className="w-4 h-4" />
-          </button>
-        </div>
-      )}
-
-      {/* Two Column Layout */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        {/* Left Column */}
-        <div className="space-y-6">
-          {/* System Information */}
-          {systemInfo && (
-            <div className="card">
-              <div className="flex items-center gap-3 mb-4">
-                <Info className="w-5 h-5 text-primary-600" />
-                <h2 className="text-lg font-semibold text-gray-900">{t('napcat.systemInfo')}</h2>
-              </div>
-              <div className="space-y-2">
-                <div className="flex justify-between text-sm">
-                  <span className="text-gray-600">{t('napcat.platform')}</span>
-                  <span className="font-medium">{systemInfo.platform}</span>
-                </div>
-                <div className="flex justify-between text-sm">
-                  <span className="text-gray-600">{t('napcat.system')}</span>
-                  <span className="font-medium">{systemInfo.system} {systemInfo.release}</span>
-                </div>
-                <div className="flex justify-between text-sm">
-                  <span className="text-gray-600">{t('napcat.machine')}</span>
-                  <span className="font-medium">{systemInfo.machine}</span>
-                </div>
-                <div className="flex justify-between text-sm">
-                  <span className="text-gray-600">Python</span>
-                  <span className="font-medium">{systemInfo.python}</span>
-                </div>
-                <div className="flex justify-between text-sm">
-                  <span className="text-gray-600">{t('napcat.isAdmin')}</span>
-                  <span className={`font-medium ${systemInfo.is_admin ? 'text-green-600' : 'text-orange-600'}`}>
-                    {systemInfo.is_admin ? t('common.yes') : t('common.no')}
-                  </span>
-                </div>
-                <div className="flex justify-between text-sm">
-                  <span className="text-gray-600">{t('napcat.hasSudo')}</span>
-                  <span className={`font-medium ${systemInfo.has_sudo ? 'text-green-600' : 'text-orange-600'}`}>
-                    {systemInfo.has_sudo ? t('common.yes') : t('common.no')}
-                  </span>
-                </div>
-              </div>
-              
-              <div className="mt-4 pt-4 border-t border-gray-200">
-                <h3 className="text-sm font-semibold text-gray-700 mb-2">{t('napcat.availableCommands')}</h3>
-                <div className="flex flex-wrap gap-2">
-                  {Object.entries(systemInfo.commands).map(([cmd, available]) => (
-                    <span
-                      key={cmd}
-                      className={`px-2 py-1 rounded-full text-xs font-medium ${
-                        available ? 'bg-green-100 text-green-700' : 'bg-gray-100 text-gray-500'
-                      }`}
-                    >
-                      {cmd}
-                    </span>
-                  ))}
-                </div>
-              </div>
-            </div>
-          )}
-
-          {/* Installer Configuration */}
-          {config && (
-            <div className="card">
-              <div className="flex items-center gap-3 mb-4">
-                <Settings className="w-5 h-5 text-primary-600" />
-                <h2 className="text-lg font-semibold text-gray-900">{t('napcat.installerConfig')}</h2>
-              </div>
-
-              <div className="space-y-4">
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-2">
-                    {t('napcat.currentInstallerBase')}
-                  </label>
-                  <div className="flex gap-2">
-                    <select
-                      value={selectedInstallerBase}
-                      onChange={(e) => setSelectedInstallerBase(e.target.value)}
-                      className="input flex-1 text-sm"
-                    >
-                      <option value="">{t('napcat.useDefault')}</option>
-                      <optgroup label={t('napcat.recommended')}>
-                        {config.recommended_bases.map((base) => (
-                          <option key={base} value={base}>
-                            {base}
-                          </option>
-                        ))}
-                      </optgroup>
-                      {config.custom_bases.length > 0 && (
-                        <optgroup label={t('napcat.custom')}>
-                          {config.custom_bases.map((base) => (
-                            <option key={base} value={base}>
-                              {base}
-                            </option>
-                          ))}
-                        </optgroup>
-                      )}
-                    </select>
-                    <button onClick={handleSaveInstallerBase} className="btn btn-primary btn-sm">
-                      {t('common.save')}
-                    </button>
-                  </div>
-                </div>
-
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-2">
-                    {t('napcat.addCustomBase')}
-                  </label>
-                  <div className="flex gap-2">
-                    <input
-                      type="text"
-                      value={newCustomBase}
-                      onChange={(e) => setNewCustomBase(e.target.value)}
-                      placeholder={t('napcat.enterCustomBase')}
-                      className="input flex-1 text-sm"
-                    />
-                    <button
-                      onClick={handleAddCustomBase}
-                      disabled={!newCustomBase.trim()}
-                      className="btn btn-primary btn-sm"
-                    >
-                      <Plus className="w-4 h-4" />
-                    </button>
-                  </div>
-                </div>
-
-                {config.custom_bases.length > 0 && (
-                  <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-2">
-                      {t('napcat.customBases')}
-                    </label>
-                    <div className="space-y-2">
-                      {config.custom_bases.map((base) => (
-                        <div key={base} className="flex items-center justify-between bg-gray-50 p-2 rounded-lg">
-                          <span className="text-xs font-mono text-gray-700 truncate flex-1">{base}</span>
-                          <button
-                            onClick={() => handleRemoveBase(base)}
-                            className="ml-2 text-red-600 hover:text-red-700"
-                          >
-                            <Trash2 className="w-4 h-4" />
-                          </button>
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-                )}
-              </div>
-            </div>
-          )}
-
-          {/* Manual Path Setup - 显示当未安装或需要指定路径时 */}
-          {!status?.install_path && (
-            <div className="card">
-              <div className="flex items-center gap-3 mb-4">
-                <FolderOpen className="w-5 h-5 text-primary-600" />
-                <h2 className="text-lg font-semibold text-gray-900">{t('napcat.manualPath')}</h2>
-              </div>
-
-              <div className="space-y-4">
-                <p className="text-sm text-gray-600">{t('napcat.manualPathDesc')}</p>
-                
-                <div className="flex gap-2">
-                  <input
-                    type="text"
-                    value={installPath}
-                    onChange={(e) => setInstallPath(e.target.value)}
-                    placeholder={t('napcat.enterPath')}
-                    className="input flex-1 text-sm font-mono"
-                  />
-                  <button
-                    onClick={() => setShowPathBrowser(true)}
-                    className="btn btn-secondary btn-sm"
-                    title={t('napcat.selectFolder')}
-                  >
-                    <FolderOpen className="w-4 h-4" />
-                  </button>
-                  <button
-                    onClick={() => setShowDockerPicker(true)}
-                    className="btn btn-secondary btn-sm"
-                    title={t('napcat.selectDockerContainer')}
-                  >
-                    <Server className="w-4 h-4" />
-                  </button>
-                </div>
-
-                <button
-                  onClick={async () => {
-                    if (!installPath) {
-                      setError(t('napcat.pathNotSet'))
-                      return
-                    }
-                    try {
-                      await api.setNapCatPath({ path: installPath })
-                      setSuccess(t('napcat.pathSetSuccess'))
-                      await loadData()
-                    } catch (err: any) {
-                      setError(err.response?.data?.detail || t('napcat.pathSetFailed'))
-                    }
-                  }}
-                  className="btn btn-primary w-full"
-                  disabled={!installPath}
-                >
-                  {t('napcat.setInstallPath')}
-                </button>
-              </div>
-            </div>
-          )}
-
-          {/* Docker Sudo Password Settings */}
-          {systemInfo?.commands.docker && (
-            <div className="card">
-              <div className="flex items-center gap-3 mb-4">
-                <Settings className="w-5 h-5 text-primary-600" />
-                <h2 className="text-lg font-semibold text-gray-900">{t('napcat.dockerSudoSettings')}</h2>
-              </div>
-              <div className="space-y-3">
-                <p className="text-sm text-gray-600">{t('napcat.dockerSudoDesc')}</p>
-                <button
-                  onClick={() => setShowSudoPasswordDialog(true)}
-                  className="btn btn-secondary w-full"
-                >
-                  {t('napcat.configureSudoPassword')}
-                </button>
-              </div>
-            </div>
-          )}
-
-          {/* Status and Control */}
-          {status?.install_path && (
-            <div className="card">
-              <div className="flex items-center gap-3 mb-4">
-                <Server className="w-5 h-5 text-primary-600" />
-                <h2 className="text-lg font-semibold text-gray-900">{t('napcat.statusControl')}</h2>
-              </div>
-
-              <div className="space-y-3">
-                <div className="flex justify-between text-sm">
-                  <span className="text-gray-600">{t('napcat.status')}</span>
-                  <div className="flex items-center gap-2">
-                    <div
-                      className={`w-2 h-2 rounded-full ${status.running ? 'bg-green-500 animate-pulse' : 'bg-gray-400'}`}
-                    ></div>
-                    <span className={`font-medium ${status.running ? 'text-green-600' : 'text-gray-500'}`}>
-                      {status.running ? t('napcat.running') : t('napcat.stopped')}
-                    </span>
-                  </div>
-                </div>
-
-                <div className="text-sm">
-                  <div className="flex items-center justify-between mb-1">
-                    <span className="text-gray-600">{t('napcat.installPath')}</span>
-                    <div className="flex items-center gap-1">
-                      <button
-                        onClick={() => {
-                          const currentPath = status.install_path || ''
-                          setInstallPath(currentPath)
-                          setShowPathBrowser(true)
-                        }}
-                        className="btn btn-secondary btn-xs flex items-center gap-1"
-                        title={t('napcat.selectFolder')}
-                      >
-                        <FolderOpen className="w-3 h-3" />
-                        <span className="hidden sm:inline">{t('napcat.selectFolder')}</span>
-                      </button>
-                      <button
-                        onClick={() => {
-                          const currentPath = status.install_path || ''
-                          setInstallPath(currentPath)
-                          setShowDockerPicker(true)
-                        }}
-                        className="btn btn-secondary btn-xs flex items-center gap-1"
-                        title={t('napcat.selectDockerContainer')}
-                      >
-                        <Server className="w-3 h-3" />
-                        <span className="hidden sm:inline">{t('napcat.selectDockerContainer')}</span>
-                      </button>
-                    </div>
-                  </div>
-                  <div className="mt-1 bg-gray-50 p-2 rounded text-xs font-mono break-all">{status.install_path}</div>
-                </div>
-
-                <div className="grid grid-cols-2 gap-2 pt-3 border-t">
-                  {!status.running ? (
-                    <button
-                      onClick={handleStart}
-                      className="btn btn-primary btn-sm flex items-center justify-center gap-1"
-                    >
-                      <Play className="w-4 h-4" />
-                      <span className="hidden sm:inline">{t('napcat.start')}</span>
-                    </button>
-                  ) : (
-                    <button
-                      onClick={handleStop}
-                      className="btn btn-secondary btn-sm flex items-center justify-center gap-1"
-                    >
-                      <Square className="w-4 h-4" />
-                      <span className="hidden sm:inline">{t('napcat.stop')}</span>
-                    </button>
-                  )}
-
-                  <button
-                    onClick={handleOpenWebUI}
-                    className="btn btn-secondary btn-sm flex items-center justify-center gap-1"
-                  >
-                    <ExternalLink className="w-4 h-4" />
-                    <span className="hidden sm:inline">WebUI</span>
-                  </button>
-                </div>
-              </div>
-            </div>
-          )}
-        </div>
-
-        {/* Right Column -  flex  */}
-        <div className="space-y-6 flex flex-col">
-          {/* Installation Configuration */}
-          <div className="card">
-            <div className="flex items-center gap-3 mb-4">
-              <Download className="w-5 h-5 text-primary-600" />
-              <h2 className="text-lg font-semibold text-gray-900">{t('napcat.installConfig')}</h2>
-            </div>
-
-            <div className="space-y-4">
-              {/* Platform Selection */}
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-2">
-                  {t('napcat.selectPlatform')}
-                </label>
-                <select
-                  value={selectedPlatform}
-                  onChange={(e) => setSelectedPlatform(e.target.value)}
-                  className="input text-sm"
-                  disabled={installing}
-                >
-                  <option value="auto">{t('napcat.autoDetect')}</option>
-                  <option value="windows">Windows</option>
-                  <option value="linux">Linux</option>
-                  <option value="macos">macOS</option>
-                  <option value="docker">Docker</option>
-                  <option value="termux">Termux</option>
-                </select>
-              </div>
-
-              {/* Docker  */}
-              {selectedPlatform === 'docker' && (
-                <div className="space-y-3 bg-blue-50 border border-blue-200 rounded-lg p-4">
-                  <div className="flex items-center gap-2 text-blue-800 text-sm font-medium">
-                    <Info className="w-4 h-4" />
-                    <span>{t('napcat.dockerModeConfig')}</span>
-                  </div>
-                  
-                  <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-1">
-                      {t('napcat.dockerQQ')} <span className="text-red-500">*</span>
-                    </label>
-                    <input
-                      type="text"
-                      value={dockerQQ}
-                      onChange={(e) => setDockerQQ(e.target.value)}
-                      placeholder={t('napcat.dockerQQPlaceholder')}
-                      className="input text-sm w-full"
-                      disabled={installing}
-                    />
-                  </div>
-
-                  <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-1">
-                      {t('napcat.dockerMode')}
-                    </label>
-                    <select
-                      value={dockerMode}
-                      onChange={(e) => setDockerMode(e.target.value)}
-                      className="input text-sm w-full"
-                      disabled={installing}
-                    >
-                      <option value="ws">WebSocket</option>
-                      <option value="reverse_ws">Reverse WebSocket</option>
-                      <option value="reverse_http">Reverse HTTP</option>
-                    </select>
-                  </div>
-
-                  <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-1">
-                      {t('napcat.dockerProxy')} ({t('napcat.optional')})
-                    </label>
-                    <select
-                      value={dockerProxy}
-                      onChange={(e) => setDockerProxy(e.target.value)}
-                      className="input text-sm w-full"
-                      disabled={installing}
-                    >
-                      <option value="">不使用代理</option>
-                      <option value="1">代理 1</option>
-                      <option value="2">代理 2</option>
-                      <option value="3">代理 3</option>
-                      <option value="4">代理 4</option>
-                      <option value="5">代理 5</option>
-                      <option value="6">代理 6</option>
-                      <option value="7">代理 7</option>
-                    </select>
-                  </div>
-                </div>
-              )}
-
-              {/* Install Path -  Docker  */}
-              {selectedPlatform !== 'docker' && (
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-2">
-                    {t('napcat.installPath')}
-                  </label>
-                  <div className="space-y-2">
-                    <div className="flex items-center gap-3">
-                      <label className="flex items-center gap-2 cursor-pointer">
-                        <input
-                          type="radio"
-                          checked={useAutoPath}
-                          onChange={() => setUseAutoPath(true)}
-                          disabled={installing}
-                          className="text-primary-600"
-                        />
-                        <span className="text-sm">{t('napcat.pathAutoDetect')}</span>
-                      </label>
-                      <label className="flex items-center gap-2 cursor-pointer">
-                        <input
-                          type="radio"
-                          checked={!useAutoPath}
-                          onChange={() => setUseAutoPath(false)}
-                          disabled={installing}
-                          className="text-primary-600"
-                        />
-                        <span className="text-sm">{t('napcat.pathManual')}</span>
-                      </label>
-                    </div>
-                    
-                    {!useAutoPath && (
-                      <div className="flex gap-2">
-                        <input
-                          type="text"
-                          value={installPath}
-                          onChange={(e) => setInstallPath(e.target.value)}
-                          placeholder={t('napcat.installPathPlaceholder')}
-                          className="input flex-1 text-sm font-mono"
-                          disabled={installing}
-                        />
-                        <button
-                          onClick={() => setShowPathBrowser(true)}
-                          className="btn btn-secondary btn-sm"
-                          disabled={installing}
-                        >
-                          <FolderOpen className="w-4 h-4" />
-                        </button>
-                      </div>
-                    )}
-                  </div>
-                </div>
-              )}
-
-              {/* Action Buttons */}
-              <div className="grid grid-cols-2 gap-3 pt-4 border-t border-gray-200">
-                <button
-                  onClick={handleGenerateScript}
-                  className="btn btn-secondary flex items-center justify-center gap-2"
-                  disabled={installing}
-                >
-                  <Code className="w-4 h-4" />
-                  {t('napcat.generateScript')}
-                </button>
-                <button
-                  onClick={handleInstall}
-                  className="btn btn-primary flex items-center justify-center gap-2"
-                  disabled={installing}
-                >
-                  <Download className="w-4 h-4" />
-                  {t('napcat.startInstall')}
-                </button>
-              </div>
-            </div>
-          </div>
-
-          {/* Deploy Output -  */}
-          <div className="card flex-1 flex flex-col">
-            <div className="flex items-center gap-3 mb-4">
-              <Terminal className="w-5 h-5 text-primary-600" />
-              <h2 className="text-lg font-semibold text-gray-900">{t('napcat.deployOutput')}</h2>
-            </div>
-
-            {installing && installProgress ? (
-              <div className="space-y-3">
-                <div className="flex items-center justify-between">
-                  <span className="text-sm font-medium text-gray-700">{installProgress.message}</span>
-                  <span className="text-sm font-medium text-primary-600">{installProgress.percent}%</span>
-                </div>
-                <div className="w-full bg-gray-200 rounded-full h-2">
-                  <div
-                    className="bg-primary-600 h-2 rounded-full transition-all duration-300"
-                    style={{ width: `${installProgress.percent}%` }}
-                  ></div>
-                </div>
-
-                <div
-                  ref={deployLogsContainerRef}
-                  className="bg-gray-900 rounded-lg p-3 h-[400px] max-h-[400px] overflow-y-auto overflow-x-hidden"
-                >
-                  {installProgress.logs.length > 0 ? (
-                    <div className="space-y-1">
-                      {installProgress.logs.map((log, i) => (
-                        <div key={i} className="text-xs text-green-400 font-mono whitespace-pre-wrap break-all">
-                          {log}
-                        </div>
-                      ))}
-                      <div ref={deployLogsEndRef} aria-hidden />
-                    </div>
-                  ) : (
-                    <div className="flex items-center justify-center h-full">
-                      <p className="text-sm text-gray-400">{t('napcat.waitingForLogs')}</p>
-                    </div>
-                  )}
-                </div>
-
-                <button
-                  onClick={handleCancelInstall}
-                  className="btn btn-secondary w-full"
-                >
-                  {t('common.cancel')}
-                </button>
-              </div>
-            ) : (
-              <div className="bg-gray-50 rounded-lg p-8 text-center flex items-center justify-center h-[400px]">
-                <div className="flex flex-col items-center">
-                  <Terminal className="w-12 h-12 text-gray-400 mb-3" />
-                  <p className="text-sm text-gray-500">{t('napcat.noDeployOutput')}</p>
-                </div>
-              </div>
-            )}
-          </div>
-        </div>
-      </div>
-
-      {/* Runtime Logs -  */}
-      <div className="card">
-        <div className="flex items-center justify-between mb-4">
+  const renderLogs = () => (
+    <div className="grid h-full min-h-0 xl:grid-cols-[minmax(0,1fr)_320px]">
+      <div className="flex min-h-0 flex-col bg-slate-950">
+        <div className="flex h-12 shrink-0 items-center justify-between border-b border-slate-800 px-4 md:px-6">
           <div className="flex items-center gap-3">
-            <Terminal className="w-5 h-5 text-primary-600" />
-            <h2 className="text-lg font-semibold text-gray-900">{t('napcat.runtimeLogs')}</h2>
-            {status?.running && autoRefresh && (
-              <span className="text-xs text-green-600 bg-green-50 px-2 py-1 rounded">
-                {t('napcat.autoRefreshing')}
-              </span>
-            )}
+            <div className="flex items-center gap-2">
+              <span className="h-3 w-3 rounded-full bg-rose-400" />
+              <span className="h-3 w-3 rounded-full bg-amber-300" />
+              <span className="h-3 w-3 rounded-full bg-emerald-400" />
+            </div>
+            <span className="text-sm text-slate-300">NapCat runtime</span>
           </div>
-          <div className="flex items-center gap-2">
-            {status?.running && (
-              <label className="flex items-center gap-2 cursor-pointer select-none">
-                <span className="text-sm text-gray-600">{t('common.autoRefresh')}</span>
-                <div className="relative inline-flex items-center">
-                  <input
-                    type="checkbox"
-                    checked={autoRefresh}
-                    onChange={async (e) => {
-                      const newValue = e.target.checked
-                      setAutoRefresh(newValue)
-                      if (newValue) {
-                        // When enabling, reload all logs and start polling
-                        setRuntimeLogs([])
-                        await startLogsPolling()
-                      } else {
-                        // When disabling, stop polling but keep current logs
-                        if (logsIntervalRef.current) {
-                          clearInterval(logsIntervalRef.current)
-                          logsIntervalRef.current = null
-                        }
-                      }
-                    }}
-                    className="sr-only peer"
-                  />
-                  <div className="w-11 h-6 bg-gray-200 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-blue-600"></div>
-                </div>
-              </label>
-            )}
+          <button
+            type="button"
+            onClick={() => void loadLogs()}
+            className="inline-flex h-full items-center gap-2 border-l border-slate-800 px-4 text-xs text-slate-400 transition-colors hover:bg-slate-900 hover:text-slate-100"
+          >
+            <RefreshCw className="h-3.5 w-3.5" />
+            刷新
+          </button>
+        </div>
+        <div ref={logsRef} className="custom-scrollbar flex-1 overflow-y-auto px-4 py-4 font-mono text-xs leading-6 text-slate-300 md:px-6">
+          {runtimeLogs.length ? runtimeLogs.map((line, index) => (
+            <div key={`${index}-${line}`} className="whitespace-pre-wrap break-all">{line}</div>
+          )) : (
+            <div className="text-slate-500">暂无运行日志。启动 NapCat 后会显示 stdout/stderr。</div>
+          )}
+        </div>
+        <div className="h-8 shrink-0 border-t border-slate-200 bg-white" />
+      </div>
+
+      <div className="min-h-0 overflow-y-auto border-t border-slate-200 bg-white xl:border-l xl:border-t-0">
+        <section className="border-b border-slate-200 pt-5">
+          <div className="px-5 text-xs font-semibold uppercase tracking-[0.18em] text-slate-400">运行控制</div>
+          <div className="mt-3 px-5 text-sm text-slate-700">
+            当前状态：
+            <span className={status?.running ? 'font-medium text-emerald-700' : status?.installed ? 'font-medium text-amber-700' : 'font-medium text-slate-500'}>
+              {status?.running ? '运行中' : status?.installed ? '已安装，未启动' : '未安装'}
+            </span>
+          </div>
+          <div className="mt-5 divide-y divide-slate-200 border-t border-slate-200">
+            <button
+              type="button"
+              onClick={handleStart}
+              disabled={!status?.installed || status?.running || actionLoading === 'start'}
+              className="inline-flex h-12 w-full items-center justify-center gap-2 bg-white text-sm font-medium text-emerald-700 transition-colors hover:bg-emerald-50 disabled:text-slate-300 disabled:hover:bg-white"
+            >
+              {actionLoading === 'start' ? <Loader2 className="h-4 w-4 animate-spin" /> : <Play className="h-4 w-4" />}
+              启动
+            </button>
+            <button
+              type="button"
+              onClick={handleStop}
+              disabled={!status?.running || actionLoading === 'stop'}
+              className="inline-flex h-12 w-full items-center justify-center gap-2 bg-white text-sm font-medium text-rose-700 transition-colors hover:bg-rose-50 disabled:text-slate-300 disabled:hover:bg-white"
+            >
+              {actionLoading === 'stop' ? <Loader2 className="h-4 w-4 animate-spin" /> : <Square className="h-4 w-4" />}
+              停止
+            </button>
+            <button
+              type="button"
+              onClick={handleShowQRCode}
+              disabled={qrcodeLoading}
+              className="inline-flex h-12 w-full items-center justify-center gap-2 bg-white text-sm font-medium text-slate-700 transition-colors hover:bg-slate-50 disabled:text-slate-300 disabled:hover:bg-white"
+            >
+              {qrcodeLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : <QrCode className="h-4 w-4" />}
+              显示二维码
+            </button>
+          </div>
+          {qrcodeError ? <div className="px-5 py-3 text-sm text-rose-600">{qrcodeError}</div> : null}
+        </section>
+
+        <section className="border-b border-slate-200 py-5">
+          <div className="px-5 text-xs font-semibold uppercase tracking-[0.18em] text-slate-400">日志说明</div>
+          <div className="mt-4 space-y-3 px-5 text-sm leading-6 text-slate-600">
+            <p>这里显示框架捕获到的 NapCat 进程 stdout/stderr。</p>
+            <p>如果启动失败，先看启动入口、QQ 登录输出和 WebUI token 是否出现。</p>
+            <p>二维码图片通常会保存在 <span className="font-mono text-slate-800">napcat/workdir/cache/qrcode.png</span>。</p>
+          </div>
+        </section>
+
+        <section className="py-5">
+          <div className="px-5 text-xs font-semibold uppercase tracking-[0.18em] text-slate-400">路径</div>
+          <div className="mt-4 space-y-3 px-5 text-xs leading-5 text-slate-500">
+            <div>
+              <div className="text-slate-400">启动入口</div>
+              <div className="mt-1 break-all font-mono text-slate-700">{status?.entry || '未检测到'}</div>
+            </div>
+            <div>
+              <div className="text-slate-400">工作目录</div>
+              <div className="mt-1 break-all font-mono text-slate-700">{status?.workdir || './napcat/workdir'}</div>
+            </div>
+          </div>
+        </section>
+      </div>
+    </div>
+  )
+
+  const renderInstall = () => (
+    <div className="grid h-full min-h-0 overflow-hidden xl:grid-cols-[minmax(0,1fr)_320px]">
+      <div className="flex min-h-0 flex-col overflow-y-auto bg-white xl:overflow-hidden">
+        <div className="flex h-12 shrink-0 items-center justify-between border-b border-slate-200 px-4 md:px-6">
+          <div className="text-sm font-medium text-slate-900">一键安装 NapCat Shell</div>
+          <StatusPill />
+        </div>
+
+        <div className="border-b border-slate-200 px-4 py-5 md:px-6">
+          <div className="max-w-4xl text-sm leading-6 text-slate-600">
+            Windows 会下载官方 <span className="font-mono text-slate-900">NapCat.Shell.Windows.OneKey.zip</span> 并运行
+            <span className="mx-1 font-mono text-slate-900">NapCatInstaller.exe</span>。Linux 会执行官方 Shell 安装脚本，但安装根目录会被框架固定到
+            <span className="mx-1 font-mono text-slate-900">./napcat/linux-root</span>，不写到用户公共目录。
           </div>
         </div>
 
-        <div
-          ref={runtimeLogsContainerRef}
-          className="bg-gray-900 rounded-lg p-3 h-[52vh] min-h-[360px] max-h-[70vh] overflow-y-auto overflow-x-hidden"
-        >
-          {!status?.running ? (
-            <div className="text-center py-12">
-              <Terminal className="w-12 h-12 text-gray-600 mx-auto mb-3" />
-              <p className="text-sm text-gray-400">{t('napcat.notRunning')}</p>
-            </div>
-          ) : runtimeLogs.length === 0 ? (
-            <div className="text-center py-12">
-              <p className="text-sm text-gray-400">{t('napcat.noLogs')}</p>
-            </div>
+        <div className="grid border-b border-slate-200 md:grid-cols-2 xl:grid-cols-4">
+          <DetailCell label="安装目录" value={status?.install_path || './napcat'} />
+          <DetailCell label="工作目录 NAPCAT_WORKDIR" value={status?.workdir || './napcat/workdir'} />
+          <DetailCell label="启动入口" value={status?.entry || '安装完成后自动检测'} />
+          <DetailCell label="平台" value={status?.platform || 'auto'} />
+        </div>
+
+        <div className="border-b border-slate-200 xl:hidden">
+          <button
+            type="button"
+            onClick={handleInstall}
+            disabled={isInstalling}
+            className="inline-flex h-12 w-full items-center justify-center gap-2 bg-white text-sm font-medium text-slate-900 transition-colors hover:bg-slate-50 disabled:text-slate-300 disabled:hover:bg-white"
+          >
+            {isInstalling ? <Loader2 className="h-4 w-4 animate-spin" /> : <Download className="h-4 w-4" />}
+            {status?.installed ? '重新安装 / 修复' : '安装 NapCat'}
+          </button>
+          <button
+            type="button"
+            onClick={() => void loadAll()}
+            className="inline-flex h-12 w-full items-center justify-center gap-2 border-t border-slate-200 bg-white text-sm font-medium text-slate-700 transition-colors hover:bg-slate-50"
+          >
+            <RefreshCw className="h-4 w-4" />
+            刷新状态
+          </button>
+        </div>
+
+        <div className="flex min-h-[420px] shrink-0 flex-col bg-slate-950 xl:min-h-0 xl:flex-1 xl:shrink">
+          <div className="flex h-12 shrink-0 items-center justify-between border-b border-slate-800 px-4 md:px-6">
+            <div className="text-sm text-slate-300">install output</div>
+            <div className="text-xs text-slate-500">{job ? `${job.percent}% · ${job.message}` : '等待安装任务'}</div>
+          </div>
+          {job ? (
+            <>
+              <div className="h-1 bg-slate-800">
+                <div className="h-full bg-emerald-500 transition-all" style={{ width: `${Math.max(0, Math.min(job.percent, 100))}%` }} />
+              </div>
+              <div ref={installLogsRef} className="custom-scrollbar flex-1 overflow-y-auto px-4 py-4 font-mono text-xs leading-6 text-slate-300 md:px-6">
+                {job.logs.length ? job.logs.map((line, index) => (
+                  <div key={`${index}-${line}`} className="whitespace-pre-wrap break-all">{line}</div>
+                )) : <div className="text-slate-500">任务已创建，等待输出...</div>}
+              </div>
+            </>
           ) : (
-            <div className="space-y-1">
-              {runtimeLogs.map((log, i) => (
-                <div key={i} className="text-xs text-green-400 font-mono whitespace-pre-wrap break-all">
-                  {log}
-                </div>
-              ))}
-              <div ref={runtimeLogsEndRef} aria-hidden />
-            </div>
+            <div className="flex-1 px-4 py-4 text-sm text-slate-500 md:px-6">点击安装后会在这里显示下载、解压和安装日志。</div>
           )}
+          <div className="h-8 shrink-0 border-t border-slate-200 bg-white" />
         </div>
       </div>
 
-      {/* Script Preview Modal */}
-      {showScript && (
-        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
-          <div className="bg-white rounded-lg max-w-4xl w-full max-h-[80vh] overflow-hidden">
-            <div className="flex items-center justify-between p-4 border-b border-gray-200">
-              <h3 className="text-lg font-semibold text-gray-900">{t('napcat.installScript')}</h3>
-              <button
-                onClick={() => setShowScript(false)}
-                className="text-gray-400 hover:text-gray-600"
-              >
-                <X className="w-5 h-5" />
-              </button>
-            </div>
-            <div className="p-4 overflow-y-auto max-h-[60vh]">
-              <pre className="bg-gray-900 text-green-400 p-4 rounded-lg overflow-x-auto text-sm font-mono">
-                {scriptPreview}
-              </pre>
-            </div>
-            <div className="flex justify-end gap-2 p-4 border-t border-gray-200">
-              <button
-                onClick={copyScript}
-                className="btn btn-secondary flex items-center gap-2"
-              >
-                {copiedScript ? <Check className="w-4 h-4" /> : <Copy className="w-4 h-4" />}
-                {copiedScript ? t('common.copied') : t('common.copy')}
-              </button>
-              <button onClick={() => setShowScript(false)} className="btn btn-primary">
-                {t('common.close')}
-              </button>
-            </div>
+      <div className="hidden min-h-0 border-t border-slate-200 bg-white xl:block xl:overflow-y-auto xl:border-l xl:border-t-0">
+        <section className="border-b border-slate-200 pt-5">
+          <div className="px-5 text-xs font-semibold uppercase tracking-[0.18em] text-slate-400">安装操作</div>
+          <div className="mt-5 divide-y divide-slate-200 border-t border-slate-200">
+            <button
+              type="button"
+              onClick={handleInstall}
+              disabled={isInstalling}
+              className="inline-flex h-12 w-full items-center justify-center gap-2 bg-white text-sm font-medium text-slate-900 transition-colors hover:bg-slate-50 disabled:text-slate-300 disabled:hover:bg-white"
+            >
+              {isInstalling ? <Loader2 className="h-4 w-4 animate-spin" /> : <Download className="h-4 w-4" />}
+              {status?.installed ? '重新安装 / 修复' : '安装 NapCat'}
+            </button>
+            <button
+              type="button"
+              onClick={() => void loadAll()}
+              className="inline-flex h-12 w-full items-center justify-center gap-2 bg-white text-sm font-medium text-slate-700 transition-colors hover:bg-slate-50"
+            >
+              <RefreshCw className="h-4 w-4" />
+              刷新状态
+            </button>
           </div>
+        </section>
+
+        <section className="border-b border-slate-200 py-5">
+          <div className="px-5 text-xs font-semibold uppercase tracking-[0.18em] text-slate-400">简化规则</div>
+          <div className="mt-4 space-y-3 px-5 text-sm leading-6 text-slate-600">
+            <p>只管理当前框架自己的 NapCat。</p>
+            <p>所有文件都放在框架目录下的 <span className="font-mono text-slate-800">./napcat</span>。</p>
+            <p>暂时不自动修改 OneBot 配置，安装后去 NapCat WebUI 填。</p>
+          </div>
+        </section>
+
+        <section className="py-5">
+          <div className="px-5 text-xs font-semibold uppercase tracking-[0.18em] text-slate-400">目录结构</div>
+          <div className="mt-4 space-y-2 px-5 font-mono text-xs leading-5 text-slate-600">
+            <p>./napcat</p>
+            <p>./napcat/linux-root</p>
+            <p>./napcat/workdir/config</p>
+            <p>./napcat/workdir/logs</p>
+            <p>./napcat/workdir/cache</p>
+          </div>
+        </section>
+      </div>
+    </div>
+  )
+
+  const renderConfig = () => (
+    <div className="grid h-full min-h-0 xl:grid-cols-[minmax(0,1fr)_320px]">
+      <div className="min-h-0 overflow-y-auto bg-white">
+        <div className="flex h-12 items-center border-b border-slate-200 px-4 md:px-6">
+          <div className="text-sm font-medium text-slate-900">NapCat 配置中心</div>
         </div>
-      )}
+        <section className="border-b border-slate-200 px-4 py-5 md:px-6">
+          <div className="max-w-4xl text-sm leading-6 text-slate-600">
+            这里用表单读写当前框架托管 NapCat 的 <span className="font-mono text-slate-900">workdir/config</span>。
+            固定参数用选择框，保存后大部分配置需要重启 NapCat 才会生效。
+          </div>
+        </section>
+        <section className="grid border-b border-slate-200 md:grid-cols-2">
+          <DetailCell label="安装目录" value={status?.install_path || './napcat'} />
+          <DetailCell label="工作目录" value={status?.workdir || './napcat/workdir'} />
+          <DetailCell label="WebUI" value={webui?.url || '等待 NapCat 启动后解析'} />
+          <DetailCell label="Token 来源" value={webui?.source || status?.webui?.source || '等待检测'} />
+          <DetailCell label="启动入口" value={status?.entry || '未检测到'} />
+          <DetailCell label="平台" value={status?.platform || 'auto'} />
+        </section>
 
-      {/* Path Browser Modal */}
-      {showPathBrowser && (
-        <PathBrowser
-          onSelect={handlePathSelect}
-          onClose={() => setShowPathBrowser(false)}
-          initialPath={installPath}
-        />
-      )}
+        <FormSection title="WebUI 设置" path={configMeta?.webui_path}>
+          <FormField label="监听地址">
+            <select value={configDraft.webui?.host ?? '::'} onChange={(event) => updateConfigValue('webui', ['host'], event.target.value)} className="form-select">
+              <option value="127.0.0.1">127.0.0.1 本机</option>
+              <option value="0.0.0.0">0.0.0.0 所有 IPv4</option>
+              <option value="::">:: 所有 IPv6/IPv4</option>
+              <option value="localhost">localhost</option>
+            </select>
+          </FormField>
+          <FormField label="端口">
+            <input type="number" value={configDraft.webui?.port ?? 6099} onChange={(event) => updateConfigValue('webui', ['port'], toNumber(event.target.value, 6099))} className="form-input" />
+          </FormField>
+          <FormField label="访问 Token">
+            <input value={configDraft.webui?.token ?? ''} onChange={(event) => updateConfigValue('webui', ['token'], event.target.value)} className="form-input font-mono" placeholder="留空则由 NapCat 处理" />
+          </FormField>
+          <FormField label="登录频率">
+            <input type="number" value={configDraft.webui?.loginRate ?? 10} onChange={(event) => updateConfigValue('webui', ['loginRate'], toNumber(event.target.value, 10))} className="form-input" />
+          </FormField>
+          <FormField label="自动登录账号">
+            <input value={configDraft.webui?.autoLoginAccount ?? ''} onChange={(event) => updateConfigValue('webui', ['autoLoginAccount'], event.target.value)} className="form-input font-mono" placeholder="QQ 号，可留空" />
+          </FormField>
+          <FormField label="关闭 WebUI">
+            <select value={String(!!configDraft.webui?.disableWebUI)} onChange={(event) => updateConfigValue('webui', ['disableWebUI'], toBool(event.target.value))} className="form-select">
+              <option value="false">否</option>
+              <option value="true">是</option>
+            </select>
+          </FormField>
+          <FormField label="访问控制">
+            <select value={configDraft.webui?.accessControlMode ?? 'none'} onChange={(event) => updateConfigValue('webui', ['accessControlMode'], event.target.value)} className="form-select">
+              <option value="none">不限制</option>
+              <option value="whitelist">白名单</option>
+              <option value="blacklist">黑名单</option>
+            </select>
+          </FormField>
+          <FormField label="信任 X-Forwarded-For">
+            <select value={String(!!configDraft.webui?.enableXForwardedFor)} onChange={(event) => updateConfigValue('webui', ['enableXForwardedFor'], toBool(event.target.value))} className="form-select">
+              <option value="false">否</option>
+              <option value="true">是</option>
+            </select>
+          </FormField>
+          <FormField label="IP 白名单" wide>
+            <textarea value={toLines(configDraft.webui?.ipWhitelist)} onChange={(event) => updateConfigValue('webui', ['ipWhitelist'], fromLines(event.target.value))} className="form-textarea" placeholder="一行一个 IP" />
+          </FormField>
+          <FormField label="IP 黑名单" wide>
+            <textarea value={toLines(configDraft.webui?.ipBlacklist)} onChange={(event) => updateConfigValue('webui', ['ipBlacklist'], fromLines(event.target.value))} className="form-textarea" placeholder="一行一个 IP" />
+          </FormField>
+        </FormSection>
 
-      {showDockerPicker && (
-        <DockerContainerPicker
-          onSelect={handleDockerContainerSelect}
-          onClose={() => setShowDockerPicker(false)}
-        />
-      )}
+        <FormSection title="NapCat 运行设置" path={configMeta?.napcat_path}>
+          <FormField label="文件日志">
+            <select value={String(!!configDraft.napcat?.fileLog)} onChange={(event) => updateConfigValue('napcat', ['fileLog'], toBool(event.target.value))} className="form-select">
+              <option value="false">关闭</option>
+              <option value="true">开启</option>
+            </select>
+          </FormField>
+          <FormField label="控制台日志">
+            <select value={String(configDraft.napcat?.consoleLog ?? true)} onChange={(event) => updateConfigValue('napcat', ['consoleLog'], toBool(event.target.value))} className="form-select">
+              <option value="true">开启</option>
+              <option value="false">关闭</option>
+            </select>
+          </FormField>
+          <FormField label="文件日志等级">
+            <select value={configDraft.napcat?.fileLogLevel ?? 'debug'} onChange={(event) => updateConfigValue('napcat', ['fileLogLevel'], event.target.value)} className="form-select">
+              <option value="debug">debug</option>
+              <option value="info">info</option>
+              <option value="warn">warn</option>
+              <option value="error">error</option>
+            </select>
+          </FormField>
+          <FormField label="控制台日志等级">
+            <select value={configDraft.napcat?.consoleLogLevel ?? 'info'} onChange={(event) => updateConfigValue('napcat', ['consoleLogLevel'], event.target.value)} className="form-select">
+              <option value="debug">debug</option>
+              <option value="info">info</option>
+              <option value="warn">warn</option>
+              <option value="error">error</option>
+            </select>
+          </FormField>
+          <FormField label="包后端">
+            <select value={configDraft.napcat?.packetBackend ?? 'auto'} onChange={(event) => updateConfigValue('napcat', ['packetBackend'], event.target.value)} className="form-select">
+              <option value="auto">auto</option>
+            </select>
+          </FormField>
+          <FormField label="O3 Hook 模式">
+            <select value={String(configDraft.napcat?.o3HookMode ?? 0)} onChange={(event) => updateConfigValue('napcat', ['o3HookMode'], toNumber(event.target.value, 0))} className="form-select">
+              <option value="0">关闭</option>
+              <option value="1">开启</option>
+            </select>
+          </FormField>
+          <FormField label="自动时间同步">
+            <select value={String(configDraft.napcat?.autoTimeSync ?? true)} onChange={(event) => updateConfigValue('napcat', ['autoTimeSync'], toBool(event.target.value))} className="form-select">
+              <option value="true">开启</option>
+              <option value="false">关闭</option>
+            </select>
+          </FormField>
+          <FormField label="Packet Server">
+            <input value={configDraft.napcat?.packetServer ?? ''} onChange={(event) => updateConfigValue('napcat', ['packetServer'], event.target.value)} className="form-input font-mono" placeholder="可留空" />
+          </FormField>
+        </FormSection>
 
-      {/* Sudo Password Dialog */}
-      {showSudoPasswordDialog && (
-        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
-          <div className="bg-white rounded-lg max-w-md w-full">
-            <div className="flex items-center justify-between p-4 border-b border-gray-200">
-              <h3 className="text-lg font-semibold text-gray-900">{t('napcat.configureSudoPassword')}</h3>
-              <button onClick={() => setShowSudoPasswordDialog(false)} className="text-gray-400 hover:text-gray-600">
-                <X className="w-5 h-5" />
-              </button>
-            </div>
-            
-            <div className="p-4 space-y-4">
-              <p className="text-sm text-gray-600">{t('napcat.sudoPasswordDesc')}</p>
-              
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-2">
-                  {t('napcat.sudoPassword')}
-                </label>
-                <input
-                  type="password"
-                  value={sudoPassword}
-                  onChange={(e) => setSudoPassword(e.target.value)}
-                  placeholder={t('napcat.enterSudoPassword')}
-                  className="input w-full"
-                  autoComplete="new-password"
-                />
-                <p className="text-xs text-gray-500 mt-1">{t('napcat.sudoPasswordNote')}</p>
+        <FormSection title="OneBot 连接设置" path={configMeta?.onebot_path}>
+          <FormField label="连接模式">
+            <select value={getOneBotMode()} onChange={(event) => setOneBotMode(event.target.value)} className="form-select">
+              <option value="websocketServer">WebSocket Server</option>
+              <option value="websocketClient">WebSocket Client</option>
+              <option value="httpServer">HTTP Server</option>
+              <option value="disabled">不启用</option>
+            </select>
+          </FormField>
+          <FormField label="消息格式">
+            <select
+              value={firstEndpoint('websocketServers').messagePostFormat || firstEndpoint('websocketClients').messagePostFormat || firstEndpoint('httpServers').messagePostFormat || 'array'}
+              onChange={(event) => {
+                if (getOneBotMode() === 'websocketServer') updateOneBotEndpoint('websocketServers', 'messagePostFormat', event.target.value)
+                if (getOneBotMode() === 'websocketClient') updateOneBotEndpoint('websocketClients', 'messagePostFormat', event.target.value)
+                if (getOneBotMode() === 'httpServer') updateOneBotEndpoint('httpServers', 'messagePostFormat', event.target.value)
+              }}
+              className="form-select"
+            >
+              <option value="array">array</option>
+              <option value="string">string</option>
+            </select>
+          </FormField>
+          {getOneBotMode() === 'websocketServer' ? (
+            <>
+              <FormField label="启用">
+                <select value={String(firstEndpoint('websocketServers').enable ?? true)} onChange={(event) => updateOneBotEndpoint('websocketServers', 'enable', toBool(event.target.value))} className="form-select">
+                  <option value="true">启用</option>
+                  <option value="false">关闭</option>
+                </select>
+              </FormField>
+              <FormField label="监听地址">
+                <select value={firstEndpoint('websocketServers').host ?? '127.0.0.1'} onChange={(event) => updateOneBotEndpoint('websocketServers', 'host', event.target.value)} className="form-select">
+                  <option value="127.0.0.1">127.0.0.1 本机</option>
+                  <option value="0.0.0.0">0.0.0.0 所有 IPv4</option>
+                  <option value="::">:: 所有 IPv6/IPv4</option>
+                </select>
+              </FormField>
+              <FormField label="端口">
+                <input type="number" value={firstEndpoint('websocketServers').port ?? 3001} onChange={(event) => updateOneBotEndpoint('websocketServers', 'port', toNumber(event.target.value, 3001))} className="form-input" />
+              </FormField>
+              <FormField label="Token">
+                <input value={firstEndpoint('websocketServers').token ?? ''} onChange={(event) => updateOneBotEndpoint('websocketServers', 'token', event.target.value)} className="form-input font-mono" />
+              </FormField>
+              <FormField label="上报自身消息">
+                <select value={String(!!firstEndpoint('websocketServers').reportSelfMessage)} onChange={(event) => updateOneBotEndpoint('websocketServers', 'reportSelfMessage', toBool(event.target.value))} className="form-select">
+                  <option value="false">否</option>
+                  <option value="true">是</option>
+                </select>
+              </FormField>
+            </>
+          ) : null}
+          {getOneBotMode() === 'websocketClient' ? (
+            <>
+              <FormField label="启用">
+                <select value={String(firstEndpoint('websocketClients').enable ?? true)} onChange={(event) => updateOneBotEndpoint('websocketClients', 'enable', toBool(event.target.value))} className="form-select">
+                  <option value="true">启用</option>
+                  <option value="false">关闭</option>
+                </select>
+              </FormField>
+              <FormField label="连接地址" wide>
+                <input value={firstEndpoint('websocketClients').url ?? ''} onChange={(event) => updateOneBotEndpoint('websocketClients', 'url', event.target.value)} className="form-input font-mono" placeholder="ws://127.0.0.1:8080/onebot/v11/ws" />
+              </FormField>
+              <FormField label="Token">
+                <input value={firstEndpoint('websocketClients').token ?? ''} onChange={(event) => updateOneBotEndpoint('websocketClients', 'token', event.target.value)} className="form-input font-mono" />
+              </FormField>
+              <FormField label="重连间隔 ms">
+                <input type="number" value={firstEndpoint('websocketClients').reconnectInterval ?? 5000} onChange={(event) => updateOneBotEndpoint('websocketClients', 'reconnectInterval', toNumber(event.target.value, 5000))} className="form-input" />
+              </FormField>
+            </>
+          ) : null}
+          {getOneBotMode() === 'httpServer' ? (
+            <>
+              <FormField label="启用">
+                <select value={String(firstEndpoint('httpServers').enable ?? true)} onChange={(event) => updateOneBotEndpoint('httpServers', 'enable', toBool(event.target.value))} className="form-select">
+                  <option value="true">启用</option>
+                  <option value="false">关闭</option>
+                </select>
+              </FormField>
+              <FormField label="监听地址">
+                <select value={firstEndpoint('httpServers').host ?? '127.0.0.1'} onChange={(event) => updateOneBotEndpoint('httpServers', 'host', event.target.value)} className="form-select">
+                  <option value="127.0.0.1">127.0.0.1 本机</option>
+                  <option value="0.0.0.0">0.0.0.0 所有 IPv4</option>
+                  <option value="::">:: 所有 IPv6/IPv4</option>
+                </select>
+              </FormField>
+              <FormField label="端口">
+                <input type="number" value={firstEndpoint('httpServers').port ?? 3000} onChange={(event) => updateOneBotEndpoint('httpServers', 'port', toNumber(event.target.value, 3000))} className="form-input" />
+              </FormField>
+              <FormField label="Token">
+                <input value={firstEndpoint('httpServers').token ?? ''} onChange={(event) => updateOneBotEndpoint('httpServers', 'token', event.target.value)} className="form-input font-mono" />
+              </FormField>
+              <FormField label="启用 CORS">
+                <select value={String(firstEndpoint('httpServers').enableCors ?? true)} onChange={(event) => updateOneBotEndpoint('httpServers', 'enableCors', toBool(event.target.value))} className="form-select">
+                  <option value="true">开启</option>
+                  <option value="false">关闭</option>
+                </select>
+              </FormField>
+            </>
+          ) : null}
+          <FormField label="本地文件转 URL">
+            <select value={String(!!configDraft.onebot?.enableLocalFile2Url)} onChange={(event) => updateConfigValue('onebot', ['enableLocalFile2Url'], toBool(event.target.value))} className="form-select">
+              <option value="false">关闭</option>
+              <option value="true">开启</option>
+            </select>
+          </FormField>
+          <FormField label="解析合并转发">
+            <select value={String(!!configDraft.onebot?.parseMultMsg)} onChange={(event) => updateConfigValue('onebot', ['parseMultMsg'], toBool(event.target.value))} className="form-select">
+              <option value="false">关闭</option>
+              <option value="true">开启</option>
+            </select>
+          </FormField>
+          <FormField label="音乐签名 URL" wide>
+            <input value={configDraft.onebot?.musicSignUrl ?? ''} onChange={(event) => updateConfigValue('onebot', ['musicSignUrl'], event.target.value)} className="form-input font-mono" placeholder="可留空" />
+          </FormField>
+          <FormField label="图片下载代理" wide>
+            <input value={configDraft.onebot?.imageDownloadProxy ?? ''} onChange={(event) => updateConfigValue('onebot', ['imageDownloadProxy'], event.target.value)} className="form-input font-mono" placeholder="可留空" />
+          </FormField>
+        </FormSection>
+
+      </div>
+
+      <div className="min-h-0 overflow-y-auto border-t border-slate-200 bg-white xl:border-l xl:border-t-0">
+        <section className="border-b border-slate-200 pt-5">
+          <div className="px-5 text-xs font-semibold uppercase tracking-[0.18em] text-slate-400">配置操作</div>
+          <div className="mt-5 divide-y divide-slate-200 border-t border-slate-200">
+            <button
+              type="button"
+              onClick={handleApplyFrameworkOneBot}
+              disabled={configSaving === 'onebot'}
+              className="inline-flex h-12 w-full items-center justify-center gap-2 bg-white text-sm font-medium text-slate-900 transition-colors hover:bg-slate-50 disabled:text-slate-300 disabled:hover:bg-white"
+            >
+              {configSaving === 'onebot' ? <Loader2 className="h-4 w-4 animate-spin" /> : <Settings className="h-4 w-4" />}
+              一键写入 OneBot 连接
+            </button>
+            <button
+              type="button"
+              onClick={handleSaveNapCatConfig}
+              disabled={configSaving === 'save'}
+              className="inline-flex h-12 w-full items-center justify-center gap-2 bg-white text-sm font-medium text-emerald-700 transition-colors hover:bg-emerald-50 disabled:text-slate-300 disabled:hover:bg-white"
+            >
+              {configSaving === 'save' ? <Loader2 className="h-4 w-4 animate-spin" /> : <CheckCircle2 className="h-4 w-4" />}
+              保存全部配置
+            </button>
+            <button
+              type="button"
+              onClick={() => void loadNapCatConfig()}
+              disabled={configLoading}
+              className="inline-flex h-12 w-full items-center justify-center gap-2 bg-white text-sm font-medium text-slate-700 transition-colors hover:bg-slate-50 disabled:text-slate-300 disabled:hover:bg-white"
+            >
+              {configLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
+              重新读取配置
+            </button>
+          </div>
+          {configError ? <div className="px-5 py-3 text-sm text-rose-600">{configError}</div> : null}
+        </section>
+
+        <section className="py-5">
+          <div className="px-5 text-xs font-semibold uppercase tracking-[0.18em] text-slate-400">说明</div>
+          <div className="mt-4 space-y-3 px-5 text-sm leading-6 text-slate-600">
+            <p>一键写入会根据当前框架 <span className="font-mono text-slate-800">[onebot]</span> 配置生成 NapCat 的 <span className="font-mono text-slate-800">onebot11.json</span>。</p>
+            <p>如果当前框架是 <span className="font-mono text-slate-800">ws_forward</span>，会让 NapCat 开 WebSocket Server；如果是 <span className="font-mono text-slate-800">ws_reverse</span>，会让 NapCat 主动连接框架。</p>
+            <p>保存配置不会自动重启 NapCat，需要你手动停止再启动。</p>
+          </div>
+        </section>
+      </div>
+    </div>
+  )
+
+  const renderTools = () => (
+    <div className="grid h-full min-h-0 xl:grid-cols-[minmax(0,1fr)_320px]">
+      <div className="min-h-0 overflow-y-auto bg-white">
+        <div className="flex h-12 items-center border-b border-slate-200 px-4 md:px-6">
+          <div className="text-sm font-medium text-slate-900">状态调试</div>
+        </div>
+        <section className="grid border-b border-slate-200 md:grid-cols-2 xl:grid-cols-4">
+          <DetailCell label="NapCat" value={status?.running ? '运行中' : status?.installed ? '已安装，未启动' : '未安装'} />
+          <DetailCell label="OneBot" value={loginStatus?.onebot?.connected ? '已连接' : loginStatus?.onebot?.running ? '适配器运行中' : '未连接'} />
+          <DetailCell label="当前账号" value={loginStatus?.onebot?.self_id ? `${loginStatus.onebot.self_id}${loginStatus.onebot.self_nickname ? ` / ${loginStatus.onebot.self_nickname}` : ''}` : '未读取到'} />
+          <DetailCell label="连接类型" value={loginStatus?.onebot?.connection_type || 'unknown'} />
+        </section>
+        {loginStatus?.onebot?.error ? (
+          <section className="border-b border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700 md:px-6">
+            {loginStatus.onebot.error}
+          </section>
+        ) : null}
+        <section>
+          <div className="flex min-h-12 items-center justify-between border-b border-slate-200 px-4 md:px-6">
+            <div className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-400">OneBot API 调试器</div>
+            <div className="hidden text-xs text-slate-400 md:block">通过当前框架 OneBot 连接调用</div>
+          </div>
+          <div className="grid border-b border-slate-200 md:grid-cols-[280px_minmax(0,1fr)]">
+            <div className="border-b border-slate-200 px-4 py-4 md:border-b-0 md:border-r md:px-6">
+              <label className="text-xs uppercase tracking-[0.16em] text-slate-400">action</label>
+              <input
+                value={debugAction}
+                onChange={(event) => setDebugAction(event.target.value)}
+                className="mt-2 h-10 w-full border border-slate-200 bg-white px-3 font-mono text-sm text-slate-900 outline-none transition-colors focus:border-slate-400"
+                placeholder="get_login_info"
+              />
+              <div className="mt-3 text-xs leading-5 text-slate-500">
+                常用：get_login_info、get_status、get_version_info、get_friend_list、get_group_list。
               </div>
             </div>
+            <div>
+              <div className="flex min-h-10 items-center justify-between border-b border-slate-200 px-4 md:px-6">
+                <div className="text-xs uppercase tracking-[0.16em] text-slate-400">params</div>
+                <button type="button" onClick={() => setDebugParamsText('{}')} className="text-xs font-medium text-slate-500 hover:text-slate-900">
+                  清空为 {}
+                </button>
+              </div>
+              <textarea
+                value={debugParamsText}
+                onChange={(event) => setDebugParamsText(event.target.value)}
+                spellCheck={false}
+                className="custom-scrollbar h-40 w-full resize-y border-0 bg-slate-950 px-4 py-4 font-mono text-xs leading-6 text-slate-200 outline-none md:px-6"
+                placeholder="{}"
+              />
+            </div>
+          </div>
+          <div className="divide-y divide-slate-200 border-b border-slate-200 md:flex md:divide-x md:divide-y-0">
+            <button
+              type="button"
+              onClick={handleDebugOneBotApi}
+              disabled={debugLoading || !debugAction.trim()}
+              className="inline-flex h-12 w-full items-center justify-center gap-2 bg-white text-sm font-medium text-slate-900 transition-colors hover:bg-slate-50 disabled:text-slate-300 disabled:hover:bg-white md:w-56"
+            >
+              {debugLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Terminal className="h-4 w-4" />}
+              调用 API
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                setDebugAction('get_login_info')
+                setDebugParamsText('{}')
+                setDebugResultText('')
+                setDebugError('')
+              }}
+              className="inline-flex h-12 w-full items-center justify-center gap-2 bg-white text-sm font-medium text-slate-700 transition-colors hover:bg-slate-50 md:w-44"
+            >
+              重置
+            </button>
+            <div className="flex h-12 min-w-0 flex-1 items-center px-4 text-sm text-rose-600 md:px-6">
+              {debugError || ''}
+            </div>
+          </div>
+          <textarea
+            value={debugResultText}
+            readOnly
+            spellCheck={false}
+            className="custom-scrollbar h-96 w-full resize-y border-0 bg-slate-950 px-4 py-4 font-mono text-xs leading-6 text-slate-200 outline-none md:px-6"
+            placeholder="调用结果会显示在这里"
+          />
+        </section>
+      </div>
 
-            <div className="flex justify-end gap-2 p-4 border-t border-gray-200">
+      <div className="min-h-0 overflow-y-auto border-t border-slate-200 bg-white xl:border-l xl:border-t-0">
+        <section className="border-b border-slate-200 pt-5">
+          <div className="px-5 text-xs font-semibold uppercase tracking-[0.18em] text-slate-400">状态操作</div>
+          <div className="mt-5 divide-y divide-slate-200 border-t border-slate-200">
+            <button
+              type="button"
+              onClick={() => void loadNapCatLoginStatus()}
+              disabled={loginStatusLoading}
+              className="inline-flex h-12 w-full items-center justify-center gap-2 bg-white text-sm font-medium text-slate-700 transition-colors hover:bg-slate-50 disabled:text-slate-300 disabled:hover:bg-white"
+            >
+              {loginStatusLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
+              刷新登录状态
+            </button>
+            <button
+              type="button"
+              onClick={handleStart}
+              disabled={!status?.installed || status?.running || actionLoading === 'start'}
+              className="inline-flex h-12 w-full items-center justify-center gap-2 bg-white text-sm font-medium text-emerald-700 transition-colors hover:bg-emerald-50 disabled:text-slate-300 disabled:hover:bg-white"
+            >
+              {actionLoading === 'start' ? <Loader2 className="h-4 w-4 animate-spin" /> : <Play className="h-4 w-4" />}
+              启动
+            </button>
+            <button
+              type="button"
+              onClick={handleStop}
+              disabled={!status?.running || actionLoading === 'stop'}
+              className="inline-flex h-12 w-full items-center justify-center gap-2 bg-white text-sm font-medium text-rose-700 transition-colors hover:bg-rose-50 disabled:text-slate-300 disabled:hover:bg-white"
+            >
+              {actionLoading === 'stop' ? <Loader2 className="h-4 w-4 animate-spin" /> : <Square className="h-4 w-4" />}
+              停止
+            </button>
+          </div>
+        </section>
+
+        <section className="py-5">
+          <div className="px-5 text-xs font-semibold uppercase tracking-[0.18em] text-slate-400">说明</div>
+          <div className="mt-4 space-y-3 px-5 text-sm leading-6 text-slate-600">
+            <p>二维码入口只保留在运行日志页，避免同一个功能到处出现。</p>
+            <p>调试器会真实调用 OneBot API，发送类 action 会真的发消息。</p>
+          </div>
+        </section>
+      </div>
+    </div>
+  )
+
+  return (
+    <div className="fixed top-16 left-0 right-0 bottom-0 md:left-64 flex bg-white overflow-hidden">
+      <div className="flex w-full min-w-0 flex-col">
+        <div className="h-16 shrink-0 border-b border-slate-200 bg-white pl-4 md:pl-6">
+          <div className="flex h-full items-stretch justify-between">
+            <div className="flex min-w-0 items-center">
+              <div className="flex items-center gap-3">
+                <h1 className="truncate text-lg font-semibold text-slate-900">NapCat Manager</h1>
+                <StatusPill />
+              </div>
+            </div>
+            <div className="flex shrink-0 items-stretch border-l border-slate-200">
+              {status?.running ? (
+                <button
+                  type="button"
+                  onClick={handleStop}
+                  disabled={actionLoading === 'stop'}
+                  className="inline-flex h-full items-center gap-2 border-r border-slate-200 bg-white px-5 text-sm font-medium text-rose-700 transition-colors hover:bg-rose-50 disabled:opacity-50"
+                >
+                  {actionLoading === 'stop' ? <Loader2 className="h-4 w-4 animate-spin" /> : <Square className="h-4 w-4" />}
+                  停止
+                </button>
+              ) : (
+                <button
+                  type="button"
+                  onClick={handleStart}
+                  disabled={!status?.installed || actionLoading === 'start'}
+                  className="inline-flex h-full items-center gap-2 border-r border-slate-200 bg-white px-5 text-sm font-medium text-emerald-700 transition-colors hover:bg-emerald-50 disabled:opacity-50"
+                >
+                  {actionLoading === 'start' ? <Loader2 className="h-4 w-4 animate-spin" /> : <Play className="h-4 w-4" />}
+                  启动
+                </button>
+              )}
               <button
-                onClick={async () => {
-                  try {
-                    await api.setNapCatSudoPassword({ password: '' })
-                    setSuccess(t('napcat.sudoPasswordCleared'))
-                    setSudoPassword('')
-                    setShowSudoPasswordDialog(false)
-                  } catch (err: any) {
-                    setError(err.response?.data?.detail || t('napcat.sudoPasswordClearFailed'))
-                  }
-                }}
-                className="btn btn-secondary"
+                type="button"
+                onClick={() => void loadAll()}
+                className="inline-flex h-full items-center gap-2 bg-white px-5 text-sm font-medium text-slate-700 transition-colors hover:bg-slate-50"
               >
-                {t('napcat.clearPassword')}
-              </button>
-              <button
-                onClick={async () => {
-                  try {
-                    await api.setNapCatSudoPassword({ password: sudoPassword })
-                    setSuccess(t('napcat.sudoPasswordSet'))
-                    setSudoPassword('')
-                    setShowSudoPasswordDialog(false)
-                  } catch (err: any) {
-                    setError(err.response?.data?.detail || t('napcat.sudoPasswordSetFailed'))
-                  }
-                }}
-                className="btn btn-primary"
-              >
-                {t('common.save')}
+                <RefreshCw className="h-4 w-4" />
+                刷新
               </button>
             </div>
           </div>
         </div>
-      )}
+
+        <div className="h-14 shrink-0 border-b border-slate-200 bg-white overflow-x-auto">
+          <div className="flex h-full min-w-max items-stretch px-2 md:px-4">
+            {tabs.map((tab) => {
+              const Icon = tab.icon
+              const active = activeTab === tab.key
+              return (
+                <button
+                  key={tab.key}
+                  type="button"
+                  onClick={() => setActiveTab(tab.key)}
+                  className={`flex h-full items-center gap-2 border-b-2 px-4 text-sm font-medium transition-colors ${
+                    active
+                      ? 'border-primary-600 text-primary-700'
+                      : 'border-transparent text-slate-500 hover:text-slate-900'
+                  }`}
+                >
+                  <Icon className="h-4 w-4" />
+                  <span>{tab.label}</span>
+                </button>
+              )
+            })}
+          </div>
+        </div>
+
+        {error ? (
+          <div className="shrink-0 border-b border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700 md:px-6">
+            {error}
+          </div>
+        ) : null}
+
+        <div className="flex-1 min-h-0 bg-slate-100">
+          {activeTab === 'webui' && renderWebUI()}
+          {activeTab === 'logs' && renderLogs()}
+          {activeTab === 'install' && renderInstall()}
+          {activeTab === 'config' && renderConfig()}
+          {activeTab === 'tools' && renderTools()}
+        </div>
+      </div>
+      {qrcodeUrl ? (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/55 px-4 backdrop-blur-sm" onClick={closeQRCode}>
+          <div className="w-full max-w-sm bg-white shadow-2xl" onClick={(event) => event.stopPropagation()}>
+            <div className="flex h-12 items-center justify-between border-b border-slate-200 px-4">
+              <div className="flex items-center gap-2 text-sm font-medium text-slate-900">
+                <QrCode className="h-4 w-4" />
+                NapCat 登录二维码
+              </div>
+              <button
+                type="button"
+                onClick={closeQRCode}
+                className="flex h-12 w-12 items-center justify-center text-slate-500 transition-colors hover:bg-slate-100 hover:text-slate-900"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+            <div className="p-6">
+              <img src={qrcodeUrl} alt="NapCat 登录二维码" className="mx-auto h-64 w-64 object-contain" />
+              <div className="mt-4 text-center text-sm text-slate-500">使用手机 QQ 扫码授权登录，二维码变化会自动刷新</div>
+              {qrcodeError ? <div className="mt-3 text-center text-sm text-rose-600">{qrcodeError}</div> : null}
+            </div>
+          </div>
+        </div>
+      ) : null}
     </div>
+  )
+}
+
+function DetailCell({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="min-w-0 border-r border-slate-200 px-4 py-4 last:border-r-0 md:px-6">
+      <div className="text-xs uppercase tracking-[0.16em] text-slate-400">{label}</div>
+      <div className="mt-2 break-all font-mono text-xs leading-5 text-slate-800" title={value}>{value}</div>
+    </div>
+  )
+}
+
+function FormSection({ title, path, children }: { title: string; path?: string; children: any }) {
+  return (
+    <section className="border-b border-slate-200">
+      <div className="flex min-h-12 items-center justify-between border-b border-slate-200 px-4 md:px-6">
+        <div className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-400">{title}</div>
+        <div className="hidden max-w-[50%] truncate font-mono text-xs text-slate-400 md:block">{path || ''}</div>
+      </div>
+      <div className="grid md:grid-cols-2">{children}</div>
+    </section>
+  )
+}
+
+function FormField({ label, children, wide = false }: { label: string; children: any; wide?: boolean }) {
+  return (
+    <label className={`min-w-0 border-b border-r border-slate-200 px-4 py-4 md:px-6 ${wide ? 'md:col-span-2' : ''}`}>
+      <div className="text-xs uppercase tracking-[0.16em] text-slate-400">{label}</div>
+      <div className="mt-2">{children}</div>
+    </label>
   )
 }

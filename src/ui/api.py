@@ -2,13 +2,16 @@
 
 import asyncio
 from contextlib import asynccontextmanager
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
+import ipaddress
 import platform
 import sys
 import uuid
 import time
+import httpx
+import re
 
-from fastapi import FastAPI, HTTPException, Depends, status, UploadFile, File, Form, Body, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, HTTPException, Depends, status, UploadFile, File, Form, Body, WebSocket, WebSocketDisconnect, Request
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
@@ -26,27 +29,54 @@ import json
 from collections import defaultdict
 
 from ..core.app import get_app
-from ..core.config import get_config, get_config_manager, reload_config
+from ..core.blocking_task_pool import get_blocking_task_pool_manager, run_in_blocking_pool
+from ..core.config import (
+    get_config,
+    get_config_manager,
+    reload_config,
+    get_config_file_path,
+    get_runtime_base_dir,
+)
+from ..assistant.security import assistant_config_for_response, assistant_config_for_storage
 from ..core.event_bus import get_event_bus
-from ..core.database import get_database_manager
+from ..core.database import get_database_manager, collect_plugin_config_upload_keys
+from ..plugins.manifest import (
+    build_plugin_api_metadata,
+    coerce_plugin_priority,
+    load_plugin_manifest,
+    normalize_plugin_default_config,
+    plugin_manifest_exists,
+)
 from ..security.auth import AuthManager
 from ..security.permissions import get_permission_manager, Permission
-from ..security.audit import get_audit_logger, AuditEventType, AuditEvent
+from ..security.audit import (
+    AUDIT_EVENT_RETENTION_LIMIT,
+    get_audit_logger,
+    AuditEventType,
+    AuditEvent,
+)
 from ..security.device_keys import get_device_key_manager, DeviceKeyStatus
 from ..core.logger import get_logger
 from ..core.version import get_version
-from datetime import datetime
+from datetime import datetime, timedelta
 
 logger = get_logger(__name__)
 security = HTTPBearer()
 
 # Plugin installation progress tracking
 _plugin_install_progress: Dict[str, Dict[str, Any]] = {}
+_onebot_login_info_last_connectivity_log_at: float = 0.0
+_ONEBOT_LOGIN_INFO_CONNECTIVITY_LOG_INTERVAL_SECONDS = 60.0
+_record_proxy_fail_until: Dict[str, float] = {}
+_BT_IP_INFO_API_URL = "https://www.bt.cn/api/panel/get_ip_info"
+_IP_GEO_CACHE_TTL_SECONDS = 6 * 60 * 60
+_ip_geo_cache: Dict[str, Tuple[float, Dict[str, Any]]] = {}
 
 # Request/Response Models
 class LoginRequest(BaseModel):
     username: str
     password: str
+    client_info: Dict[str, Any] = {}
 
 class LoginResponse(BaseModel):
     access_token: str
@@ -92,6 +122,16 @@ class ConfigUpdate(BaseModel):
 class AIWorkspaceConfigUpdate(BaseModel):
     mode: str
 
+
+class AIAssistantConfigUpdate(BaseModel):
+    config: Dict[str, Any]
+
+
+class AIAssistantMemoryClearRequest(BaseModel):
+    scope: str
+    target_id: str
+    memory_type: str
+
 # Global auth manager instance
 _auth_manager = None
 
@@ -102,18 +142,507 @@ def get_auth_manager() -> AuthManager:
         _auth_manager = AuthManager()
     return _auth_manager
 
+
+def _resolve_plugin_base_dir() -> Path:
+    """Resolve plugin base directory for both source and frozen runs."""
+    config = get_config()
+    plugin_base = Path(config.plugin_dir)
+    if not plugin_base.is_absolute():
+        plugin_base = (get_runtime_base_dir() / config.plugin_dir).resolve()
+    else:
+        plugin_base = plugin_base.resolve()
+    return plugin_base
+
+
+async def _load_plugin_manifest_async(plugin_dir: Path, thread_pool: Any = None) -> Dict[str, Any]:
+    """Load split plugin manifest files with optional thread-pool offloading."""
+    if thread_pool:
+        def read_manifest() -> Dict[str, Any]:
+            return load_plugin_manifest(plugin_dir)
+
+        return await thread_pool.run_in_executor(read_manifest)
+
+    return await run_in_blocking_pool(load_plugin_manifest, plugin_dir)
+
+
+def _get_blocking_task_pool(app: Any = None):
+    """Get the shared blocking task pool, preferring the app-bound instance."""
+    return getattr(app, "blocking_task_pool", None) or get_blocking_task_pool_manager()
+
+
+def _get_ai_assistant_config_path() -> Path:
+    """Return the persisted Assistant configuration path."""
+    data_dir = get_runtime_base_dir() / "data"
+    data_dir.mkdir(parents=True, exist_ok=True)
+    return data_dir / "assistant_config.json"
+
+
+def _normalize_ai_assistant_preset_references(config: Dict[str, Any]) -> Dict[str, Any]:
+    """Normalize Assistant config compatibility and clear invalid preset references."""
+    if not isinstance(config, dict):
+        return {}
+
+    normalized = dict(config)
+    models = normalized.get("models")
+    if isinstance(models, list):
+        next_models = []
+        for item in models:
+            if not isinstance(item, dict):
+                next_models.append(item)
+                continue
+            model = dict(item)
+            raw_capabilities = model.get("capabilities")
+            if isinstance(raw_capabilities, list):
+                values = raw_capabilities
+            else:
+                values = re.split(r"[,，/、\s]+", str(model.get("capability") or ""))
+            capabilities = set()
+            for value in values:
+                text = str(value or "").strip().lower()
+                if text in {"text", "文本", "文字"}:
+                    capabilities.add("text")
+                if text in {"image", "vision", "图片", "图像", "视觉", "多模态"}:
+                    capabilities.add("image")
+            model["capabilities"] = sorted(capabilities or {"text"})
+            fmt = str(model.get("apiFormat") or model.get("format") or model.get("api_format") or "openai").strip().lower()
+            model["apiFormat"] = "gemini" if fmt in {"gemini", "genimi", "google"} else "openai"
+            model.pop("capability", None)
+            next_models.append(model)
+        normalized["models"] = next_models
+
+    presets = normalized.get("presets")
+    enabled_names = {
+        str(item.get("name") or "").strip()
+        for item in presets
+        if isinstance(item, dict) and item.get("enabled", False) and str(item.get("name") or "").strip()
+    } if isinstance(presets, list) else set()
+
+    def normalize_policy(item: Any) -> Any:
+        if not isinstance(item, dict):
+            return item
+        policy = dict(item)
+        preset = str(policy.get("preset") or "").strip()
+        policy["preset"] = preset if preset and preset in enabled_names else ""
+        return policy
+
+    for key in ("groups", "personal"):
+        value = normalized.get(key)
+        if isinstance(value, list):
+            normalized[key] = [normalize_policy(item) for item in value]
+
+    return normalized
+
+
+async def _resolve_plugin_identity(plugin_name: str, app: Any) -> Dict[str, Any]:
+    """Resolve plugin path and storage owner from plugin directory name."""
+    plugin_base = _resolve_plugin_base_dir()
+    plugin_path = plugin_base / plugin_name
+
+    if not plugin_path.exists():
+        raise HTTPException(status_code=404, detail="Plugin not found")
+    if not plugin_manifest_exists(plugin_path):
+        raise HTTPException(status_code=400, detail="Plugin manifest not found")
+
+    thread_pool = getattr(app, 'blocking_task_pool', None)
+    manifest = await _load_plugin_manifest_async(plugin_path, thread_pool)
+    author = str(manifest.get("author", "Unknown")).strip() or "Unknown"
+    resolved_name = str(manifest.get("name", plugin_name)).strip() or plugin_name
+
+    return {
+        "plugin_path": plugin_path,
+        "manifest": manifest,
+        "author": author,
+        "name": resolved_name,
+        "plugin_owner": f"{author}/{resolved_name}",
+    }
+
+
+async def _discover_plugins_on_disk(plugin_base: Path, thread_pool: Any = None) -> List[Dict[str, Any]]:
+    """Discover plugin manifests from filesystem and normalize metadata."""
+    if not plugin_base.exists() or not plugin_base.is_dir():
+        return []
+
+    if thread_pool:
+        def scan_plugin_dirs():
+            return [
+                d for d in plugin_base.iterdir()
+                if d.is_dir() and not d.name.startswith('.') and not d.name.startswith('_')
+            ]
+        plugin_dirs = await thread_pool.run_in_executor(scan_plugin_dirs)
+    else:
+        def scan_plugin_dirs_sync():
+            return [
+                d for d in plugin_base.iterdir()
+                if d.is_dir() and not d.name.startswith('.') and not d.name.startswith('_')
+            ]
+        plugin_dirs = await run_in_blocking_pool(scan_plugin_dirs_sync)
+
+    discovered_plugins: List[Dict[str, Any]] = []
+    for plugin_dir in plugin_dirs:
+        if not plugin_manifest_exists(plugin_dir):
+            continue
+
+        try:
+            plugin_config = await _load_plugin_manifest_async(plugin_dir, thread_pool)
+        except Exception as e:
+            logger.warning("Skipping invalid plugin manifest %s: %s", plugin_dir, e)
+            continue
+
+        author = str(plugin_config.get("author", "Unknown")).strip() or "Unknown"
+        plugin_name = str(plugin_config.get("name", plugin_dir.name)).strip() or plugin_dir.name
+        default_config = normalize_plugin_default_config(plugin_config.get("default_config", {}))
+        priority = coerce_plugin_priority(plugin_config.get("priority"), 100)
+        metadata = build_plugin_api_metadata(plugin_config, plugin_dir.name)
+
+        discovered_plugins.append({
+            "author": author,
+            "name": plugin_name,
+            "priority": priority,
+            "default_config": default_config,
+            "metadata": metadata,
+        })
+
+    return discovered_plugins
+
+
+def _onebot_target_hint(adapter: Any) -> str:
+    """Human-friendly OneBot target description for diagnostics."""
+    conn_type = str(getattr(adapter, "connection_type", "http")).lower()
+    if conn_type in ("ws", "ws_forward"):
+        return str(getattr(adapter, "ws_url", ""))
+    if conn_type == "ws_reverse":
+        host = getattr(adapter, "ws_reverse_host", "0.0.0.0")
+        port = getattr(adapter, "ws_reverse_port", 8080)
+        path = getattr(adapter, "ws_reverse_path", "/onebot/v11/ws")
+        return f"ws://{host}:{port}{path}"
+    return str(getattr(adapter, "http_url", ""))
+
+
+def _is_expected_onebot_connectivity_error(error: Exception) -> bool:
+    """Detect common transient connectivity errors to avoid noisy traceback logs."""
+    patterns = (
+        "all connection attempts failed",
+        "connecterror",
+        "connection refused",
+        "failed to connect",
+        "timed out",
+        "timeout",
+        "http client not initialized",
+        "websocket not available",
+        "reverse websocket",
+    )
+    seen = set()
+    current: Optional[BaseException] = error
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        text = f"{type(current).__name__}: {current}".lower()
+        if any(pattern in text for pattern in patterns):
+            return True
+        current = current.__cause__ or current.__context__
+    return False
+
+
+def _normalize_plugin_config_value(
+    field_type: Optional[str],
+    value: Any,
+    field_schema: Dict[str, Any],
+    current_value: Any,
+) -> Any:
+    """Normalize one plugin config value according to schema field type."""
+    nested_fields = field_schema.get("fields")
+    if not isinstance(nested_fields, dict):
+        nested_fields = {}
+
+    if field_type == "group":
+        if not isinstance(value, dict):
+            value = {}
+        base_value = current_value if isinstance(current_value, dict) else {}
+        return normalize_plugin_config_by_schema(value, nested_fields, base_value)
+
+    if field_type in {"object_array", "table"}:
+        if not isinstance(value, list):
+            return []
+        normalized_rows = []
+        for row in value:
+            if not isinstance(row, dict):
+                row = {}
+            normalized_rows.append(
+                normalize_plugin_config_by_schema(row, nested_fields, {})
+            )
+        return normalized_rows
+
+    if field_type == "array":
+        if isinstance(value, list):
+            return value
+        if isinstance(value, str):
+            import re
+
+            if value.strip():
+                return [v.strip() for v in re.split(r"[\n,\s]+", value) if v.strip()]
+            return []
+        return []
+
+    if field_type == "number":
+        default_number = field_schema.get("default", current_value if current_value is not None else 0)
+        if value is None or (
+            isinstance(value, float)
+            and (value != value or value == float("inf") or value == float("-inf"))
+        ):
+            return default_number
+
+        try:
+            num_value = float(value) if not isinstance(value, (int, float)) else value
+            if num_value != num_value or num_value == float("inf") or num_value == float("-inf"):
+                return default_number
+            return num_value
+        except (ValueError, TypeError):
+            return default_number
+
+    if field_type == "boolean":
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, str):
+            return value.lower() in ("true", "1", "yes", "on")
+        return bool(value)
+
+    # string / textarea / select / file / file_array / unknown:
+    return value
+
+
+def normalize_plugin_config_by_schema(
+    config: Dict[str, Any],
+    config_schema: Dict[str, Any],
+    default_config: Dict[str, Any],
+) -> Dict[str, Any]:
+    """Normalize plugin config payload according to schema and defaults."""
+    normalized_config = (default_config or {}).copy()
+
+    if config_schema:
+        for key, value in config.items():
+            if key in config_schema:
+                field_schema = config_schema[key] or {}
+                field_type = field_schema.get("type")
+                normalized_config[key] = _normalize_plugin_config_value(
+                    field_type,
+                    value,
+                    field_schema,
+                    normalized_config.get(key),
+                )
+            else:
+                normalized_config[key] = value
+        return normalized_config
+
+    normalized_config = config.copy()
+    for key, value in list(normalized_config.items()):
+        if isinstance(value, str) and key.endswith("_list"):
+            import re
+
+            if value.strip():
+                normalized_config[key] = [v.strip() for v in re.split(r"[\n,\s]+", value) if v.strip()]
+            else:
+                normalized_config[key] = []
+    return normalized_config
+
+
+def _should_log_onebot_connectivity_issue(now_ts: Optional[float] = None) -> bool:
+    """Rate-limit repetitive OneBot connectivity logs."""
+    global _onebot_login_info_last_connectivity_log_at
+    now = now_ts if now_ts is not None else time.time()
+    if now - _onebot_login_info_last_connectivity_log_at >= _ONEBOT_LOGIN_INFO_CONNECTIVITY_LOG_INTERVAL_SECONDS:
+        _onebot_login_info_last_connectivity_log_at = now
+        return True
+    return False
+
+
+def _normalize_ip_address(value: str) -> str:
+    """Return a clean IP address from proxy header fragments."""
+    candidate = str(value or "").strip().strip('"')
+    if not candidate:
+        return ""
+    if candidate.lower().startswith("for="):
+        candidate = candidate.split("=", 1)[1].strip().strip('"')
+    if candidate.startswith("[") and "]" in candidate:
+        candidate = candidate[1:candidate.index("]")]
+    elif candidate.count(":") == 1 and "." in candidate:
+        host, port = candidate.rsplit(":", 1)
+        if port.isdigit():
+            candidate = host
+    candidate = candidate.strip("[]")
+    try:
+        return str(ipaddress.ip_address(candidate))
+    except ValueError:
+        return candidate
+
+
+def _client_ip_from_request(request: Request) -> str:
+    """Resolve client IP, respecting common reverse-proxy headers."""
+    header_names = [
+        "cf-connecting-ip",
+        "x-real-ip",
+        "x-forwarded-for",
+        "x-client-ip",
+        "x-forwarded",
+        "forwarded-for",
+        "forwarded",
+    ]
+    for name in header_names:
+        value = request.headers.get(name)
+        if not value:
+            continue
+        if name == "x-forwarded-for":
+            return _normalize_ip_address(value.split(",", 1)[0])
+        if name == "forwarded":
+            first_forwarded = value.split(",", 1)[0]
+            for part in first_forwarded.split(";"):
+                part = part.strip()
+                if part.lower().startswith("for="):
+                    return _normalize_ip_address(part)
+        return _normalize_ip_address(value)
+    return _normalize_ip_address(request.client.host if request.client else "")
+
+
+def _public_ip_for_lookup(ip_address: str) -> str:
+    """Only query public IPs; private/local addresses have no useful public geo result."""
+    try:
+        parsed = ipaddress.ip_address(ip_address)
+    except ValueError:
+        return ""
+    return str(parsed) if parsed.is_global else ""
+
+
+def _geo_from_bt_payload(ip_address: str, payload: Any) -> Dict[str, Any]:
+    if not isinstance(payload, dict):
+        return {}
+
+    raw_info = payload.get(ip_address)
+    if not isinstance(raw_info, dict) and len(payload) == 1:
+        only_value = next(iter(payload.values()))
+        if isinstance(only_value, dict):
+            raw_info = only_value
+    if not isinstance(raw_info, dict):
+        return {}
+
+    fields = [
+        "continent",
+        "country",
+        "province",
+        "city",
+        "region",
+        "carrier",
+        "division",
+        "en_country",
+        "en_short_code",
+        "longitude",
+        "latitude",
+    ]
+    geo = {
+        key: str(raw_info.get(key)).strip()
+        for key in fields
+        if raw_info.get(key) not in ("", None)
+    }
+    if geo:
+        geo["source"] = "bt.cn"
+    return geo
+
+
+async def _geo_from_ip_api(ip_address: str) -> Dict[str, Any]:
+    lookup_ip = _public_ip_for_lookup(ip_address)
+    if not lookup_ip:
+        return {}
+
+    now = time.time()
+    cached = _ip_geo_cache.get(lookup_ip)
+    if cached and now - cached[0] < _IP_GEO_CACHE_TTL_SECONDS:
+        return cached[1].copy()
+
+    try:
+        timeout = httpx.Timeout(3.0, connect=1.5)
+        async with httpx.AsyncClient(timeout=timeout) as client:
+            response = await client.get(_BT_IP_INFO_API_URL, params={"ip": lookup_ip})
+            response.raise_for_status()
+            geo = _geo_from_bt_payload(lookup_ip, response.json())
+            if geo:
+                _ip_geo_cache[lookup_ip] = (now, geo.copy())
+            return geo
+    except Exception as exc:
+        logger.debug("Failed to lookup IP geo information", ip_address=lookup_ip, error=str(exc))
+        return {}
+
+
+def _geo_from_headers(request: Request, client_info: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """Collect best-effort proxy location metadata as a fallback."""
+    client_info = client_info if isinstance(client_info, dict) else {}
+    geo = {
+        "country": request.headers.get("cf-ipcountry")
+        or request.headers.get("x-vercel-ip-country")
+        or request.headers.get("x-geo-country")
+        or "",
+        "region": request.headers.get("x-vercel-ip-country-region")
+        or request.headers.get("x-geo-region")
+        or "",
+        "city": request.headers.get("x-vercel-ip-city")
+        or request.headers.get("x-geo-city")
+        or "",
+        "latitude": request.headers.get("x-vercel-ip-latitude")
+        or request.headers.get("x-geo-latitude")
+        or "",
+        "longitude": request.headers.get("x-vercel-ip-longitude")
+        or request.headers.get("x-geo-longitude")
+        or "",
+        "timezone": client_info.get("timezone") or request.headers.get("x-vercel-ip-timezone") or "",
+    }
+    return {key: value for key, value in geo.items() if value not in ("", None)}
+
+
+async def _geo_from_request(
+    request: Request,
+    ip_address: str,
+    client_info: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    header_geo = _geo_from_headers(request, client_info)
+    ip_geo = await _geo_from_ip_api(ip_address)
+    return {
+        key: value
+        for key, value in {**header_geo, **ip_geo}.items()
+        if value not in ("", None)
+    }
+
+
+async def _request_audit_details(request: Request, client_info: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """Build request/client metadata for security audit records."""
+    client_info = client_info if isinstance(client_info, dict) else {}
+    ip_address = _client_ip_from_request(request)
+    return {
+        "ip": ip_address,
+        "geo": await _geo_from_request(request, ip_address, client_info),
+        "user_agent": request.headers.get("user-agent", ""),
+        "referer": request.headers.get("referer", ""),
+        "origin": request.headers.get("origin", ""),
+        "host": request.headers.get("host", ""),
+        "method": request.method,
+        "path": request.url.path,
+        "query": request.url.query,
+        "client": client_info,
+    }
+
 # Dependency for authentication
-async def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(security)) -> Dict[str, Any]:
+async def get_current_user(
+    request: Request,
+    credentials: HTTPAuthorizationCredentials = Depends(security),
+) -> Dict[str, Any]:
     """Verify user from token."""
     auth_manager = get_auth_manager()
     session = await auth_manager.verify_session(credentials.credentials)
     
     if not session:
+        details = await _request_audit_details(request)
         await get_audit_logger().log_access_denied(
             username="unknown",
             resource="api",
             action="access",
-            reason="Invalid or expired token"
+            reason="Invalid or expired token",
+            ip_address=details.get("ip"),
+            details=details,
         )
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -125,7 +654,7 @@ async def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(s
 # Dependency for permission checking
 def require_permission(permission: Permission):
     """Decorator to require a specific permission."""
-    async def check(user: Dict[str, Any] = Depends(get_current_user)):
+    async def check(request: Request, user: Dict[str, Any] = Depends(get_current_user)):
         username = user.get("username")
         perm_manager = get_permission_manager()
         
@@ -141,11 +670,14 @@ def require_permission(permission: Permission):
         )
         
         if not has_perm:
+            details = await _request_audit_details(request)
             await get_audit_logger().log_access_denied(
                 username=username,
                 resource="api",
                 action=permission.value,
-                reason="Insufficient permissions"
+                reason="Insufficient permissions",
+                ip_address=details.get("ip"),
+                details=details,
             )
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
@@ -155,6 +687,195 @@ def require_permission(permission: Permission):
     return check
 
 
+_SESSION_MESSAGE_LOG_LIMIT = 2000
+
+
+def _format_live_message_event(
+    event_name: str,
+    payload: Dict[str, Any],
+    event_id: str,
+    event_time: datetime,
+) -> Optional[Dict[str, Any]]:
+    """Normalize live OneBot events for WebSocket and startup-session views."""
+    if not isinstance(payload, dict):
+        return None
+
+    if event_name == "onebot.message":
+        sender = payload.get("sender", {})
+        if not isinstance(sender, dict):
+            sender = {}
+        user_id = str(payload.get("user_id", "") or sender.get("user_id", "") or "")
+        return {
+            "type": "message",
+            "id": event_id,
+            "timestamp": event_time.isoformat(),
+            "time": event_time.isoformat(),
+            "event_type": "message",
+            "post_type": "message",
+            "message_id": str(payload.get("message_id", "")),
+            "message_type": payload.get("message_type", "unknown"),
+            "user_id": user_id,
+            "group_id": str(payload.get("group_id", "")) if payload.get("group_id") else None,
+            "raw_message": payload.get("raw_message", ""),
+            "message": payload.get("raw_message", ""),
+            "sender": sender,
+            "is_self": payload.get("is_self", False),
+            "target_id": str(payload.get("target_id", "")) if payload.get("target_id") else None,
+            "source_plugin": payload.get("source_plugin"),
+            "source": payload.get("source"),
+        }
+
+    if event_name == "onebot.message_sent":
+        raw_text = payload.get("raw_message") or payload.get("message") or ""
+        sender = payload.get("sender", {})
+        if not isinstance(sender, dict):
+            sender = {}
+        if not sender.get("nickname"):
+            sender["nickname"] = "Bot"
+        user_id = str(payload.get("user_id", "") or sender.get("user_id", "") or "")
+
+        target_id = payload.get("target_id") or payload.get("target")
+        group_id = payload.get("group_id")
+        message_id = payload.get("message_id")
+
+        return {
+            "type": "message",
+            "id": event_id,
+            "timestamp": event_time.isoformat(),
+            "time": event_time.isoformat(),
+            "event_type": "message",
+            "post_type": "message_sent",
+            "message_id": str(message_id) if message_id else "",
+            "message_type": payload.get("message_type", "unknown"),
+            "user_id": user_id,
+            "group_id": str(group_id) if group_id else None,
+            "raw_message": raw_text,
+            "message": raw_text,
+            "sender": sender,
+            "is_self": True,
+            "target_id": str(target_id) if target_id else None,
+            "source_plugin": payload.get("source_plugin"),
+            "source": payload.get("source"),
+        }
+
+    if event_name == "onebot.notice":
+        formatted_text = _format_notice_event(payload)
+        return {
+            "type": "notice",
+            "id": event_id,
+            "timestamp": event_time.isoformat(),
+            "time": event_time.isoformat(),
+            "event_type": "notice",
+            "post_type": "notice",
+            "notice_type": payload.get("notice_type", ""),
+            "sub_type": payload.get("sub_type", ""),
+            "user_id": str(payload.get("user_id", "")),
+            "group_id": str(payload.get("group_id", "")) if payload.get("group_id") else None,
+            "operator_id": str(payload.get("operator_id", "")) if payload.get("operator_id") else None,
+            "message": formatted_text,
+            "raw_message": formatted_text,
+            "is_system": True,
+        }
+
+    if event_name == "onebot.request":
+        formatted_text = _format_request_event(payload)
+        return {
+            "type": "request",
+            "id": event_id,
+            "timestamp": event_time.isoformat(),
+            "time": event_time.isoformat(),
+            "event_type": "request",
+            "post_type": "request",
+            "request_type": payload.get("request_type", ""),
+            "sub_type": payload.get("sub_type", ""),
+            "user_id": str(payload.get("user_id", "")),
+            "group_id": str(payload.get("group_id", "")) if payload.get("group_id") else None,
+            "comment": payload.get("comment", ""),
+            "message": formatted_text,
+            "raw_message": formatted_text,
+            "is_system": True,
+        }
+
+    return None
+
+
+class SessionMessageLogStore:
+    """Keep only the current-process message stream for the message log page."""
+
+    def __init__(self, max_events: int = _SESSION_MESSAGE_LOG_LIMIT):
+        self.max_events = max(100, int(max_events or _SESSION_MESSAGE_LOG_LIMIT))
+        self._events: List[Dict[str, Any]] = []
+        self._subscribed = False
+        self.started_at = datetime.utcnow().isoformat()
+
+    def subscribe(self):
+        """Subscribe once so startup-session logs are collected immediately."""
+        if self._subscribed:
+            return
+
+        event_bus = get_event_bus()
+        event_bus.subscribe("onebot.message", self._on_message_event)
+        event_bus.subscribe("onebot.message_sent", self._on_message_event)
+        event_bus.subscribe("onebot.notice", self._on_message_event)
+        event_bus.subscribe("onebot.request", self._on_message_event)
+        self._subscribed = True
+        self.started_at = datetime.utcnow().isoformat()
+        logger.info("Session message log store subscribed to event bus")
+
+    def _append(self, event_data: Dict[str, Any]):
+        event_id = str(event_data.get("id", "")).strip()
+        if event_id:
+            self._events = [
+                existing
+                for existing in self._events
+                if str(existing.get("id", "")).strip() != event_id
+            ]
+
+        self._events.append(event_data)
+        if len(self._events) > self.max_events:
+            self._events = self._events[-self.max_events :]
+
+    async def _on_message_event(self, event):
+        """Collect formatted OneBot events for the current process lifetime."""
+        try:
+            payload = event.payload
+            event_data = _format_live_message_event(
+                event.name,
+                payload,
+                event.event_id,
+                event.timestamp,
+            )
+            if event_data:
+                self._append(event_data)
+        except Exception as e:
+            logger.error(f"Error collecting session message event: {e}", exc_info=True)
+
+    def list_events(
+        self,
+        limit: int = 100,
+        include_notices: bool = True,
+        include_requests: bool = True,
+    ) -> List[Dict[str, Any]]:
+        """Return the newest current-session events first."""
+        max_items = max(1, min(int(limit or 100), 500))
+        results: List[Dict[str, Any]] = []
+        for item in reversed(self._events):
+            event_type = str(item.get("event_type", "message"))
+            if event_type == "notice" and not include_notices:
+                continue
+            if event_type == "request" and not include_requests:
+                continue
+
+            results.append(item)
+            if len(results) >= max_items:
+                break
+
+        return results
+
+
+_session_message_log_store = SessionMessageLogStore()
+
+
 # WebSocket Manager for real-time message updates
 class WebSocketManager:
     """Manage WebSocket connections for real-time updates."""
@@ -162,21 +883,26 @@ class WebSocketManager:
     def __init__(self):
         self.active_connections: List[WebSocket] = []
         self._subscribed = False
+
+    def subscribe(self):
+        """Subscribe once to the event bus for live push updates."""
+        if self._subscribed:
+            return
+
+        event_bus = get_event_bus()
+        event_bus.subscribe("onebot.message", self._on_message_event)
+        event_bus.subscribe("onebot.message_sent", self._on_message_event)
+        event_bus.subscribe("onebot.notice", self._on_message_event)
+        event_bus.subscribe("onebot.request", self._on_message_event)
+        self._subscribed = True
+        logger.info("WebSocket manager subscribed to event bus")
     
     async def connect(self, websocket: WebSocket):
         """Accept a new WebSocket connection."""
         await websocket.accept()
         self.active_connections.append(websocket)
         logger.info(f"WebSocket connected, total connections: {len(self.active_connections)}")
-        
-        # Subscribe to event bus on first connection
-        if not self._subscribed:
-            event_bus = get_event_bus()
-            event_bus.subscribe("onebot.message", self._on_message_event)
-            event_bus.subscribe("onebot.notice", self._on_message_event)
-            event_bus.subscribe("onebot.request", self._on_message_event)
-            self._subscribed = True
-            logger.info("WebSocket manager subscribed to event bus")
+        self.subscribe()
     
     def disconnect(self, websocket: WebSocket):
         """Remove a WebSocket connection."""
@@ -190,70 +916,12 @@ class WebSocketManager:
             return
         
         try:
-            payload = event.payload
-            if not isinstance(payload, dict):
-                return
-            
-            # Format the event based on its type
-            event_data = None
-            
-            if event.name == "onebot.message":
-                event_data = {
-                    "type": "message",
-                    "id": event.event_id,
-                    "timestamp": event.timestamp.isoformat(),
-                    "time": event.timestamp.isoformat(),
-                    "event_type": "message",
-                    "post_type": "message",
-                    "message_id": str(payload.get("message_id", "")),
-                    "message_type": payload.get("message_type", "unknown"),
-                    "user_id": str(payload.get("user_id", "")),
-                    "group_id": str(payload.get("group_id", "")) if payload.get("group_id") else None,
-                    "raw_message": payload.get("raw_message", ""),
-                    "message": payload.get("raw_message", ""),
-                    "sender": payload.get("sender", {}),
-                    "is_self": payload.get("is_self", False),
-                    "target_id": str(payload.get("target_id", "")) if payload.get("target_id") else None,
-                }
-            
-            elif event.name == "onebot.notice":
-                formatted_text = _format_notice_event(payload)
-                event_data = {
-                    "type": "notice",
-                    "id": event.event_id,
-                    "timestamp": event.timestamp.isoformat(),
-                    "time": event.timestamp.isoformat(),
-                    "event_type": "notice",
-                    "post_type": "notice",
-                    "notice_type": payload.get("notice_type", ""),
-                    "sub_type": payload.get("sub_type", ""),
-                    "user_id": str(payload.get("user_id", "")),
-                    "group_id": str(payload.get("group_id", "")) if payload.get("group_id") else None,
-                    "operator_id": str(payload.get("operator_id", "")) if payload.get("operator_id") else None,
-                    "message": formatted_text,
-                    "raw_message": formatted_text,
-                    "is_system": True,
-                }
-            
-            elif event.name == "onebot.request":
-                formatted_text = _format_request_event(payload)
-                event_data = {
-                    "type": "request",
-                    "id": event.event_id,
-                    "timestamp": event.timestamp.isoformat(),
-                    "time": event.timestamp.isoformat(),
-                    "event_type": "request",
-                    "post_type": "request",
-                    "request_type": payload.get("request_type", ""),
-                    "sub_type": payload.get("sub_type", ""),
-                    "user_id": str(payload.get("user_id", "")),
-                    "group_id": str(payload.get("group_id", "")) if payload.get("group_id") else None,
-                    "comment": payload.get("comment", ""),
-                    "message": formatted_text,
-                    "raw_message": formatted_text,
-                    "is_system": True,
-                }
-            
+            event_data = _format_live_message_event(
+                event.name,
+                event.payload,
+                event.event_id,
+                event.timestamp,
+            )
             if event_data:
                 # Send to all connected clients
                 await self.broadcast(event_data)
@@ -301,6 +969,8 @@ async def lifespan(app: FastAPI):
     application = get_app()
     await application.startup()
     logger.info("Web UI started")
+    _session_message_log_store.subscribe()
+    _ws_manager.subscribe()
     
     yield
     
@@ -380,7 +1050,17 @@ def _format_notice_event(payload: Dict[str, Any]) -> str:
         elif sub_type == "honor":
             honor_type = payload.get("honor_type", "")
             return f"[系统通知] {user_id} 获得了群 {group_id} 的 {honor_type} 荣誉"
-        return f"[系统通知] 群 {group_id} 提醒事件"
+        detail_parts: List[str] = []
+        if sub_type:
+            detail_parts.append(f"sub_type:{sub_type}")
+        if group_id:
+            detail_parts.append(f"群:{group_id}")
+        if user_id:
+            detail_parts.append(f"用户:{user_id}")
+        if operator_id and str(operator_id) != str(user_id):
+            detail_parts.append(f"操作者:{operator_id}")
+        detail = " ".join(detail_parts) if detail_parts else "无附加字段"
+        return f"[系统通知] notify事件 ({detail})"
     
     # Unknown notice type - show all available info for debugging
     if notice_type:
@@ -455,6 +1135,51 @@ def create_app() -> FastAPI:
                 "path": str(request.url.path)
             }
         )
+
+    @app.middleware("http")
+    async def webui_operation_audit_middleware(request: Request, call_next):
+        """Audit mutating WebUI API operations without interrupting the request path."""
+        start_ts = time.perf_counter()
+        response = await call_next(request)
+
+        path = request.url.path
+        method = request.method.upper()
+        excluded_paths = {
+            "/api/auth/login",
+            "/api/auth/logout",
+            "/api/auth/device-login",
+            "/api/splash/mark-shown",
+        }
+
+        if path.startswith("/api/") and method in {"POST", "PUT", "PATCH", "DELETE"} and path not in excluded_paths:
+            try:
+                username = "unknown"
+                auth_header = request.headers.get("authorization", "")
+                if auth_header.lower().startswith("bearer "):
+                    token = auth_header.split(" ", 1)[1].strip()
+                    session = await get_auth_manager().verify_session(token)
+                    if session:
+                        username = str(session.get("username") or "unknown")
+
+                duration_ms = round((time.perf_counter() - start_ts) * 1000, 2)
+                details = await _request_audit_details(request)
+                details.update({
+                    "status_code": response.status_code,
+                    "duration_ms": duration_ms,
+                    "operation": f"{method} {path}",
+                })
+                await get_audit_logger().log_webui_action(
+                    username=username,
+                    action=f"{method} {path}",
+                    resource="webui",
+                    success=response.status_code < 400,
+                    ip_address=details.get("ip"),
+                    details=details,
+                )
+            except Exception as audit_error:
+                logger.warning(f"Failed to audit WebUI operation {method} {path}: {audit_error}")
+
+        return response
     
     # Static files - serve Vite React app (only if WebUI is enabled)
     static_dir = Path(__file__).parent / "static"
@@ -490,31 +1215,87 @@ def create_app() -> FastAPI:
     
     # Authentication endpoints
     @app.post("/api/auth/login", response_model=LoginResponse)
-    async def login(request: LoginRequest):
+    async def login(body: LoginRequest, http_request: Request):
         """Login and get access token."""
         auth_manager = get_auth_manager()
-        token = await auth_manager.authenticate(request.username, request.password)
+        token = await auth_manager.authenticate(body.username, body.password)
+        audit_details = await _request_audit_details(http_request, body.client_info)
+        ip_address = audit_details.get("ip")
         
         if not token:
-            await get_audit_logger().log_login(request.username, False)
+            await get_audit_logger().log_login(
+                body.username,
+                False,
+                ip_address=ip_address,
+                details=audit_details,
+            )
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="Invalid credentials"
             )
         
-        await get_audit_logger().log_login(request.username, True)
+        await get_audit_logger().log_login(
+            body.username,
+            True,
+            ip_address=ip_address,
+            details=audit_details,
+        )
         return LoginResponse(access_token=token)
     
     @app.post("/api/auth/logout")
-    async def logout(user: Dict[str, Any] = Depends(get_current_user)):
+    async def logout(http_request: Request, user: Dict[str, Any] = Depends(get_current_user)):
         """Logout current user."""
-        await get_audit_logger().log_logout(user.get("username"))
+        details = await _request_audit_details(http_request)
+        await get_audit_logger().log_logout(
+            user.get("username"),
+            ip_address=details.get("ip"),
+            details=details,
+        )
         return {"message": "Logged out successfully"}
     
     @app.get("/api/auth/me")
     async def get_current_user_info(user: Dict[str, Any] = Depends(get_current_user)):
         """Get current user info."""
         return user
+
+    @app.get("/api/security/audit-events")
+    async def get_security_audit_events(
+        event_type: Optional[str] = None,
+        username: Optional[str] = None,
+        limit: int = 200,
+        recent_minutes: Optional[int] = 1440,
+        user: Dict[str, Any] = Depends(require_permission(Permission.AUDIT_VIEW)),
+    ):
+        """Return WebUI security and operation audit events."""
+        audit_logger = get_audit_logger()
+        limit = max(1, min(int(limit or AUDIT_EVENT_RETENTION_LIMIT), AUDIT_EVENT_RETENTION_LIMIT))
+        since = None
+        if recent_minutes is not None and int(recent_minutes or 0) > 0:
+            since = datetime.utcnow() - timedelta(minutes=max(1, min(int(recent_minutes), 60 * 24 * 30)))
+        events = await audit_logger.get_event_dicts(
+            event_type=event_type,
+            username=username,
+            limit=limit,
+            since=since,
+        )
+        stats = {
+            "total_events": len(events),
+            "failed_events": sum(1 for event in events if event.get("success") is False),
+            "by_type": {},
+            "by_user": {},
+            "recent_minutes": recent_minutes,
+            "limit": limit,
+        }
+        for event in events:
+            event_type_key = str(event.get("event_type") or "unknown")
+            stats["by_type"][event_type_key] = stats["by_type"].get(event_type_key, 0) + 1
+            username_key = str(event.get("username") or "")
+            if username_key:
+                stats["by_user"][username_key] = stats["by_user"].get(username_key, 0) + 1
+        return {
+            "events": events,
+            "stats": stats,
+        }
 
     # ------------------------------------------------------------------
     # Device key endpoints (for browser extension based login)
@@ -604,12 +1385,12 @@ def create_app() -> FastAPI:
         device_fingerprint: Dict[str, Any] = {}
 
     @app.post("/api/auth/device-login", response_model=LoginResponse)
-    async def device_login(request: DeviceLoginRequest):
+    async def device_login(body: DeviceLoginRequest, http_request: Request):
         """
         Login using a device key issued earlier.
         """
         mgr = get_device_key_manager()
-        opaque = request.device_key
+        opaque = body.device_key
         if not opaque:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
@@ -618,14 +1399,17 @@ def create_app() -> FastAPI:
 
         username = mgr.authenticate(
             opaque_token=opaque,
-            device_fingerprint=request.device_fingerprint or {},
+            device_fingerprint=body.device_fingerprint or {},
         )
+        audit_details = await _request_audit_details(http_request, body.device_fingerprint)
         if not username:
             await get_audit_logger().log_access_denied(
                 username="unknown",
                 resource="auth",
                 action="device-login",
                 reason="Invalid device key",
+                ip_address=audit_details.get("ip"),
+                details=audit_details,
             )
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
@@ -646,9 +1430,10 @@ def create_app() -> FastAPI:
                 event_type=AuditEventType.AUTH_LOGIN,
                 timestamp=datetime.utcnow(),
                 username=username,
+                ip_address=audit_details.get("ip"),
                 action="device-login",
                 success=True,
-                details={"method": "device-key"},
+                details={**audit_details, "auth_method": "device-key"},
             )
         )
 
@@ -658,109 +1443,57 @@ def create_app() -> FastAPI:
     @app.get("/api/plugins", response_model=List[PluginInfo])
     async def list_plugins(user: Dict[str, Any] = Depends(require_permission(Permission.PLUGIN_VIEW))):
         """Get list of all plugins (loaded and discovered)."""
-        from ..core.app import get_app
-        from pathlib import Path
-        import json
-        
-        config = get_config()
         app = get_app()
         db_manager = app.db_manager if hasattr(app, 'db_manager') and app.db_manager else None
-        
-        plugin_base = Path(config.plugin_dir)
+        plugin_base = _resolve_plugin_base_dir()
+        thread_pool = getattr(app, 'blocking_task_pool', None)
+
+        discovered_plugins = await _discover_plugins_on_disk(plugin_base, thread_pool=thread_pool)
+
+        settings_map: Dict[tuple, Any] = {}
+        if db_manager:
+            try:
+                settings = await asyncio.wait_for(
+                    db_manager.list_plugin_settings(enabled_only=False),
+                    timeout=5.0
+                )
+                settings_map = {
+                    (setting.plugin_author, setting.plugin_name): setting
+                    for setting in settings
+                }
+            except asyncio.TimeoutError:
+                logger.warning("Timeout loading plugin settings while listing plugins")
+            except Exception as e:
+                logger.warning("Failed to read plugin settings while listing plugins: %s", e)
+
         all_plugins = []
-        
-        # Get thread pool for file operations
-        app = get_app()
-        thread_pool = getattr(app, 'plugin_thread_pool', None)
-        
-        # Discover all available plugins in plugins/{name} structure
-        if plugin_base.exists():
-            # Scan directory in thread pool to avoid blocking
-            if thread_pool:
-                def scan_plugin_dirs():
-                    return [d for d in plugin_base.iterdir() 
-                            if d.is_dir() and not d.name.startswith('.') and not d.name.startswith('_')]
-                plugin_dirs = await thread_pool.run_in_executor(scan_plugin_dirs)
-            else:
-                plugin_dirs = [d for d in plugin_base.iterdir() 
-                               if d.is_dir() and not d.name.startswith('.') and not d.name.startswith('_')]
-            
-            for plugin_dir in plugin_dirs:
-                plugin_json = plugin_dir / "plugin.json"
-                if not plugin_json.exists():
-                    continue
-                
-                # Load plugin.json in thread pool
-                try:
-                    if thread_pool:
-                        def read_plugin_json():
-                            with open(plugin_json, 'r', encoding='utf-8') as f:
-                                return json.load(f)
-                        plugin_config = await thread_pool.run_in_executor(read_plugin_json)
-                    else:
-                        with open(plugin_json, 'r', encoding='utf-8') as f:
-                            plugin_config = json.load(f)
-                    
-                    author = plugin_config.get("author", "Unknown")
-                    plugin_name = plugin_config.get("name", plugin_dir.name)
-                    
-                    # Build metadata from plugin.json
-                    metadata = {
-                        "name": plugin_name,
-                        "version": plugin_config.get("version", "1.0.0"),
-                        "author": author,
-                        "description": plugin_config.get("description", f"Plugin: {plugin_name}"),
-                        "required_permissions": [],
-                        "required_capabilities": [],
-                        "dependencies": plugin_config.get("dependencies", []),
-                        "config_schema": None,
-                        "default_config": plugin_config.get("default_config", {}),
-                        "tags": plugin_config.get("tags", []),
-                        "category": plugin_config.get("category", "general"),
-                        "homepage": plugin_config.get("homepage"),
-                        "repository": plugin_config.get("repository"),
-                        "documentation": plugin_config.get("documentation"),
-                    }
-                except Exception as e:
-                    logger.error(f"Failed to load plugin.json for {plugin_dir.name}: {e}")
-                    continue
-                
-                # Get enabled status from database
-                enabled = False
-                # Priority: database (always if exists) > plugin.json > default (100)
-                priority_from_json = plugin_config.get("priority")
-                priority = 100  # Default: 100 (lower = earlier execution)
-                config_data = metadata.get("default_config", {})
-                
-                if db_manager:
-                    try:
-                        db_setting = await db_manager.get_plugin_setting(author, plugin_name)
-                        if db_setting:
-                            enabled = db_setting.enabled
-                            config_data = db_setting.config or config_data
-                            # Always use database priority if it exists (even if it's 100)
-                            # User may have explicitly set it to 100, so we should respect that
-                            priority = db_setting.priority
-                            logger.debug(f"Plugin {author}/{plugin_name} enabled status from DB: {enabled}")
-                        else:
-                            # No database setting, use plugin.json priority if available
-                            if priority_from_json is not None:
-                                priority = priority_from_json
-                            logger.debug(f"Plugin {author}/{plugin_name} not found in database, defaulting to disabled")
-                    except Exception as e:
-                        logger.error(f"Failed to get plugin status from database for {author}/{plugin_name}: {e}", exc_info=True)
-                
-                all_plugins.append({
-                    "name": plugin_name,
+        for plugin in discovered_plugins:
+            author = plugin["author"]
+            plugin_name = plugin["name"]
+            metadata = plugin["metadata"]
+
+            enabled = False
+            priority = plugin["priority"]
+            config_data = plugin["default_config"]
+
+            db_setting = settings_map.get((author, plugin_name))
+            if db_setting:
+                enabled = bool(db_setting.enabled)
+                if isinstance(db_setting.config, dict) and db_setting.config:
+                    config_data = db_setting.config
+                priority = db_setting.priority
+
+            all_plugins.append({
+                "name": plugin_name,
+                "enabled": enabled,
+                "metadata": metadata,
+                "system_data": {
                     "enabled": enabled,
-                    "metadata": metadata,
-                    "system_data": {
-                        "enabled": enabled,
-                        "priority": priority,
-                        "config": config_data
-                    }
-                })
-        
+                    "priority": priority,
+                    "config": config_data,
+                }
+            })
+
         return all_plugins
     
     @app.get("/api/plugins/{plugin_name}")
@@ -773,63 +1506,38 @@ def create_app() -> FastAPI:
         from pathlib import Path
         import json
         
-        config = get_config()
         app = get_app()
         db_manager = app.db_manager if hasattr(app, 'db_manager') and app.db_manager else None
         
         # Find plugin directory
-        plugin_base = Path(config.plugin_dir)
+        plugin_base = _resolve_plugin_base_dir()
         plugin_dir = plugin_base / plugin_name
         
         if not plugin_dir.exists():
             raise HTTPException(status_code=404, detail="Plugin not found")
         
-        plugin_json = plugin_dir / "plugin.json"
-        if not plugin_json.exists():
+        if not plugin_manifest_exists(plugin_dir):
             raise HTTPException(status_code=404, detail="Plugin metadata not found")
         
-        # Load plugin.json using thread pool
+        # Load plugin manifest using thread pool
         app = get_app()
-        thread_pool = getattr(app, 'plugin_thread_pool', None)
+        thread_pool = getattr(app, 'blocking_task_pool', None)
         
         try:
-            if thread_pool:
-                def read_plugin_json():
-                    with open(plugin_json, 'r', encoding='utf-8') as f:
-                        return json.load(f)
-                plugin_config = await thread_pool.run_in_executor(read_plugin_json)
-            else:
-                with open(plugin_json, 'r', encoding='utf-8') as f:
-                    plugin_config = json.load(f)
+            plugin_config = await _load_plugin_manifest_async(plugin_dir, thread_pool)
             
             author = plugin_config.get("author", "Unknown")
             name = plugin_config.get("name", plugin_name)
-            
-            metadata = {
-                "name": name,
-                "version": plugin_config.get("version", "1.0.0"),
-                "author": author,
-                "description": plugin_config.get("description", ""),
-                "required_permissions": [],
-                "required_capabilities": [],
-                "dependencies": plugin_config.get("dependencies", []),
-                "config_schema": plugin_config.get("config_schema"),
-                "default_config": plugin_config.get("default_config", {}),
-                "tags": plugin_config.get("tags", []),
-                "category": plugin_config.get("category", "general"),
-                "homepage": plugin_config.get("homepage"),
-                "repository": plugin_config.get("repository"),
-                "documentation": plugin_config.get("documentation"),
-            }
+            metadata = build_plugin_api_metadata(plugin_config, plugin_name)
         except Exception as e:
-            logger.error(f"Failed to load plugin.json: {e}")
+            logger.error(f"Failed to load plugin manifest: {e}")
             raise HTTPException(status_code=500, detail="Failed to load plugin metadata")
         
         # Get status from database
         enabled = False
         config_data = metadata.get("default_config", {})
-        # Priority: database (always if exists) > plugin.json > default (100)
-        priority_from_json = plugin_config.get("priority")
+        # Priority: database (always if exists) > metadata.yaml > default (100)
+        priority_from_manifest = plugin_config.get("priority")
         priority = 100  # Default: 100 (lower = earlier execution)
         
         if db_manager:
@@ -842,9 +1550,9 @@ def create_app() -> FastAPI:
                     # User may have explicitly set it to 100, so we should respect that
                     priority = db_setting.priority
                 else:
-                    # No database setting, use plugin.json priority if available
-                    if priority_from_json is not None:
-                        priority = priority_from_json
+                    # No database setting, use metadata.yaml priority if available
+                    if priority_from_manifest is not None:
+                        priority = priority_from_manifest
             except Exception as e:
                 logger.error(f"Failed to get plugin status: {e}")
         
@@ -877,44 +1585,33 @@ def create_app() -> FastAPI:
             db_manager = app.db_manager if hasattr(app, 'db_manager') and app.db_manager else None
             
             # Plugin directory structure: plugins/{name}
-            config = get_config()
-            plugin_dir = Path(config.plugin_dir) / plugin_name
+            plugin_dir = _resolve_plugin_base_dir() / plugin_name
             
             if not plugin_dir.exists():
                 raise HTTPException(status_code=404, detail=f"Plugin {plugin_name} not found")
             
-            # Load plugin.json to get author and default_config (for cleaning upload blobs)
-            plugin_json = plugin_dir / "plugin.json"
+            # Load plugin manifest to get author and default_config (for cleaning upload blobs)
             author = "Unknown"
             name = plugin_name
             manifest_default_config: Optional[Dict[str, Any]] = None
             
-            if plugin_json.exists():
+            if plugin_manifest_exists(plugin_dir):
                 try:
-                    # Use thread pool for file IO
-                    app = get_app()
-                    thread_pool = getattr(app, 'plugin_thread_pool', None)
-                    
-                    if thread_pool:
-                        def read_plugin_json():
-                            with open(plugin_json, 'r', encoding='utf-8') as f:
-                                return json.load(f)
-                        metadata = await thread_pool.run_in_executor(read_plugin_json)
-                    else:
-                        with open(plugin_json, 'r', encoding='utf-8') as f:
-                            metadata = json.load(f)
+                    thread_pool = getattr(app, 'blocking_task_pool', None)
+                    metadata = await _load_plugin_manifest_async(plugin_dir, thread_pool)
                     author = metadata.get('author', 'Unknown')
                     name = metadata.get('name', plugin_name)
                     manifest_default_config = metadata.get("default_config") or None
                 except Exception as e:
-                    logger.warning(f"Failed to read plugin.json: {e}")
+                    logger.warning(f"Failed to read plugin manifest: {e}")
             
             # Delete from database (order: config-file uploads -> settings -> plugin-scoped binaries)
             if db_manager:
-                # 0. Web UI uploaded config files (system/plugin_config) referenced in DB config and plugin.json
+                # 0. Web UI uploaded config files stored in this plugin's private binary storage
                 try:
                     existing = await db_manager.get_plugin_setting(author, name)
                     await db_manager.delete_plugin_config_upload_blobs(
+                        f"{author}/{name}",
                         existing.config if existing else None,
                         manifest_default_config,
                     )
@@ -980,6 +1677,7 @@ def create_app() -> FastAPI:
     async def plugin_action(
         plugin_name: str,
         action: PluginAction,
+        http_request: Request,
         user: Dict[str, Any] = Depends(get_current_user)
     ):
         """Perform action on plugin (new system)."""
@@ -996,32 +1694,20 @@ def create_app() -> FastAPI:
         if not db_manager:
             raise HTTPException(status_code=500, detail="Database manager not available")
         
-        # Helper function to get author from plugin.json
+        # Helper function to get author from metadata.yaml
         async def get_plugin_author(plugin_name: str) -> tuple[str, str]:
-            """Get author and name from plugin.json. Returns (author, name)."""
-            config = get_config()
-            plugin_dir = Path(config.plugin_dir) / plugin_name
-            plugin_json = plugin_dir / "plugin.json"
+            """Get author and name from plugin manifest. Returns (author, name)."""
+            plugin_dir = _resolve_plugin_base_dir() / plugin_name
             
-            if plugin_json.exists():
+            if plugin_manifest_exists(plugin_dir):
                 try:
-                    # Use thread pool for file IO
-                    app = get_app()
-                    thread_pool = getattr(app, 'plugin_thread_pool', None)
-                    
-                    if thread_pool:
-                        def read_plugin_json():
-                            with open(plugin_json, 'r', encoding='utf-8') as f:
-                                return json.load(f)
-                        metadata = await thread_pool.run_in_executor(read_plugin_json)
-                    else:
-                        with open(plugin_json, 'r', encoding='utf-8') as f:
-                            metadata = json.load(f)
+                    thread_pool = getattr(app, 'blocking_task_pool', None)
+                    metadata = await _load_plugin_manifest_async(plugin_dir, thread_pool)
                     author = metadata.get('author', 'Unknown')
                     name = metadata.get('name', plugin_name)
                     return author, name
                 except Exception as e:
-                    logger.warning(f"Failed to read plugin.json for {plugin_name}: {e}")
+                    logger.warning(f"Failed to read plugin manifest for {plugin_name}: {e}")
             
             return 'Unknown', plugin_name
         
@@ -1036,11 +1722,14 @@ def create_app() -> FastAPI:
         
         required_perm = perm_map.get(action.action)
         if required_perm and not perm_manager.has_permission(username, required_perm):
+            details = await _request_audit_details(http_request)
             await get_audit_logger().log_access_denied(
                 username=username,
                 resource=f"plugin:{plugin_name}",
                 action=action.action,
-                reason="Insufficient permissions"
+                reason="Insufficient permissions",
+                ip_address=details.get("ip"),
+                details=details,
             )
             raise HTTPException(status_code=403, detail="Insufficient permissions")
         
@@ -1131,13 +1820,12 @@ def create_app() -> FastAPI:
     async def reload_all_plugins(
         user: Dict[str, Any] = Depends(require_permission(Permission.PLUGIN_RELOAD))
     ):
-        """Reload all plugins and update their metadata from plugin.json to database."""
+        """Reload all plugins and update their metadata from manifest files to database."""
         from ..core.app import get_app
         from pathlib import Path
         import json
         
         username = user.get("username", "unknown")
-        config = get_config()
         app = get_app()
         db_manager = app.db_manager if hasattr(app, 'db_manager') and app.db_manager else None
         
@@ -1147,11 +1835,11 @@ def create_app() -> FastAPI:
         
         # Get thread pool for file operations
         app = get_app()
-        thread_pool = getattr(app, 'plugin_thread_pool', None)
+        thread_pool = getattr(app, 'blocking_task_pool', None)
         
         # Scan all plugins and update database
         if db_manager:
-            plugin_base = Path(config.plugin_dir)
+            plugin_base = _resolve_plugin_base_dir()
             if plugin_base.exists():
                 # Scan directory in thread pool
                 if thread_pool:
@@ -1164,25 +1852,17 @@ def create_app() -> FastAPI:
                                    if d.is_dir() and not d.name.startswith('.') and not d.name.startswith('_')]
                 
                 for plugin_dir in plugin_dirs:
-                    plugin_json_file = plugin_dir / "plugin.json"
-                    if not plugin_json_file.exists():
+                    if not plugin_manifest_exists(plugin_dir):
                         continue
                     
                     try:
-                        # Read plugin.json in thread pool
-                        if thread_pool:
-                            def read_plugin_json():
-                                with open(plugin_json_file, 'r', encoding='utf-8') as f:
-                                    return json.load(f)
-                            plugin_metadata = await thread_pool.run_in_executor(read_plugin_json)
-                        else:
-                            with open(plugin_json_file, 'r', encoding='utf-8') as f:
-                                plugin_metadata = json.load(f)
+                        plugin_metadata = await _load_plugin_manifest_async(plugin_dir, thread_pool)
                         
                         author = plugin_metadata.get('author', 'Unknown')
                         name = plugin_metadata.get('name', plugin_dir.name)
                         version = plugin_metadata.get('version', '1.0.0')
                         default_config = plugin_metadata.get('default_config', {})
+                        priority = coerce_plugin_priority(plugin_metadata.get('priority'), 100)
                         
                         # Check if plugin exists in database
                         existing = await db_manager.get_plugin_setting(author, name)
@@ -1206,7 +1886,7 @@ def create_app() -> FastAPI:
                                 author=author,
                                 name=name,
                                 enabled=False,
-                                priority=100,  # Default: 100 (lower = earlier execution)
+                                priority=priority,
                                 config=default_config,
                                 install_source='manual',
                                 install_info={
@@ -1256,8 +1936,6 @@ def create_app() -> FastAPI:
     ):
         """Update plugin configuration and save to database."""
         from ..core.app import get_app
-        from pathlib import Path
-        import json
         
         app = get_app()
         db_manager = app.db_manager if hasattr(app, 'db_manager') and app.db_manager else None
@@ -1265,129 +1943,31 @@ def create_app() -> FastAPI:
         
         if not db_manager:
             raise HTTPException(status_code=500, detail="Database manager not available")
+
+        identity = await _resolve_plugin_identity(plugin_name, app)
+        plugin_metadata = identity["manifest"]
+        config_schema = plugin_metadata.get("config_schema", {})
+        default_config = plugin_metadata.get("default_config", {})
+        author = identity["author"]
+        name = identity["name"]
+        plugin_owner = identity["plugin_owner"]
         
-        # Get plugin directory
-        config = get_config()
-        plugin_dir = Path(config.plugin_dir)
-        if not plugin_dir.is_absolute():
-            project_root = Path(__file__).parent.parent.parent
-            plugin_dir = (project_root / config.plugin_dir).resolve()
-        
-        plugin_path = plugin_dir / plugin_name
-        
-        if not plugin_path.exists():
-            raise HTTPException(status_code=404, detail="Plugin not found")
-        
-        # Load plugin metadata from plugin.json
-        plugin_metadata = {}
-        config_schema = {}
-        default_config = {}
-        author = "Unknown"
-        name = plugin_name
-        
-        try:
-            plugin_json = plugin_path / "plugin.json"
-            if plugin_json.exists():
-                # Use thread pool for file IO
-                thread_pool = getattr(app, 'plugin_thread_pool', None)
-                
-                if thread_pool:
-                    def read_plugin_json():
-                        with open(plugin_json, 'r', encoding='utf-8') as f:
-                            return json.load(f)
-                    plugin_metadata = await thread_pool.run_in_executor(read_plugin_json)
-                else:
-                    with open(plugin_json, 'r', encoding='utf-8') as f:
-                        plugin_metadata = json.load(f)
-                author = plugin_metadata.get("author", "Unknown")
-                name = plugin_metadata.get("name", plugin_name)
-                config_schema = plugin_metadata.get("config_schema", {})
-                default_config = plugin_metadata.get("default_config", {})
-        except Exception as e:
-            logger.warning(f"Failed to load plugin metadata: {e}")
-        
-        # Normalize config: ensure array fields are arrays, merge with defaults
-        normalized_config = default_config.copy()
-        
-        # Merge with provided config
-        if config_schema:
-            # Have schema, process according to field types
-            for key, value in config_update.config.items():
-                if key in config_schema:
-                    field_schema = config_schema[key]
-                    field_type = field_schema.get("type")
-                    
-                    if field_type == "array":
-                        # Ensure it's an array
-                        if isinstance(value, list):
-                            normalized_config[key] = value
-                        elif isinstance(value, str):
-                            # Convert string to array
-                            import re
-                            if value.strip():
-                                normalized_config[key] = [v.strip() for v in re.split(r'[\n,\s]+', value) if v.strip()]
-                            else:
-                                normalized_config[key] = []
-                        else:
-                            normalized_config[key] = []
-                    elif field_type == "number":
-                        # Ensure it's a number, handle NaN and None
-                        if value is None or (isinstance(value, float) and (value != value or value == float('inf') or value == float('-inf'))):
-                            # Use default value if available, otherwise 0
-                            normalized_config[key] = field_schema.get("default_value", normalized_config.get(key, 0))
-                        else:
-                            try:
-                                num_value = float(value) if not isinstance(value, (int, float)) else value
-                                if not (num_value != num_value or num_value == float('inf') or num_value == float('-inf')):
-                                    normalized_config[key] = num_value
-                                else:
-                                    normalized_config[key] = field_schema.get("default_value", normalized_config.get(key, 0))
-                            except (ValueError, TypeError):
-                                normalized_config[key] = field_schema.get("default_value", normalized_config.get(key, 0))
-                    elif field_type == "boolean":
-                        # Ensure it's a boolean
-                        if isinstance(value, bool):
-                            normalized_config[key] = value
-                        elif isinstance(value, str):
-                            normalized_config[key] = value.lower() in ('true', '1', 'yes', 'on')
-                        else:
-                            normalized_config[key] = bool(value)
-                    else:
-                        # For string, textarea, select, etc., use value as-is
-                        normalized_config[key] = value
-                else:
-                    # Key not in schema, use value as-is
-                    normalized_config[key] = value
-        else:
-            # No metadata, use config as-is but ensure arrays are arrays
-            normalized_config = config_update.config.copy()
-            for key, value in normalized_config.items():
-                if isinstance(value, str) and key.endswith("_list"):
-                    # Heuristic: if key ends with _list, try to convert to array
-                    import re
-                    if value.strip():
-                        normalized_config[key] = [v.strip() for v in re.split(r'[\n,\s]+', value) if v.strip()]
-                    else:
-                        normalized_config[key] = []
+        normalized_config = normalize_plugin_config_by_schema(
+            config_update.config,
+            config_schema,
+            default_config,
+        )
         
         # Save config to database
         updated_config = normalized_config  # Default to normalized_config
         try:
             setting = await db_manager.get_plugin_setting(author, name)
+            previous_config = setting.config if setting and setting.config else {}
             
-            # Get priority: request > database > plugin.json > default (100)
-            # First, get priority from plugin.json if available
-            priority_from_json = None
-            try:
-                plugin_json = plugin_path / "plugin.json"
-                if plugin_json.exists():
-                    with open(plugin_json, 'r', encoding='utf-8') as f:
-                        plugin_metadata = json.load(f)
-                        priority_from_json = plugin_metadata.get('priority')
-            except Exception:
-                pass
+            # Get priority: request > database > metadata.yaml > default (100)
+            priority_from_manifest = plugin_metadata.get('priority')
             
-            # Priority: request priority (if provided) > current database value > plugin.json > default
+            # Priority: request priority (if provided) > current database value > metadata.yaml > default
             # If user explicitly sets priority, always use it (even if it's 100)
             if hasattr(config_update, 'priority') and config_update.priority is not None:
                 # User explicitly set priority, use it
@@ -1395,9 +1975,9 @@ def create_app() -> FastAPI:
             elif setting:
                 # No priority in request, use database value (even if it's 100)
                 priority = setting.priority
-            elif priority_from_json is not None:
-                # No database setting, use plugin.json
-                priority = priority_from_json
+            elif priority_from_manifest is not None:
+                # No database setting, use metadata.yaml
+                priority = priority_from_manifest
             else:
                 # Default to 100
                 priority = 100
@@ -1431,6 +2011,13 @@ def create_app() -> FastAPI:
                 saved_priority = updated_setting.priority
             else:
                 saved_priority = priority
+
+            removed_upload_keys = (
+                collect_plugin_config_upload_keys(previous_config)
+                - collect_plugin_config_upload_keys(normalized_config)
+            )
+            if removed_upload_keys:
+                await db_manager.delete_plugin_config_upload_keys(plugin_owner, removed_upload_keys)
             
             # Reload only this plugin in runtime (avoids full subprocess restart)
             if plugin_connector:
@@ -1489,8 +2076,9 @@ def create_app() -> FastAPI:
             # Extract and install plugin
             return await _install_plugin_from_zip(zip_path, config, db_manager, plugin_connector, user)
     
-    @app.post("/api/plugins/config-files")
+    @app.post("/api/plugins/{plugin_name}/config-files")
     async def upload_plugin_config_file(
+        plugin_name: str,
         file: UploadFile = File(...),
         user: Dict[str, Any] = Depends(require_permission(Permission.PLUGIN_CONFIGURE))
     ):
@@ -1507,6 +2095,9 @@ def create_app() -> FastAPI:
         
         if not db_manager:
             raise HTTPException(status_code=500, detail="Database manager not available")
+
+        identity = await _resolve_plugin_identity(plugin_name, app)
+        plugin_owner = identity["plugin_owner"]
         
         # Check file size (10MB limit)
         MAX_FILE_SIZE = 10 * 1024 * 1024  # 10MB
@@ -1519,17 +2110,20 @@ def create_app() -> FastAPI:
         _, ext = os.path.splitext(original_filename)
         file_key = f'plugin_config_{uuid.uuid4().hex}{ext}'
         
-        # Save file using database binary storage (owner_type='system', owner='plugin_config')
+        # Save file using plugin-private binary storage.
         try:
-            await db_manager.set_binary('system', 'plugin_config', file_key, file_bytes)
-            logger.info(f"Uploaded plugin config file: {file_key}, size: {len(file_bytes)} bytes")
+            await db_manager.set_binary('plugin', plugin_owner, file_key, file_bytes)
+            logger.info(
+                f"Uploaded plugin config file: {file_key}, size: {len(file_bytes)} bytes, plugin={plugin_owner}"
+            )
             return {"file_key": file_key}
         except Exception as e:
             logger.error(f"Failed to save config file: {e}")
             raise HTTPException(status_code=500, detail=f"Failed to save file: {str(e)}")
     
-    @app.delete("/api/plugins/config-files/{file_key}")
+    @app.delete("/api/plugins/{plugin_name}/config-files/{file_key}")
     async def delete_plugin_config_file(
+        plugin_name: str,
         file_key: str,
         user: Dict[str, Any] = Depends(require_permission(Permission.PLUGIN_CONFIGURE))
     ):
@@ -1545,11 +2139,14 @@ def create_app() -> FastAPI:
         
         if not db_manager:
             raise HTTPException(status_code=500, detail="Database manager not available")
+
+        identity = await _resolve_plugin_identity(plugin_name, app)
+        plugin_owner = identity["plugin_owner"]
         
         try:
-            success = await db_manager.delete_binary('system', 'plugin_config', file_key)
+            success = await db_manager.delete_binary('plugin', plugin_owner, file_key)
             if success:
-                logger.info(f"Deleted plugin config file: {file_key}")
+                logger.info(f"Deleted plugin config file: {file_key}, plugin={plugin_owner}")
                 return {"deleted": True}
             else:
                 raise HTTPException(status_code=404, detail="File not found")
@@ -1754,13 +2351,15 @@ def create_app() -> FastAPI:
         Standard plugin repository structure:
           repo/
             main/         <- plugin content always lives here
-              plugin.json
+              metadata.yaml
+              settings.json
               main.py
               ...
             README.md     <- anything else can go outside main/
         
-        GitHub ZIP extracts to: repo-name-branch/main/plugin.json
-        Plain ZIP should contain: main/plugin.json (or wrap in one folder: folder/main/plugin.json)
+        GitHub ZIP extracts to: repo-name-branch/main/metadata.yaml
+        Plain ZIP should contain: main/metadata.yaml and main/settings.json
+        (or wrap in one folder: folder/main/metadata.yaml and folder/main/settings.json)
         """
         extract_dir = zip_path.parent / "extracted"
         extract_dir.mkdir(exist_ok=True)
@@ -1772,60 +2371,43 @@ def create_app() -> FastAPI:
             raise HTTPException(status_code=400, detail="Invalid ZIP file")
         
         # Find plugin directory: always located in a `main/` subdirectory.
-        # GitHub ZIP format: extracted/repo-branch/main/plugin.json
-        # Plain ZIP format:  extracted/main/plugin.json
-        #                or  extracted/any-folder/main/plugin.json
+        # GitHub ZIP format: extracted/repo-branch/main/metadata.yaml + settings.json
+        # Plain ZIP format:  extracted/main/metadata.yaml + settings.json
+        #                or  extracted/any-folder/main/metadata.yaml + settings.json
         plugin_dir = None
-        plugin_json_path = None
         
-        # Check direct: extracted/main/plugin.json
-        candidate = extract_dir / "main" / "plugin.json"
-        if candidate.exists():
+        # Check direct: extracted/main/metadata.yaml + settings.json
+        candidate = extract_dir / "main"
+        if plugin_manifest_exists(candidate):
             plugin_dir = extract_dir / "main"
-            plugin_json_path = candidate
             logger.info("Found plugin in main/ (direct structure)")
         else:
-            # Check one level deep: extracted/repo-branch/main/plugin.json
+            # Check one level deep: extracted/repo-branch/main/metadata.yaml + settings.json
             first_level_dirs = [d for d in extract_dir.iterdir() if d.is_dir()]
             for first_dir in first_level_dirs:
-                candidate = first_dir / "main" / "plugin.json"
-                if candidate.exists():
+                candidate = first_dir / "main"
+                if plugin_manifest_exists(candidate):
                     plugin_dir = first_dir / "main"
-                    plugin_json_path = candidate
                     logger.info(f"Found plugin in {first_dir.name}/main/ (GitHub ZIP structure)")
                     break
         
-        if not plugin_dir or not plugin_json_path:
+        if not plugin_dir:
             raise HTTPException(
                 status_code=400,
                 detail=(
                     "未找到插件内容。插件仓库必须将所有插件文件放在 main/ 子目录中，"
-                    "例如：仓库根/main/plugin.json、仓库根/main/main.py。"
-                    "GitHub ZIP 格式：repo-branch/main/plugin.json。"
+                    "例如：仓库根/main/metadata.yaml、仓库根/main/settings.json、仓库根/main/main.py。"
+                    "GitHub ZIP 格式：repo-branch/main/metadata.yaml。"
                 )
             )
         
         plugin_folder_name = plugin_dir.name  # always "main"
         
-        # Validate and parse plugin.json using thread pool
+        # Validate and parse plugin manifest using thread pool
         try:
             app = get_app()
-            thread_pool = getattr(app, 'plugin_thread_pool', None)
-            
-            if thread_pool:
-                def read_plugin_json():
-                    with open(plugin_json_path, 'r', encoding='utf-8') as f:
-                        return json.load(f)
-                plugin_metadata = await thread_pool.run_in_executor(read_plugin_json)
-            else:
-                with open(plugin_json_path, 'r', encoding='utf-8') as f:
-                    plugin_metadata = json.load(f)
-                
-            # Check required fields
-            if 'name' not in plugin_metadata:
-                raise HTTPException(status_code=400, detail="plugin.json must contain 'name' field")
-            if 'version' not in plugin_metadata:
-                raise HTTPException(status_code=400, detail="plugin.json must contain 'version' field")
+            thread_pool = getattr(app, 'blocking_task_pool', None)
+            plugin_metadata = await _load_plugin_manifest_async(plugin_dir, thread_pool)
                 
             plugin_author = plugin_metadata.get('author', 'Unknown')
             plugin_name = plugin_metadata['name']
@@ -1833,14 +2415,14 @@ def create_app() -> FastAPI:
             default_config = plugin_metadata.get('default_config', {})
                 
         except json.JSONDecodeError:
-            raise HTTPException(status_code=400, detail="Invalid plugin.json format")
+            raise HTTPException(status_code=400, detail="Invalid settings.json format")
         except HTTPException:
             raise
         except Exception as e:
-            raise HTTPException(status_code=400, detail=f"Error reading plugin.json: {str(e)}")
+            raise HTTPException(status_code=400, detail=f"Error reading plugin manifest: {str(e)}")
         
         # Target directory: plugins/{name}
-        target_dir = Path(config.plugin_dir) / plugin_name
+        target_dir = _resolve_plugin_base_dir() / plugin_name
         
         # Copy to plugin directory
         if target_dir.exists():
@@ -1876,9 +2458,9 @@ def create_app() -> FastAPI:
                 logger.info(f"Updated existing plugin: {plugin_author}/{plugin_name}")
             else:
                 # Create new plugin setting (disabled by default)
-                # Get priority from plugin.json if available, otherwise use default 100
-                priority_from_json = plugin_metadata.get('priority')
-                initial_priority = priority_from_json if priority_from_json is not None else 100
+                # Get priority from metadata.yaml if available, otherwise use default 100
+                priority_from_manifest = plugin_metadata.get('priority')
+                initial_priority = priority_from_manifest if priority_from_manifest is not None else 100
                 
                 await db_manager.create_plugin_setting(
                     author=plugin_author,
@@ -1932,28 +2514,18 @@ def create_app() -> FastAPI:
             
             app = get_app()
             if hasattr(app, 'db_manager') and app.db_manager:
-                # Load schema from plugin.json first to get correct author
+                # Load schema from split manifest files first to get correct author
+                thread_pool = getattr(app, 'blocking_task_pool', None)
                 author = "Unknown"
                 name = plugin_name
                 
-                plugin_dir = Path("plugins") / name
-                plugin_json = plugin_dir / "plugin.json"
+                plugin_dir = _resolve_plugin_base_dir() / name
                 
                 config_schema = {}
                 default_config = {}
                 
-                if plugin_json.exists():
-                    # Use thread pool for file IO
-                    thread_pool = getattr(app, 'plugin_thread_pool', None)
-                    
-                    if thread_pool:
-                        def read_plugin_json():
-                            with open(plugin_json, 'r', encoding='utf-8') as f:
-                                return json.load(f)
-                        plugin_data = await thread_pool.run_in_executor(read_plugin_json)
-                    else:
-                        with open(plugin_json, 'r', encoding='utf-8') as f:
-                            plugin_data = json.load(f)
+                if plugin_manifest_exists(plugin_dir):
+                    plugin_data = await _load_plugin_manifest_async(plugin_dir, thread_pool)
                     author = plugin_data.get("author", "Unknown")
                     config_schema = plugin_data.get("config_schema", {})
                     default_config = plugin_data.get("default_config", {})
@@ -1971,7 +2543,7 @@ def create_app() -> FastAPI:
                     for key, value in setting.config.items():
                         current_config[key] = value
                 
-                if plugin_json.exists():
+                if plugin_manifest_exists(plugin_dir):
                     # Return schema and configs
                     return {
                         "config_schema": config_schema,
@@ -2090,8 +2662,7 @@ def create_app() -> FastAPI:
         # Find config.toml file in project root (go up from src/ui/api.py to onebot_framework/)
         # api.py is at: onebot_framework/src/ui/api.py
         # config.toml is at: onebot_framework/config.toml
-        project_root = Path(__file__).parent.parent.parent  # onebot_framework/
-        toml_file = project_root / "config.toml"
+        toml_file = get_config_file_path()
         
         # Read existing TOML file
         # Use tomlkit to preserve comments and formatting
@@ -2106,7 +2677,7 @@ def create_app() -> FastAPI:
         
         # Use thread pool for synchronous file IO
         app = get_app()
-        thread_pool = getattr(app, 'plugin_thread_pool', None)
+        thread_pool = getattr(app, 'blocking_task_pool', None)
         
         config_data = {}
         if toml_file.exists():
@@ -2310,6 +2881,14 @@ def create_app() -> FastAPI:
         )
 
         all_events = []
+        self_message_ids = {
+            str((row.payload or {}).get("message_id", "")).strip()
+            for row in rows
+            if row.event_name == "onebot.message"
+            and isinstance(row.payload, dict)
+            and bool((row.payload or {}).get("is_self"))
+            and str((row.payload or {}).get("message_id", "")).strip()
+        }
         for row in rows:
             payload = row.payload
             if not isinstance(payload, dict):
@@ -2318,22 +2897,41 @@ def create_app() -> FastAPI:
             event_data = None
             
             # Message events
-            if row.event_name == "onebot.message":
+            if row.event_name in ("onebot.message", "onebot.message_sent"):
+                message_id = str(payload.get("message_id", "")).strip()
+                # Avoid duplicate self-sent rows when both onebot.message and onebot.message_sent exist.
+                if (
+                    row.event_name == "onebot.message_sent"
+                    and message_id
+                    and message_id in self_message_ids
+                ):
+                    continue
+
+                raw_text = payload.get("raw_message") or payload.get("message") or ""
+                sender = payload.get("sender", {})
+                if not isinstance(sender, dict):
+                    sender = {}
+                if row.event_name == "onebot.message_sent" and not sender.get("nickname"):
+                    sender["nickname"] = "Bot"
+
                 event_data = {
                     "id": row.event_id,
                     "db_row_id": row.id,
                     "timestamp": row.event_time.isoformat(),
                     "time": row.event_time.isoformat(),
                     "event_type": "message",
-                    "post_type": "message",
-                    "message_id": str(payload.get("message_id", "")),
+                    "post_type": "message_sent" if row.event_name == "onebot.message_sent" else "message",
+                    "message_id": message_id,
                     "message_type": payload.get("message_type", "unknown"),
                     "user_id": str(payload.get("user_id", "")),
                     "group_id": str(payload.get("group_id", "")) if payload.get("group_id") else None,
-                    "raw_message": payload.get("raw_message", ""),
-                    "message": payload.get("raw_message", ""),
-                    "sender": payload.get("sender", {}),
-                    "is_self": payload.get("is_self", False),  # Mark if self-sent
+                    "target_id": str(payload.get("target_id", "")) if payload.get("target_id") else None,
+                    "raw_message": raw_text,
+                    "message": raw_text,
+                    "sender": sender,
+                    "is_self": payload.get("is_self", row.event_name == "onebot.message_sent"),  # Mark if self-sent
+                    "source_plugin": payload.get("source_plugin"),
+                    "source": payload.get("source"),
                 }
             
             # Notice events
@@ -2385,6 +2983,20 @@ def create_app() -> FastAPI:
                 all_events.append(event_data)
 
         return all_events
+
+    @app.get("/api/messages/session-log")
+    async def get_session_message_log(
+        limit: int = 300,
+        include_notices: bool = True,
+        include_requests: bool = True,
+        user: Dict[str, Any] = Depends(get_current_user)
+    ):
+        """Get only the current-startup message stream for the message log page."""
+        return _session_message_log_store.list_events(
+            limit=limit,
+            include_notices=include_notices,
+            include_requests=include_requests,
+        )
     
     @app.websocket("/ws/messages")
     async def websocket_messages(websocket: WebSocket):
@@ -2514,6 +3126,15 @@ def create_app() -> FastAPI:
                         await asyncio.sleep(1)  # Wait 1 second before retry
                     else:
                         logger.error("Timeout getting group list after all retries")
+                except asyncio.CancelledError as e:
+                    if attempt < max_retries - 1:
+                        logger.warning(
+                            f"Group list call cancelled (attempt {attempt + 1}/{max_retries}), "
+                            f"likely OneBot reconnect: {e}; retrying..."
+                        )
+                        await asyncio.sleep(0.5)
+                    else:
+                        logger.warning("Group list call cancelled after all retries; returning empty group list")
                 except Exception as e:
                     if attempt < max_retries - 1:
                         logger.warning(f"Failed to get group list (attempt {attempt + 1}/{max_retries}): {e}, retrying...")
@@ -2552,6 +3173,15 @@ def create_app() -> FastAPI:
                         await asyncio.sleep(1)  # Wait 1 second before retry
                     else:
                         logger.error("Timeout getting friend list after all retries")
+                except asyncio.CancelledError as e:
+                    if attempt < max_retries - 1:
+                        logger.warning(
+                            f"Friend list call cancelled (attempt {attempt + 1}/{max_retries}), "
+                            f"likely OneBot reconnect: {e}; retrying..."
+                        )
+                        await asyncio.sleep(0.5)
+                    else:
+                        logger.warning("Friend list call cancelled after all retries; returning empty friend list")
                 except Exception as e:
                     if attempt < max_retries - 1:
                         logger.warning(f"Failed to get friend list (attempt {attempt + 1}/{max_retries}): {e}, retrying...")
@@ -2567,6 +3197,8 @@ def create_app() -> FastAPI:
                     "remark": friend.get("remark", "")
                 })
                 
+        except asyncio.CancelledError as e:
+            logger.warning(f"Contacts request cancelled or interrupted during OneBot reconnect: {e}")
         except Exception as e:
             logger.error(f"Failed to get contacts: {e}", exc_info=True)
         
@@ -2575,16 +3207,18 @@ def create_app() -> FastAPI:
     @app.post("/api/chat/send")
     async def send_chat_message(
         request: Dict[str, Any],
+        http_request: Request,
         user: Dict[str, Any] = Depends(get_current_user)
     ):
         """Send a message to group or friend."""
         from ..core.app import get_app
-        import time
         app_instance = get_app()
         
         chat_type = request.get("type")  # "group" or "private"
         chat_id = request.get("id")  # group_id or user_id
         message = request.get("message")
+        request_username = str(user.get("username") or "unknown").strip() or "unknown"
+        send_source = f"webui:{request_username}"
         
         if not all([chat_type, chat_id, message]):
             raise HTTPException(status_code=400, detail="Missing required fields: type, id, message")
@@ -2592,25 +3226,44 @@ def create_app() -> FastAPI:
         if not hasattr(app_instance, 'onebot_adapter') or not app_instance.onebot_adapter:
             raise HTTPException(status_code=503, detail="OneBot adapter not available")
 
-        async def rewrite_media_cq_to_local(raw_message: str) -> str:
-            """Rewrite CQ media URL/file refs to local file:// cache paths for better QQ compatibility."""
+        async def rewrite_media_cq_for_send(raw_message: str) -> tuple[str, str]:
+            """Prepare CQ media for OneBot send and WebUI display separately."""
             if not isinstance(raw_message, str) or "[CQ:" not in raw_message:
-                return raw_message
+                return raw_message, raw_message
 
             from ..ui.image_cache import get_image_cache_manager
             import re
+            import base64
+            import binascii
+            from urllib.parse import unquote_to_bytes
 
             image_cache = get_image_cache_manager()
             cq_pattern = re.compile(r"\[CQ:(image|video|record|file),([^\]]+)\]")
 
             def parse_params(params_str: str) -> Dict[str, str]:
                 params: Dict[str, str] = {}
-                key_pattern = re.compile(r"([^=,]+)=")
+                allowed_keys = {
+                    "file",
+                    "url",
+                    "type",
+                    "cache",
+                    "proxy",
+                    "timeout",
+                    "name",
+                    "id",
+                    "size",
+                    "md5",
+                    "sha1",
+                    "sub_type",
+                    "summary",
+                }
+                key_pattern = re.compile(r"(?:^|,)([A-Za-z_][A-Za-z0-9_-]*)=")
                 key_matches = list(key_pattern.finditer(params_str))
+                key_matches = [m for m in key_matches if m.group(1).strip() in allowed_keys]
                 for idx, m in enumerate(key_matches):
                     key = m.group(1).strip()
                     value_start = m.end()
-                    value_end = key_matches[idx + 1].start() - 1 if idx + 1 < len(key_matches) else len(params_str)
+                    value_end = key_matches[idx + 1].start() if idx + 1 < len(key_matches) else len(params_str)
                     value = params_str[value_start:value_end].strip()
                     if value.endswith(","):
                         value = value[:-1]
@@ -2622,17 +3275,37 @@ def create_app() -> FastAPI:
                 parts = [f"{k}={v}" for k, v in params.items() if v is not None and str(v).strip() != ""]
                 return f"[CQ:{cq_type}{',' + ','.join(parts) if parts else ''}]"
 
-            out: List[str] = []
+            def data_url_to_base64_file(data_url: str) -> Optional[str]:
+                match = re.match(r"^data:([^;,]+)?(;base64)?,(.*)$", data_url, re.DOTALL)
+                if not match:
+                    return None
+                is_base64 = bool(match.group(2))
+                payload = match.group(3) or ""
+                if is_base64:
+                    try:
+                        base64.b64decode(payload, validate=True)
+                        return f"base64://{payload}"
+                    except (binascii.Error, ValueError):
+                        return None
+                try:
+                    return f"base64://{base64.b64encode(unquote_to_bytes(payload)).decode('ascii')}"
+                except Exception:
+                    return None
+
+            send_out: List[str] = []
+            display_out: List[str] = []
             last = 0
             for match in cq_pattern.finditer(raw_message):
-                out.append(raw_message[last:match.start()])
+                send_out.append(raw_message[last:match.start()])
+                display_out.append(raw_message[last:match.start()])
                 cq_type = match.group(1)
                 params_str = match.group(2)
                 params = parse_params(params_str)
 
                 media_ref = (params.get("url") or params.get("file") or "").strip()
-                if not media_ref or media_ref.startswith("data:"):
-                    out.append(match.group(0))
+                if not media_ref:
+                    send_out.append(match.group(0))
+                    display_out.append(match.group(0))
                     last = match.end()
                     continue
 
@@ -2644,42 +3317,108 @@ def create_app() -> FastAPI:
                 }
                 media_kind = media_kind_map.get(cq_type, "file")
 
-                cached_path = await image_cache.download_and_cache_media(
-                    media_ref,
-                    onebot_adapter=app_instance.onebot_adapter,
-                    media_kind=media_kind,
-                )
-                if cached_path and Path(cached_path).exists():
-                    params["file"] = Path(cached_path).resolve().as_uri()
-                    if "url" in params:
-                        params.pop("url", None)
-                    out.append(build_cq(cq_type, params))
+                send_params = dict(params)
+                display_params = dict(params)
+                cached_path = None
+                if media_ref.startswith("data:"):
+                    cached_path = await image_cache.save_data_url_media(media_ref, media_kind=media_kind)
+                    base64_ref = data_url_to_base64_file(media_ref)
+                    if base64_ref:
+                        send_params["file"] = base64_ref
+                        send_params.pop("url", None)
                 else:
-                    out.append(match.group(0))
+                    # Keep the original outgoing ref. NapCat may run in Docker/Linux and cannot read
+                    # framework-local Windows file:// paths. Cache only for WebUI display/history.
+                    cached_path = await image_cache.download_and_cache_media(
+                        media_ref,
+                        onebot_adapter=app_instance.onebot_adapter,
+                        media_kind=media_kind,
+                    )
+
+                if cached_path and Path(cached_path).exists():
+                    display_params["file"] = Path(cached_path).resolve().as_uri()
+                    display_params.pop("url", None)
+                    display_out.append(build_cq(cq_type, display_params))
+                else:
+                    display_out.append(match.group(0))
+
+                send_out.append(build_cq(cq_type, send_params))
                 last = match.end()
 
-            out.append(raw_message[last:])
-            return "".join(out)
+            send_out.append(raw_message[last:])
+            display_out.append(raw_message[last:])
+            return "".join(send_out), "".join(display_out)
+
+        async def get_bot_identity() -> Dict[str, str]:
+            """Best-effort bot identity lookup; never block sending if OneBot lookup is flaky."""
+            adapter = app_instance.onebot_adapter
+            self_id = str(getattr(adapter, "self_id", "") or "")
+            self_nickname = str(getattr(adapter, "self_nickname", "") or "Bot")
+
+            try:
+                login_info = await asyncio.wait_for(
+                    adapter.call_api("get_login_info", {}, source=send_source),
+                    timeout=5.0,
+                )
+                login_data = login_info.get("data", login_info) if isinstance(login_info, dict) else {}
+                if isinstance(login_data, dict):
+                    self_id = str(login_data.get("user_id") or self_id or "")
+                    self_nickname = str(login_data.get("nickname") or self_nickname or "Bot")
+            except asyncio.TimeoutError:
+                logger.warning("Timed out getting bot login info before WebUI send; continuing with cached identity")
+            except Exception as e:
+                logger.warning(f"Unable to get bot login info before WebUI send; continuing with cached identity: {e}")
+
+            return {
+                "self_id": self_id,
+                "self_nickname": self_nickname or "Bot",
+                "avatar": f"https://q.qlogo.cn/headimg_dl?dst_uin={self_id}&spec=640" if self_id else "",
+            }
         
         try:
-            # Rewrite media CQ segments to local cached file:// paths (QQ compatibility)
-            message = await rewrite_media_cq_to_local(message)
-
-            # Get bot's self_id first
-            login_info = await app_instance.onebot_adapter.call_api("get_login_info", {})
-            self_id = login_info.get("data", {}).get("user_id") if isinstance(login_info, dict) else None
-            self_nickname = login_info.get("data", {}).get("nickname", "Bot") if isinstance(login_info, dict) else "Bot"
+            # Uploaded browser images are sent to OneBot as base64://, while WebUI history uses local cache paths.
+            message, display_message = await rewrite_media_cq_for_send(message)
+            bot_identity = await get_bot_identity()
+            self_id = bot_identity["self_id"]
+            self_nickname = bot_identity["self_nickname"]
+            sender_payload = {
+                "user_id": self_id,
+                "nickname": self_nickname,
+                "card": "",
+                "role": "owner",
+                "avatar": bot_identity["avatar"],
+            }
             
             # Send message
             if chat_type == "group":
                 result = await app_instance.onebot_adapter.call_api(
                     "send_group_msg",
-                    {"group_id": int(chat_id), "message": message}
+                    {
+                        "group_id": int(chat_id),
+                        "message": message,
+                        "_xq_meta": {
+                            "self_id": self_id,
+                            "self_nickname": self_nickname,
+                            "sender": sender_payload,
+                            "display_message": display_message,
+                        },
+                    },
+                    source=send_source,
                 )
             elif chat_type == "private":
                 result = await app_instance.onebot_adapter.call_api(
                     "send_private_msg",
-                    {"user_id": int(chat_id), "message": message}
+                    {
+                        "user_id": int(chat_id),
+                        "message": message,
+                        "_xq_meta": {
+                            "self_id": self_id,
+                            "self_nickname": self_nickname,
+                            "sender": sender_payload,
+                            "display_message": display_message,
+                        },
+                    },
+                    source=send_source,
                 )
             else:
                 raise HTTPException(status_code=400, detail="Invalid type, must be 'group' or 'private'")
@@ -2692,70 +3431,35 @@ def create_app() -> FastAPI:
                 elif "message_id" in result:
                     message_id = result["message_id"]
             
-            # Publish to EventBus for message history (but mark as source="self" so plugins can ignore if needed)
-            message_obj = None
-            if self_id and message_id:
-                simulated_event = {
-                    "time": int(time.time()),
-                    "self_id": self_id,
-                    "post_type": "message",
-                    "message_type": chat_type,
-                    "sub_type": "normal",
-                    "message_id": message_id,
-                    "user_id": self_id,
-                    "message": message,
-                    "raw_message": message,
-                    "font": 0,
-                    "sender": {
-                        "user_id": self_id,
-                        "nickname": self_nickname,
-                        "card": "",
-                        "role": "owner"
-                    },
-                    "is_self": True,  # Mark as self-sent
-                    "target_id": chat_id  # Add target_id to identify the recipient
-                }
-                
-                # Add group_id for group messages
-                if chat_type == "group":
-                    simulated_event["group_id"] = str(chat_id)  # Use string to match received messages
-                
-                # Publish to event bus for message history
-                event_bus = get_event_bus()
-                published_event_id = await event_bus.publish(
-                    "onebot.message",
-                    simulated_event,
-                    source="self"  # Mark source as "self" so plugins can filter if needed
-                )
-                # Persist self-sent message to DB so WebUI can recover history after reconnect.
-                try:
-                    db_manager = get_database_manager()
-                    persisted_row = await db_manager.create_message_event(
-                        event_id=published_event_id,
-                        event_name="onebot.message",
-                        payload=simulated_event,
-                        source="self",
-                    )
-                except Exception as e:
-                    logger.warning(f"Failed to persist self-sent message event: {e}")
-                    persisted_row = None
-                
-                # Prepare message object for immediate display
-                message_obj = {
-                    "id": published_event_id,
-                    "db_row_id": persisted_row.id if persisted_row else None,
-                    "timestamp": datetime.now().isoformat(),
-                    "message_id": str(message_id),
-                    "user_id": str(self_id),
-                    "message": message,
-                    "sender": {
-                        "user_id": self_id,
-                        "nickname": self_nickname,
-                        "card": "",
-                        "role": "owner"
-                    },
-                    "is_self": True
-                }
+            message_obj = {
+                "id": f"sent-{message_id or uuid.uuid4()}",
+                "db_row_id": None,
+                "timestamp": datetime.now().isoformat(),
+                "message_id": str(message_id or ""),
+                "message_type": chat_type,
+                "user_id": str(self_id),
+                "target_id": str(chat_id) if chat_type == "private" else None,
+                "group_id": str(chat_id) if chat_type == "group" else None,
+                "message": display_message,
+                "sender": sender_payload,
+                "is_self": True,
+                "source": send_source,
+            }
+
+            await get_audit_logger().log_webui_action(
+                username=request_username,
+                action="send_message",
+                resource=f"chat:{chat_type}:{chat_id}",
+                success=True,
+                ip_address=_client_ip_from_request(http_request),
+                details={
+                    "chat_type": chat_type,
+                    "chat_id": str(chat_id),
+                    "message": display_message,
+                    "message_id": str(message_id or ""),
+                    "source": send_source,
+                },
+            )
             
             return {
                 "success": True,
@@ -2822,33 +3526,43 @@ def create_app() -> FastAPI:
 
             # For QQ voice, prefer OneBot-side conversion (no local ffmpeg required).
             if media_kind == "record" and file and onebot_adapter:
+                fail_until = float(_record_proxy_fail_until.get(file, 0.0) or 0.0)
+                now_ts = time.time()
+                skip_get_record = fail_until > now_ts
                 try:
-                    converted = await onebot_adapter.call_api(
-                        "get_record",
-                        {"file": file, "out_format": "wav"},
-                    )
-                    converted_ref = None
-                    if isinstance(converted, dict):
-                        converted_ref = (
-                            converted.get("file")
-                            or converted.get("url")
-                            or (converted.get("data", {}) or {}).get("file")
-                            or (converted.get("data", {}) or {}).get("url")
+                    if not skip_get_record:
+                        converted = await onebot_adapter.call_api(
+                            "get_record",
+                            {"file": file, "out_format": "wav"},
                         )
-                    if isinstance(converted_ref, str) and converted_ref.strip():
-                        converted_ref = converted_ref.strip()
-                        if converted_ref.startswith("http://") or converted_ref.startswith("https://") or converted_ref.startswith("file://"):
-                            media_ref = converted_ref
-                        else:
-                            local_candidate = Path(converted_ref)
-                            if local_candidate.exists() and local_candidate.is_file():
-                                media_ref = local_candidate.resolve().as_uri()
-                    logger.debug(f"get_record conversion attempted for {file}, using ref: {media_ref[:120]}")
+                        converted_ref = None
+                        if isinstance(converted, dict):
+                            converted_ref = (
+                                converted.get("file")
+                                or converted.get("url")
+                                or (converted.get("data", {}) or {}).get("file")
+                                or (converted.get("data", {}) or {}).get("url")
+                            )
+                        if isinstance(converted_ref, str) and converted_ref.strip():
+                            converted_ref = converted_ref.strip()
+                            if converted_ref.startswith("http://") or converted_ref.startswith("https://") or converted_ref.startswith("file://"):
+                                media_ref = converted_ref
+                            else:
+                                local_candidate = Path(converted_ref)
+                                if local_candidate.exists() and local_candidate.is_file():
+                                    media_ref = local_candidate.resolve().as_uri()
+                        logger.debug(f"get_record conversion attempted for {file}, using ref: {media_ref[:120]}")
+                    else:
+                        logger.debug(f"Skipping get_record for recently failed ref: {file}")
                 except asyncio.CancelledError as e:
                     # OneBot WS reconnect can cancel pending get_record request.
                     # Degrade gracefully to original media ref instead of failing entire HTTP request.
                     logger.warning(f"get_record conversion cancelled for {file}, fallback to original ref: {e}")
                 except Exception as e:
+                    message = str(e).lower()
+                    if "file not found" in message:
+                        # Avoid spamming OneBot get_record for known invalid refs.
+                        _record_proxy_fail_until[file] = time.time() + 300.0
                     logger.debug(f"get_record conversion unavailable for {file}: {e}")
 
             # Try cache
@@ -2881,11 +3595,20 @@ def create_app() -> FastAPI:
             }
             async with httpx.AsyncClient(follow_redirects=True, timeout=10.0) as client:
                 response = await client.get(media_ref, headers=headers)
-                response.raise_for_status()
+                try:
+                    response.raise_for_status()
+                except httpx.HTTPStatusError:
+                    # Typical case for QQ temp links: expired URLs are expected; don't escalate as 500.
+                    body = (response.text or "")[:300].lower()
+                    if response.status_code in (400, 403, 404) and "download url has expired" in body:
+                        raise HTTPException(status_code=410, detail="Media URL expired")
+                    raise HTTPException(status_code=404, detail="Media unavailable")
                 return Response(
                     content=response.content,
                     media_type=response.headers.get("content-type", "application/octet-stream")
                 )
+        except HTTPException:
+            raise
         except Exception as e:
             logger.error(f"Failed to proxy media: {e}", exc_info=True)
             raise HTTPException(status_code=500, detail=f"Failed to load media: {str(e)}")
@@ -2915,12 +3638,14 @@ def create_app() -> FastAPI:
         logger.debug(f"Getting chat history for {chat_type} {chat_id}, total rows: {len(rows)}")
 
         messages = []
+        seen_self_message_ids = set()
         for row in rows:
             payload = row.payload
             if not isinstance(payload, dict):
                 continue
 
             payload_is_self = payload.get("is_self", row.source == "self")
+            message_id = str(payload.get("message_id", "")).strip()
 
             # Double-check filters in Python for type-safety across mixed JSON numeric/string values.
             if chat_type == "group":
@@ -2934,14 +3659,29 @@ def create_app() -> FastAPI:
                 if not (is_from_user or is_to_user):
                     continue
 
+            sender = payload.get("sender", {})
+            if not isinstance(sender, dict):
+                sender = {}
+
+            if payload_is_self and message_id:
+                if message_id in seen_self_message_ids:
+                    continue
+                seen_self_message_ids.add(message_id)
+
             messages.append({
                 "id": row.event_id,
+                "db_row_id": row.id,
                 "timestamp": row.event_time.isoformat(),
-                "message_id": str(payload.get("message_id", "")),
-                "user_id": str(payload.get("user_id", "")),
-                "message": payload.get("raw_message", ""),
-                "sender": payload.get("sender", {}),
-                "is_self": payload_is_self
+                "message_id": message_id,
+                "message_type": payload.get("message_type", chat_type),
+                "user_id": str(payload.get("user_id", "") or sender.get("user_id", "")),
+                "group_id": str(payload.get("group_id", "")) if payload.get("group_id") else None,
+                "target_id": str(payload.get("target_id", "")) if payload.get("target_id") else None,
+                "message": payload.get("raw_message") or payload.get("message") or "",
+                "sender": sender,
+                "is_self": payload_is_self,
+                "source_plugin": payload.get("source_plugin"),
+                "source": payload.get("source"),
             })
 
         logger.debug(f"Returning {len(messages)} messages for {chat_type} {chat_id}")
@@ -3016,32 +3756,81 @@ def create_app() -> FastAPI:
                     "message": "OneBot adapter not available",
                     "data": None
                 }
+            adapter = app.onebot_adapter
+            connection_type = str(getattr(adapter, "connection_type", "http"))
+            target = _onebot_target_hint(adapter)
             
             # Check if adapter is running
-            if not hasattr(app.onebot_adapter, '_running') or not app.onebot_adapter._running:
+            if not hasattr(adapter, '_running') or not adapter._running:
                 return {
                     "status": "error",
                     "message": "OneBot adapter not running",
+                    "connection_type": connection_type,
+                    "target": target,
+                    "data": None
+                }
+
+            # In reverse WS mode, if no reverse client is connected, avoid fallback HTTP noise.
+            if connection_type == "ws_reverse" and not getattr(adapter, "_reverse_clients", []):
+                return {
+                    "status": "error",
+                    "message": "Reverse WebSocket client not connected",
+                    "reason": "reverse_ws_disconnected",
+                    "connection_type": connection_type,
+                    "target": target,
                     "data": None
                 }
             
             # Call get_login_info API (with timeout to prevent hanging)
             try:
                 result = await asyncio.wait_for(
-                    app.onebot_adapter.call_api("get_login_info", {}),
+                    adapter.call_api("get_login_info", {}),
                     timeout=10.0
                 )
                 logger.debug(f"Login info API result: {result}")
                 
                 return {
                     "status": "ok",
+                    "connection_type": connection_type,
+                    "target": target,
                     "data": result
                 }
             except asyncio.TimeoutError:
-                logger.error("Timeout getting login info")
+                logger.warning("Timeout getting OneBot login info")
                 return {
                     "status": "error",
                     "message": "Timeout getting login info",
+                    "reason": "timeout",
+                    "connection_type": connection_type,
+                    "target": target,
+                    "data": None
+                }
+            except Exception as e:
+                if _is_expected_onebot_connectivity_error(e):
+                    if _should_log_onebot_connectivity_issue():
+                        logger.warning(
+                            f"OneBot login info unavailable: {e} "
+                            f"(type={connection_type}, target={target})"
+                        )
+                    else:
+                        logger.debug(
+                            f"OneBot login info still unavailable: {e} "
+                            f"(type={connection_type}, target={target})"
+                        )
+                    return {
+                        "status": "error",
+                        "message": "OneBot API unreachable",
+                        "reason": "connect_error",
+                        "connection_type": connection_type,
+                        "target": target,
+                        "data": None
+                    }
+                logger.error(f"Failed to get login info: {e}", exc_info=True)
+                return {
+                    "status": "error",
+                    "message": str(e),
+                    "connection_type": connection_type,
+                    "target": target,
                     "data": None
                 }
         except Exception as e:
@@ -3060,30 +3849,21 @@ def create_app() -> FastAPI:
         """
         if not db_manager:
             return {"total": 0, "enabled": 0}
-        
         try:
-            # Add timeout to prevent hanging on database issues
             all_plugins = await asyncio.wait_for(
                 db_manager.list_plugin_settings(),
                 timeout=5.0
             )
-            enabled_plugins = await asyncio.wait_for(
-                db_manager.list_plugin_settings(enabled_only=True),
-                timeout=5.0
-            )
-            
-            # Enabled plugins are automatically loaded into runtime
-            # So enabled count should be the actual running count
+            enabled_count = sum(1 for p in all_plugins if p.enabled)
+
             return {
                 "total": len(all_plugins),
-                "enabled": len(enabled_plugins)
+                "enabled": enabled_count
             }
         except asyncio.TimeoutError:
-            logger.warning("Timeout getting plugin stats from database")
+            logger.warning("Timeout getting plugin stats")
             return {"total": 0, "enabled": 0}
         except Exception as e:
-            logger.warning(f"Failed to get plugin stats: {e}")
-            return {"total": 0, "enabled": 0}
             logger.warning(f"Failed to get plugin stats: {e}")
             return {"total": 0, "enabled": 0}
     
@@ -3362,8 +4142,7 @@ def create_app() -> FastAPI:
         if mode not in {"agent", "assistant"}:
             raise HTTPException(status_code=400, detail="Invalid mode, must be 'agent' or 'assistant'")
 
-        project_root = Path(__file__).parent.parent.parent
-        toml_file = project_root / "config.toml"
+        toml_file = get_config_file_path()
 
         try:
             import tomlkit
@@ -3374,7 +4153,7 @@ def create_app() -> FastAPI:
             )
 
         app = get_app()
-        thread_pool = getattr(app, 'plugin_thread_pool', None)
+        thread_pool = getattr(app, 'blocking_task_pool', None)
 
         if toml_file.exists():
             if thread_pool:
@@ -3417,6 +4196,100 @@ def create_app() -> FastAPI:
 
         return {"message": "AI workspace configuration updated successfully", "mode": mode}
 
+    @app.get("/api/ai/assistant-config")
+    async def get_ai_assistant_config(
+        user: Dict[str, Any] = Depends(get_current_user)
+    ):
+        """Get Assistant mode configuration."""
+        config_path = _get_ai_assistant_config_path()
+        if not config_path.exists():
+            return {"config": {}}
+
+        app_instance = get_app()
+        thread_pool = getattr(app_instance, 'blocking_task_pool', None)
+
+        try:
+            if thread_pool:
+                def read_config_file():
+                    with open(config_path, "r", encoding="utf-8") as f:
+                        return json.load(f)
+                config = await thread_pool.run_in_executor(read_config_file)
+            else:
+                with open(config_path, "r", encoding="utf-8") as f:
+                    config = json.load(f)
+        except json.JSONDecodeError:
+            logger.warning(f"Assistant config file is invalid JSON: {config_path}")
+            return {"config": {}}
+        except Exception as e:
+            logger.error(f"Failed to read Assistant config: {e}", exc_info=True)
+            raise HTTPException(status_code=500, detail=f"Failed to read Assistant config: {str(e)}")
+
+        config = _normalize_ai_assistant_preset_references(config if isinstance(config, dict) else {})
+        return {"config": assistant_config_for_response(config)}
+
+    @app.post("/api/ai/assistant-config")
+    async def update_ai_assistant_config(
+        config_update: AIAssistantConfigUpdate,
+        user: Dict[str, Any] = Depends(require_permission(Permission.SYSTEM_CONFIG_EDIT))
+    ):
+        """Persist Assistant mode configuration."""
+        config_path = _get_ai_assistant_config_path()
+        incoming = _normalize_ai_assistant_preset_references(dict(config_update.config or {}))
+
+        app_instance = get_app()
+        thread_pool = getattr(app_instance, 'blocking_task_pool', None)
+
+        try:
+            existing_config: Dict[str, Any] = {}
+            if config_path.exists():
+                def read_existing_config():
+                    with open(config_path, "r", encoding="utf-8") as f:
+                        data = json.load(f)
+                    return data if isinstance(data, dict) else {}
+                if thread_pool:
+                    existing_config = await thread_pool.run_in_executor(read_existing_config)
+                else:
+                    existing_config = read_existing_config()
+
+            payload = assistant_config_for_storage(incoming, existing_config)
+            payload["updated_at"] = datetime.now().isoformat()
+
+            if thread_pool:
+                def write_config_file():
+                    with open(config_path, "w", encoding="utf-8") as f:
+                        json.dump(payload, f, ensure_ascii=False, indent=2)
+                await thread_pool.run_in_executor(write_config_file)
+            else:
+                with open(config_path, "w", encoding="utf-8") as f:
+                    json.dump(payload, f, ensure_ascii=False, indent=2)
+        except Exception as e:
+            logger.error(f"Failed to write Assistant config: {e}", exc_info=True)
+            raise HTTPException(status_code=500, detail=f"Failed to save Assistant config: {str(e)}")
+
+        return {"message": "Assistant configuration updated successfully", "config": assistant_config_for_response(payload)}
+
+    @app.post("/api/ai/assistant-memory/clear")
+    async def clear_ai_assistant_memory(
+        request: AIAssistantMemoryClearRequest,
+        user: Dict[str, Any] = Depends(require_permission(Permission.SYSTEM_CONFIG_EDIT))
+    ):
+        """Clear Assistant session/long memory for a group or private target."""
+        scope = str(request.scope or "").strip()
+        target_id = str(request.target_id or "").strip()
+        memory_type = str(request.memory_type or "").strip()
+
+        if scope not in {"group", "private"}:
+            raise HTTPException(status_code=400, detail="scope must be group or private")
+        if memory_type not in {"session", "long", "all"}:
+            raise HTTPException(status_code=400, detail="memory_type must be session, long or all")
+        if not target_id:
+            raise HTTPException(status_code=400, detail="target_id is required")
+
+        from ..assistant.runtime import get_assistant_runtime
+
+        cleared = await get_assistant_runtime().clear_memory(scope, target_id, memory_type)
+        return {"message": "Assistant memory cleared", "cleared": cleared}
+
     @app.get("/api/system/config")
     async def get_system_config(
         user: Dict[str, Any] = Depends(require_permission(Permission.SYSTEM_CONFIG_VIEW))
@@ -3431,13 +4304,14 @@ def create_app() -> FastAPI:
             "log_level": config.log_level,
             "plugin_auto_load": config.plugin_auto_load,
             "web_ui_enabled": config.web_ui_enabled,
-            "plugin_thread_pool_enabled": getattr(config, 'plugin_thread_pool_enabled', True),
+            "web_ui_username": config.web_ui_username,
+            "blocking_task_pool_enabled": getattr(config, 'blocking_task_pool_enabled', True),
+            "blocking_task_pool_max_workers": getattr(config, 'blocking_task_pool_max_workers', 0),
         }
         # Add Tencent Cloud TTS config if exists
         config_manager = get_config_manager()
         config_obj = config_manager.get()
-        project_root = Path(__file__).parent.parent.parent
-        toml_file = project_root / "config.toml"
+        toml_file = get_config_file_path()
         
         tencent_config = {}
         if toml_file.exists():
@@ -3448,7 +4322,7 @@ def create_app() -> FastAPI:
             
             # Use thread pool for synchronous file IO
             app = get_app()
-            thread_pool = getattr(app, 'plugin_thread_pool', None)
+            thread_pool = getattr(app, 'blocking_task_pool', None)
             
             if thread_pool:
                 def read_toml_file():
@@ -3470,7 +4344,10 @@ def create_app() -> FastAPI:
                     }
             if "plugins" in toml_data:
                 plugins_config = toml_data["plugins"]
-                safe_config["plugin_thread_pool_enabled"] = plugins_config.get("thread_pool_enabled", True)
+                safe_config["blocking_task_pool_enabled"] = plugins_config.get("blocking_task_pool_enabled", True)
+                safe_config["blocking_task_pool_max_workers"] = int(
+                    plugins_config.get("blocking_task_pool_max_workers", 0) or 0
+                )
         
         safe_config["tencent_cloud"] = tencent_config
         return safe_config
@@ -3479,16 +4356,17 @@ def create_app() -> FastAPI:
     async def get_threadpool_stats(user: Dict[str, Any] = Depends(get_current_user)):
         """Get thread pool statistics."""
         stats = {
-            "plugin_threadpool": None
+            "blocking_task_pool": None
         }
 
-        # Try to get plugin thread pool stats  
+        # Try to get blocking task pool stats
         try:
-            from ..plugins.thread_pool import _plugin_thread_pool_manager
-            if _plugin_thread_pool_manager:
-                stats["plugin_threadpool"] = _plugin_thread_pool_manager.get_stats()
+            from ..core.blocking_task_pool import _blocking_task_pool_manager
+
+            if _blocking_task_pool_manager:
+                stats["blocking_task_pool"] = _blocking_task_pool_manager.get_stats()
         except Exception as e:
-            logger.warning(f"Failed to get plugin thread pool stats: {e}")
+            logger.warning(f"Failed to get blocking task pool stats: {e}")
         
         return stats
     
@@ -3503,7 +4381,13 @@ def create_app() -> FastAPI:
         
         # Update allowed config values
         update_data = {}
-        allowed_keys = ["web_ui_enabled", "log_level", "plugin_auto_load", "plugin_thread_pool_enabled"]
+        allowed_keys = [
+            "web_ui_enabled",
+            "log_level",
+            "plugin_auto_load",
+            "blocking_task_pool_enabled",
+            "blocking_task_pool_max_workers",
+        ]
         for key in allowed_keys:
             if key in config_update:
                 update_data[key] = config_update[key]
@@ -3516,8 +4400,7 @@ def create_app() -> FastAPI:
             raise HTTPException(status_code=400, detail="No valid configuration fields to update")
         
         # Update config in TOML file
-        project_root = Path(__file__).parent.parent.parent
-        toml_file = project_root / "config.toml"
+        toml_file = get_config_file_path()
         
         try:
             import tomlkit
@@ -3529,7 +4412,7 @@ def create_app() -> FastAPI:
         
         # Use thread pool for synchronous file IO
         app = get_app()
-        thread_pool = getattr(app, 'plugin_thread_pool', None)
+        thread_pool = getattr(app, 'blocking_task_pool', None)
         
         if toml_file.exists():
             if thread_pool:
@@ -3593,11 +4476,22 @@ def create_app() -> FastAPI:
                 if "plugins" not in toml_data:
                     toml_data["plugins"] = {}
                 toml_data["plugins"]["auto_load"] = value
-            elif key == "plugin_thread_pool_enabled":
-                # Save to [plugins].thread_pool_enabled
+            elif key == "blocking_task_pool_enabled":
+                # Save to [plugins].blocking_task_pool_enabled
                 if "plugins" not in toml_data:
                     toml_data["plugins"] = {}
-                toml_data["plugins"]["thread_pool_enabled"] = value
+                toml_data["plugins"]["blocking_task_pool_enabled"] = value
+            elif key == "blocking_task_pool_max_workers":
+                try:
+                    parsed_workers = int(value)
+                except (TypeError, ValueError):
+                    raise HTTPException(status_code=400, detail="blocking_task_pool_max_workers must be an integer")
+                if parsed_workers < 0:
+                    raise HTTPException(status_code=400, detail="blocking_task_pool_max_workers cannot be negative")
+                if "plugins" not in toml_data:
+                    toml_data["plugins"] = {}
+                toml_data["plugins"]["blocking_task_pool_max_workers"] = parsed_workers
+                update_data["blocking_task_pool_max_workers"] = parsed_workers
         
         # Handle Tencent Cloud TTS config
         tencent_config = config_update.get("tencent_cloud")
@@ -3660,6 +4554,29 @@ def create_app() -> FastAPI:
         except Exception as e:
             logger.warning(f"Failed to reload config after update: {e}")
             # Continue anyway, config is saved to file
+
+        if "blocking_task_pool_enabled" in update_data or "blocking_task_pool_max_workers" in update_data:
+            try:
+                from ..core.blocking_task_pool import (
+                    get_blocking_task_pool_manager,
+                    shutdown_blocking_task_pool,
+                )
+
+                effective_enabled = update_data.get(
+                    "blocking_task_pool_enabled",
+                    getattr(current_config, "blocking_task_pool_enabled", True),
+                )
+                effective_workers = update_data.get(
+                    "blocking_task_pool_max_workers",
+                    getattr(current_config, "blocking_task_pool_max_workers", 0),
+                )
+
+                shutdown_blocking_task_pool(wait=True)
+                app.blocking_task_pool = None
+                if effective_enabled:
+                    app.blocking_task_pool = get_blocking_task_pool_manager(effective_workers)
+            except Exception as e:
+                logger.warning(f"Failed to reinitialize blocking task pool after config update: {e}")
         
         await get_audit_logger().log(AuditEvent(
             event_type=AuditEventType.CONFIG_CHANGED,
@@ -3672,10 +4589,121 @@ def create_app() -> FastAPI:
         ))
         
         return {"message": "Configuration updated", "updated": update_data}
+
+    @app.post("/api/system/update-admin-username")
+    async def update_admin_username(
+        request: Dict[str, Any],
+        http_request: Request,
+        user: Dict[str, Any] = Depends(require_permission(Permission.ADMIN_ALL))
+    ):
+        """Update the WebUI administrator username."""
+        try:
+            new_username = str(request.get("username") or "").strip()
+            if len(new_username) < 3 or len(new_username) > 64:
+                raise HTTPException(
+                    status_code=400,
+                    detail="Username must be 3-64 characters long"
+                )
+            if any(ch.isspace() for ch in new_username):
+                raise HTTPException(
+                    status_code=400,
+                    detail="Username cannot contain whitespace"
+                )
+
+            auth_manager = get_auth_manager()
+            current_config = get_config()
+            old_username = str(user.get("username") or "").strip()
+            if not old_username or not auth_manager.get_user(old_username):
+                old_username = (current_config.web_ui_username or "admin").strip() or "admin"
+
+            existing_user = auth_manager.get_user(new_username)
+            if existing_user and new_username != old_username:
+                raise HTTPException(status_code=400, detail="Username already exists")
+
+            renamed = await auth_manager.rename_user(old_username, new_username)
+            if not renamed:
+                raise HTTPException(status_code=404, detail="Admin user not found")
+
+            try:
+                get_device_key_manager().rename_user(old_username, new_username)
+            except Exception as e:
+                logger.warning(f"Failed to rename device keys for admin user: {e}")
+
+            toml_file = get_config_file_path()
+            try:
+                import tomlkit
+            except ImportError:
+                raise HTTPException(
+                    status_code=500,
+                    detail="TOML support not available. Please install tomlkit to preserve comments."
+                )
+
+            app = get_app()
+            thread_pool = getattr(app, 'blocking_task_pool', None)
+
+            if toml_file.exists():
+                if thread_pool:
+                    def read_toml_file():
+                        with open(toml_file, "r", encoding="utf-8") as f:
+                            return tomlkit.load(f)
+                    toml_data = await thread_pool.run_in_executor(read_toml_file)
+                else:
+                    with open(toml_file, "r", encoding="utf-8") as f:
+                        toml_data = tomlkit.load(f)
+            else:
+                toml_data = tomlkit.document()
+
+            if "web_ui" not in toml_data:
+                toml_data["web_ui"] = {}
+            toml_data["web_ui"]["username"] = new_username
+            os.environ["WEB_UI_USERNAME"] = new_username
+
+            if thread_pool:
+                def write_toml_file():
+                    with open(toml_file, "w", encoding="utf-8") as f:
+                        tomlkit.dump(toml_data, f)
+                await thread_pool.run_in_executor(write_toml_file)
+            else:
+                with open(toml_file, "w", encoding="utf-8") as f:
+                    tomlkit.dump(toml_data, f)
+
+            reload_config()
+
+            audit_request_details = await _request_audit_details(http_request)
+            await get_audit_logger().log(AuditEvent(
+                event_type=AuditEventType.CONFIG_CHANGED,
+                timestamp=datetime.utcnow(),
+                username=new_username,
+                resource="system",
+                action="update_admin_username",
+                success=True,
+                ip_address=audit_request_details.get("ip"),
+                details={
+                    "old_username": old_username,
+                    "new_username": new_username,
+                    "request": audit_request_details,
+                }
+            ))
+
+            logger.info(
+                "Admin username updated successfully",
+                old_username=old_username,
+                new_username=new_username,
+            )
+            return {"message": "Admin username updated successfully", "username": new_username}
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.error("Failed to update admin username", error=str(e), exc_info=True)
+            raise HTTPException(
+                status_code=500,
+                detail=f"Failed to update username: {str(e)}"
+            )
     
     @app.post("/api/system/reset-admin-password")
     async def reset_admin_password(
         request: Dict[str, Any],
+        http_request: Request,
         user: Dict[str, Any] = Depends(require_permission(Permission.ADMIN_ALL))
     ):
         """Reset admin password."""
@@ -3691,18 +4719,21 @@ def create_app() -> FastAPI:
             from ..security.auth import get_password_hash
             
             # Update admin password in memory
-            if "admin" not in auth_manager._users:
+            admin_username = (get_config().web_ui_username or user.get("username") or "admin").strip() or "admin"
+            if admin_username not in auth_manager._users and user.get("username") in auth_manager._users:
+                admin_username = user.get("username")
+
+            if admin_username not in auth_manager._users:
                 raise HTTPException(
                     status_code=404,
                     detail="Admin user not found"
                 )
             
-            auth_manager._users["admin"]["password_hash"] = get_password_hash(new_password)
+            auth_manager._users[admin_username]["password_hash"] = get_password_hash(new_password)
             
             # Also update in config file
             config_manager = get_config_manager()
-            project_root = Path(__file__).parent.parent.parent
-            toml_file = project_root / "config.toml"
+            toml_file = get_config_file_path()
             
             try:
                 import tomllib
@@ -3717,7 +4748,7 @@ def create_app() -> FastAPI:
             else:
                 # Use thread pool for synchronous file IO
                 app = get_app()
-                thread_pool = getattr(app, 'plugin_thread_pool', None)
+                thread_pool = getattr(app, 'blocking_task_pool', None)
                 
                 if toml_file.exists():
                     if thread_pool:
@@ -3749,13 +4780,16 @@ def create_app() -> FastAPI:
                 
                 reload_config()
             
+            audit_request_details = await _request_audit_details(http_request)
             await get_audit_logger().log(AuditEvent(
                 event_type=AuditEventType.CONFIG_CHANGED,
                 timestamp=datetime.utcnow(),
                 username=user.get("username"),
                 resource="system",
                 action="reset_admin_password",
-                success=True
+                success=True,
+                ip_address=audit_request_details.get("ip"),
+                details={"request": audit_request_details}
             ))
             
             logger.info("Admin password reset successfully", username=user.get("username"))
@@ -3785,6 +4819,57 @@ def create_app() -> FastAPI:
         except Exception as e:
             logger.error(f"Failed to get system logs: {e}", exc_info=True)
             raise HTTPException(status_code=500, detail=f"Failed to get system logs: {str(e)}")
+
+    @app.get("/api/system/log-files")
+    async def get_system_log_files(
+        user: Dict[str, Any] = Depends(require_permission(Permission.SYSTEM_CONFIG_VIEW))
+    ):
+        """List historical daily log files."""
+        from ..core.logger import list_history_log_files
+
+        try:
+            return list_history_log_files()
+        except Exception as e:
+            logger.error(f"Failed to list system log files: {e}", exc_info=True)
+            raise HTTPException(status_code=500, detail=f"Failed to list system log files: {str(e)}")
+
+    @app.get("/api/system/log-files/{file_name}")
+    async def get_system_log_file_content(
+        file_name: str,
+        user: Dict[str, Any] = Depends(require_permission(Permission.SYSTEM_CONFIG_VIEW))
+    ):
+        """Read a complete historical log file."""
+        from ..core.logger import read_history_log_file
+
+        try:
+            return read_history_log_file(file_name)
+        except FileNotFoundError:
+            raise HTTPException(status_code=404, detail="Log file not found")
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+        except Exception as e:
+            logger.error(f"Failed to read system log file {file_name}: {e}", exc_info=True)
+            raise HTTPException(status_code=500, detail=f"Failed to read system log file: {str(e)}")
+
+    @app.delete("/api/system/log-files/{file_name}")
+    async def delete_system_log_file(
+        file_name: str,
+        user: Dict[str, Any] = Depends(require_permission(Permission.SYSTEM_CONFIG_EDIT))
+    ):
+        """Delete a historical log file."""
+        from ..core.logger import delete_history_log_file
+
+        try:
+            delete_history_log_file(file_name)
+            logger.info("Deleted historical system log file", file_name=file_name, username=user.get("username"))
+            return {"ok": True, "deleted": file_name}
+        except FileNotFoundError:
+            raise HTTPException(status_code=404, detail="Log file not found")
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+        except Exception as e:
+            logger.error(f"Failed to delete system log file {file_name}: {e}", exc_info=True)
+            raise HTTPException(status_code=500, detail=f"Failed to delete system log file: {str(e)}")
     
     # Splash screen endpoints
     @app.get("/api/splash/check")
@@ -3798,8 +4883,7 @@ def create_app() -> FastAPI:
             
             #  data 
             #  webui 
-            project_root = Path(__file__).parent.parent.parent
-            data_dir = project_root / "data"
+            data_dir = get_runtime_base_dir() / "data"
             data_dir.mkdir(parents=True, exist_ok=True)
             
             # 
@@ -3823,8 +4907,7 @@ def create_app() -> FastAPI:
                 return {"success": True, "message": "WebUI disabled, splash screen skipped"}
             
             #  data 
-            project_root = Path(__file__).parent.parent.parent
-            data_dir = project_root / "data"
+            data_dir = get_runtime_base_dir() / "data"
             
             #  data 
             try:
@@ -4186,419 +5269,258 @@ def create_app() -> FastAPI:
             mgr.unregister_message_callback(sandbox_uuid, forward)
 
     # ===== NapCat Management Routes =====
-    
-    @app.post("/api/system/open-dialog")
-    async def system_open_dialog(
-        user: Dict[str, Any] = Depends(require_permission(Permission.SYSTEM_CONFIG_EDIT))
-    ):
-        """Open system file/folder dialog."""
-        try:
-            import tkinter as tk
-            from tkinter import filedialog
-            
-            # Create a hidden root window
-            root = tk.Tk()
-            root.withdraw()
-            root.attributes('-topmost', True)  # Bring to front
-            
-            # Open directory dialog
-            path = filedialog.askdirectory(title="选择 NapCat 安装目录")
-            
-            root.destroy()
-            
-            if path:
-                # Convert to standard path format
-                import os
-                path = os.path.normpath(path)
-                return {'ok': True, 'path': path}
-            else:
-                return {'ok': False, 'error': 'Canceled'}
-                
-        except Exception as e:
-            logger.error(f"Failed to open dialog: {e}")
-            return {'ok': False, 'error': str(e)}
-    
-    @app.post("/api/system/list-directory")
-    async def list_directory(
-        data: Dict[str, Any] = Body(...),
-        user: Dict[str, Any] = Depends(require_permission(Permission.SYSTEM_CONFIG_VIEW))
-    ):
-        """List directory contents."""
-        import os
-        
-        path = data.get('path', '')
-        if not path:
-            # Return root directories based on platform
-            if platform.system() == 'Windows':
-                import string
-                drives = []
-                for letter in string.ascii_uppercase:
-                    drive = f"{letter}:\\"
-                    if os.path.exists(drive):
-                        drives.append({
-                            'name': drive,
-                            'path': drive,
-                            'is_dir': True,
-                            'is_parent': False
-                        })
-                return {'ok': True, 'path': '', 'items': drives}
-            else:
-                path = '/'
-        
-        try:
-            path = os.path.abspath(path)
-            if not os.path.exists(path):
-                return {'ok': False, 'error': 'Path does not exist'}
-            
-            if not os.path.isdir(path):
-                return {'ok': False, 'error': 'Path is not a directory'}
-            
-            items = []
-            
-            # Add parent directory entry
-            parent = os.path.dirname(path)
-            if parent != path:  # Not at root
-                items.append({
-                    'name': '..',
-                    'path': parent,
-                    'is_dir': True,
-                    'is_parent': True
-                })
-            
-            # List directory contents
-            try:
-                entries = os.listdir(path)
-                entries.sort(key=lambda x: (not os.path.isdir(os.path.join(path, x)), x.lower()))
-                
-                for entry in entries:
-                    try:
-                        full_path = os.path.join(path, entry)
-                        is_dir = os.path.isdir(full_path)
-                        
-                        items.append({
-                            'name': entry,
-                            'path': full_path,
-                            'is_dir': is_dir,
-                            'is_parent': False
-                        })
-                    except (PermissionError, OSError):
-                        # Skip inaccessible items
-                        continue
-                        
-            except PermissionError:
-                return {'ok': False, 'error': 'Permission denied'}
-            
-            return {
-                'ok': True,
-                'path': path,
-                'items': items
-            }
-            
-        except Exception as e:
-            logger.error(f"Failed to list directory: {e}")
-            return {'ok': False, 'error': str(e)}
 
-    @app.get("/api/napcat/docker/containers")
-    async def list_napcat_docker_containers(
-        user: Dict[str, Any] = Depends(require_permission(Permission.SYSTEM_CONFIG_VIEW))
-    ):
-        """List docker containers to help user pick an existing napcat container."""
-        from ..napcat import get_napcat_manager
-
-        napcat_mgr = get_napcat_manager()
-        containers = napcat_mgr.list_docker_containers()
-        return {'ok': True, 'containers': containers}
-    
-    @app.get("/api/napcat/system/info")
-    async def get_system_info(
-        user: Dict[str, Any] = Depends(require_permission(Permission.SYSTEM_CONFIG_VIEW))
-    ):
-        """Get system information for NapCat installation."""
-        from ..napcat import get_napcat_manager
-        
-        napcat_mgr = get_napcat_manager()
-        plat = napcat_mgr.detect_platform()
-        
-        return {
-            'platform': plat,
-            'system': platform.system(),
-            'release': platform.release(),
-            'machine': platform.machine(),
-            'python': sys.version.split(' ')[0],
-            'is_admin': napcat_mgr.is_admin(),
-            'has_sudo': napcat_mgr.has_sudo(),
-            'commands': {
-                'curl': napcat_mgr.cmd_exists('curl'),
-                'wget': napcat_mgr.cmd_exists('wget'),
-                'bash': napcat_mgr.cmd_exists('bash'),
-                'docker': napcat_mgr.cmd_exists('docker'),
-                'powershell': napcat_mgr.cmd_exists('powershell') or napcat_mgr.cmd_exists('pwsh')
-            }
-        }
-    
-    @app.get("/api/napcat/config")
-    async def get_napcat_config(
-        user: Dict[str, Any] = Depends(require_permission(Permission.SYSTEM_CONFIG_VIEW))
-    ):
-        """Get NapCat installer configuration."""
-        from ..napcat import get_napcat_manager
-        
-        napcat_mgr = get_napcat_manager()
-        napcat_config = napcat_mgr._get_napcat_config()
-        
-        custom = []
-        for b in (napcat_config.get('installer_bases') or []):
-            try:
-                custom.append(napcat_mgr.normalize_napcat_base(b))
-            except Exception:
-                continue
-        
-        recommended = [napcat_mgr.normalize_napcat_base(b) for b in napcat_mgr.napcat_recommended_bases()]
-        
-        return {
-            'ok': True,
-            'installer_base': napcat_mgr.napcat_installer_base(),
-            'bases': napcat_mgr.napcat_allowed_bases(),
-            'custom_bases': custom,
-            'recommended_bases': recommended
-        }
-    
-    @app.post("/api/napcat/config")
-    async def update_napcat_config(
-        data: Dict[str, Any] = Body(...),
-        user: Dict[str, Any] = Depends(require_permission(Permission.SYSTEM_CONFIG_EDIT))
-    ):
-        """Update NapCat installer configuration."""
-        from ..napcat import get_napcat_manager
-        
-        napcat_mgr = get_napcat_manager()
-        napcat_config = napcat_mgr._get_napcat_config()
-        
-        raw_bases = napcat_config.get('installer_bases') or []
-        if not isinstance(raw_bases, list):
-            raw_bases = []
-        
-        bases = []
-        for b in raw_bases:
-            try:
-                bases.append(napcat_mgr.normalize_napcat_base(b))
-            except Exception:
-                continue
-        
-        recommended = [napcat_mgr.normalize_napcat_base(b) for b in napcat_mgr.napcat_recommended_bases()]
-        
-        remove_base = str(data.get('remove_base') or '').strip()
-        if remove_base:
-            try:
-                remove_base = napcat_mgr.normalize_napcat_base(remove_base)
-            except Exception:
-                remove_base = ''
-        if remove_base:
-            bases = [b for b in bases if str(b).strip() != remove_base]
-            if str(napcat_config.get('installer_base') or '').strip() == remove_base:
-                napcat_config.pop('installer_base', None)
-        
-        base = str(data.get('installer_base') or '').strip()
-        if base:
-            try:
-                base = napcat_mgr.normalize_napcat_base(base)
-            except Exception as e:
-                raise HTTPException(status_code=400, detail=str(e))
-            if base not in bases and base not in recommended:
-                bases.append(base)
-            napcat_config['installer_base'] = base
-        elif 'installer_base' in data:
-            napcat_config.pop('installer_base', None)
-        
-        napcat_config['installer_bases'] = bases
-        napcat_mgr._set_napcat_config(napcat_config)
-        
-        return {
-            'ok': True,
-            'installer_base': napcat_mgr.napcat_installer_base(),
-            'bases': napcat_mgr.napcat_allowed_bases()
-        }
-    
-    @app.post("/api/napcat/deploy")
-    async def deploy_napcat(
-        payload: Dict[str, Any] = Body(...),
-        user: Dict[str, Any] = Depends(require_permission(Permission.SYSTEM_CONFIG_EDIT))
-    ):
-        """Deploy NapCat installation."""
-        from ..napcat import get_napcat_manager
-        import asyncio
-        
-        napcat_mgr = get_napcat_manager()
-        
-        platform_name = (payload.get('platform') or 'auto').strip().lower()
-        detected = napcat_mgr.detect_platform()
-        if platform_name == 'auto':
-            platform_name = detected
-        
-        if platform_name not in ['windows', 'linux', 'macos', 'docker', 'termux']:
-            raise HTTPException(status_code=400, detail='Invalid platform')
-        
-        if platform_name == 'docker':
-            payload = dict(payload)
-            payload['docker'] = True
-        
-        # Convert 'path' to 'install_path' for backend compatibility
-        if 'path' in payload:
-            payload['install_path'] = payload.pop('path')
-        
-        try:
-            params = napcat_mgr.validate_payload(payload, platform_name)
-        except Exception as e:
-            raise HTTPException(status_code=400, detail=str(e))
-        
-        script = napcat_mgr.build_script_text(platform_name, params)
-        if params['action'] == 'script':
-            return {'ok': True, 'platform': platform_name, 'script': script}
-        
-        if platform_name in ['linux', 'macos', 'docker'] and params.get('use_sudo') and not napcat_mgr.is_admin() and not napcat_mgr.has_sudo():
-            return {'ok': True, 'platform': platform_name, 'script': script, 'downgraded': True, 'message': 'sudo not available'}
-        
-        job_id = uuid.uuid4().hex
-        with napcat_mgr._lock:
-            napcat_mgr.napcat_progress[job_id] = {
-                'job_id': job_id,
-                'platform': platform_name,
-                'status': 'queued',
-                'percent': 0,
-                'message': 'Queued',
-                'script': script,
-                'logs': [],
-                'created_at': int(time.time())
-            }
-        
-        # Run job in background thread
-        def run_job_wrapper():
-            napcat_mgr.run_job(job_id, platform_name, params)
-        
-        loop = asyncio.get_event_loop()
-        loop.run_in_executor(None, run_job_wrapper)
-        
-        return {'ok': True, 'job_id': job_id, 'platform': platform_name, 'script': script}
-    
-    @app.get("/api/napcat/progress/{job_id}")
-    async def get_napcat_progress(
-        job_id: str,
-        user: Dict[str, Any] = Depends(require_permission(Permission.SYSTEM_CONFIG_VIEW))
-    ):
-        """Get NapCat installation progress."""
-        from ..napcat import get_napcat_manager
-        
-        napcat_mgr = get_napcat_manager()
-        with napcat_mgr._lock:
-            job = napcat_mgr.napcat_progress.get(job_id)
-        if not job:
-            raise HTTPException(status_code=404, detail='Job not found')
-        return job
-    
-    @app.post("/api/napcat/cancel")
-    async def cancel_napcat_install(
-        data: Dict[str, Any] = Body(...),
-        user: Dict[str, Any] = Depends(require_permission(Permission.SYSTEM_CONFIG_EDIT))
-    ):
-        """Cancel NapCat installation."""
-        from ..napcat import get_napcat_manager
-        
-        job_id = str(data.get('job_id') or '')
-        if not job_id:
-            raise HTTPException(status_code=400, detail='No job_id')
-        
-        napcat_mgr = get_napcat_manager()
-        with napcat_mgr._lock:
-            proc = napcat_mgr.napcat_processes.get(job_id)
-            if proc and proc.poll() is None:
-                try:
-                    napcat_mgr.terminate_process(proc)
-                except Exception:
-                    pass
-                napcat_mgr.napcat_processes.pop(job_id, None)
-                napcat_mgr.job_set(job_id, status='canceled', percent=100, message='Canceled')
-                return {'ok': True}
-            
-            if job_id in napcat_mgr.napcat_progress and napcat_mgr.napcat_progress[job_id].get('status') in ['queued', 'preparing', 'downloading', 'extracting', 'running']:
-                napcat_mgr.job_set(job_id, status='canceled', percent=100, message='Canceled')
-                return {'ok': True}
-        
-        raise HTTPException(status_code=400, detail='Not running')
-    
     @app.get("/api/napcat/status")
     async def get_napcat_status(
         user: Dict[str, Any] = Depends(require_permission(Permission.SYSTEM_CONFIG_VIEW))
     ):
-        """Get NapCat running status."""
+        """Get the framework-managed NapCat status."""
         from ..napcat import get_napcat_manager
-        
+
+        return get_napcat_manager().get_status()
+
+    @app.post("/api/napcat/install")
+    async def install_napcat(
+        user: Dict[str, Any] = Depends(require_permission(Permission.SYSTEM_CONFIG_EDIT))
+    ):
+        """Start a NapCat install job under the framework runtime directory."""
+        from ..napcat import get_napcat_manager
+
         napcat_mgr = get_napcat_manager()
-        return napcat_mgr.get_status()
-    
+        active_job = napcat_mgr.get_active_install_job()
+        if active_job:
+            return active_job
+
+        job = napcat_mgr.create_install_job()
+
+        async def run_job():
+            await run_in_blocking_pool(napcat_mgr.install, job["job_id"])
+
+        asyncio.create_task(run_job())
+        return job
+
+    @app.get("/api/napcat/progress/{job_id}")
+    async def get_napcat_install_progress(
+        job_id: str,
+        user: Dict[str, Any] = Depends(require_permission(Permission.SYSTEM_CONFIG_VIEW))
+    ):
+        """Get a NapCat install job progress."""
+        from ..napcat import get_napcat_manager
+
+        job = get_napcat_manager().get_job(job_id)
+        if not job:
+            raise HTTPException(status_code=404, detail="NapCat install job not found")
+        return job
+
     @app.post("/api/napcat/start")
     async def start_napcat(
         user: Dict[str, Any] = Depends(require_permission(Permission.SYSTEM_CONFIG_EDIT))
     ):
-        """Start NapCat process."""
+        """Start the framework-managed NapCat process."""
         from ..napcat import get_napcat_manager
-        
-        napcat_mgr = get_napcat_manager()
-        result = napcat_mgr.start_napcat()
-        if not result.get('ok'):
-            raise HTTPException(status_code=400, detail=result.get('error', 'Failed to start'))
+
+        result = get_napcat_manager().start()
+        if not result.get("ok"):
+            raise HTTPException(status_code=400, detail=result.get("error", "Failed to start NapCat"))
         return result
-    
+
     @app.post("/api/napcat/stop")
     async def stop_napcat(
         user: Dict[str, Any] = Depends(require_permission(Permission.SYSTEM_CONFIG_EDIT))
     ):
-        """Stop NapCat process."""
+        """Stop the framework-managed NapCat process."""
         from ..napcat import get_napcat_manager
-        
-        napcat_mgr = get_napcat_manager()
-        result = napcat_mgr.stop_napcat()
-        if not result.get('ok'):
-            raise HTTPException(status_code=400, detail=result.get('error', 'Failed to stop'))
+
+        result = get_napcat_manager().stop()
+        if not result.get("ok"):
+            raise HTTPException(status_code=400, detail=result.get("error", "Failed to stop NapCat"))
         return result
-    
+
     @app.get("/api/napcat/logs")
     async def get_napcat_logs(
         user: Dict[str, Any] = Depends(require_permission(Permission.SYSTEM_CONFIG_VIEW))
     ):
-        """Get NapCat logs."""
+        """Get framework-captured NapCat runtime logs."""
         from ..napcat import get_napcat_manager
-        
-        napcat_mgr = get_napcat_manager()
-        return {'logs': napcat_mgr.get_logs()}
-    
+
+        return get_napcat_manager().get_logs()
+
     @app.get("/api/napcat/webui")
-    async def get_napcat_webui_info(
+    async def get_napcat_webui(
         user: Dict[str, Any] = Depends(require_permission(Permission.SYSTEM_CONFIG_VIEW))
     ):
-        """Get NapCat WebUI information."""
+        """Get the detected NapCat WebUI URL.
+
+        WebUI startup is asynchronous, so "not ready yet" is a normal state.
+        """
         from ..napcat import get_napcat_manager
-        
-        napcat_mgr = get_napcat_manager()
-        result = napcat_mgr.get_webui_info()
-        if not result.get('ok'):
-            raise HTTPException(status_code=400, detail=result.get('error', 'Failed to get WebUI info'))
-        return result
-    
-    @app.post("/api/napcat/path")
-    async def set_napcat_path(
-        data: Dict[str, Any] = Body(...),
+
+        return get_napcat_manager().get_webui_info()
+
+    @app.get("/api/napcat/qrcode")
+    async def get_napcat_qrcode(
+        user: Dict[str, Any] = Depends(require_permission(Permission.SYSTEM_CONFIG_VIEW))
+    ):
+        """Return the current NapCat login QR code from the managed workdir."""
+        from ..napcat import get_napcat_manager
+
+        qrcode_path = get_napcat_manager().get_qrcode_path()
+        if not qrcode_path.exists() or not qrcode_path.is_file():
+            raise HTTPException(status_code=404, detail="NapCat QR code not found")
+        return FileResponse(
+            str(qrcode_path),
+            media_type="image/png",
+            headers={"Cache-Control": "no-store"},
+        )
+
+    @app.get("/api/napcat/qrcode/info")
+    async def get_napcat_qrcode_info(
+        user: Dict[str, Any] = Depends(require_permission(Permission.SYSTEM_CONFIG_VIEW))
+    ):
+        """Return metadata for the current NapCat login QR code."""
+        from ..napcat import get_napcat_manager
+
+        return get_napcat_manager().get_qrcode_info()
+
+    @app.get("/api/napcat/config")
+    async def get_napcat_config_center(
+        user: Dict[str, Any] = Depends(require_permission(Permission.SYSTEM_CONFIG_VIEW))
+    ):
+        """Get framework-managed NapCat config files."""
+        from ..napcat import get_napcat_manager
+
+        return get_napcat_manager().get_config_center()
+
+    @app.post("/api/napcat/config")
+    async def save_napcat_config_center(
+        payload: Dict[str, Any] = Body(...),
         user: Dict[str, Any] = Depends(require_permission(Permission.SYSTEM_CONFIG_EDIT))
     ):
-        """Set NapCat installation path."""
+        """Save framework-managed NapCat config files."""
         from ..napcat import get_napcat_manager
-        
-        path = data.get('path')
+
+        try:
+            return get_napcat_manager().save_config_center(payload)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.post("/api/napcat/onebot/apply-framework")
+    async def apply_framework_onebot_to_napcat(
+        user: Dict[str, Any] = Depends(require_permission(Permission.SYSTEM_CONFIG_EDIT))
+    ):
+        """Write a NapCat OneBot config that matches the current framework OneBot settings."""
+        from ..napcat import get_napcat_manager
+
+        try:
+            return get_napcat_manager().apply_framework_onebot_config(get_config())
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.get("/api/napcat/login-status")
+    async def get_napcat_login_status(
+        user: Dict[str, Any] = Depends(require_permission(Permission.SYSTEM_CONFIG_VIEW))
+    ):
+        """Get NapCat process, QR code, and framework OneBot login status."""
+        from ..napcat import get_napcat_manager
+
         napcat_mgr = get_napcat_manager()
-        result = napcat_mgr.set_install_path(path)
-        if not result.get('ok'):
-            raise HTTPException(status_code=400, detail=result.get('error', 'Failed to set path'))
-        return result
-    
+        napcat_status = napcat_mgr.get_status()
+        qrcode_info = napcat_mgr.get_qrcode_info()
+        app_instance = get_app()
+        adapter = getattr(app_instance, "onebot_adapter", None)
+
+        onebot_status: Dict[str, Any] = {
+            "available": bool(adapter),
+            "running": False,
+            "connected": False,
+            "connection_type": "",
+            "self_id": "",
+            "self_nickname": "",
+            "login_info": None,
+            "error": "",
+        }
+
+        if adapter:
+            reverse_clients = getattr(adapter, "_reverse_clients", []) or []
+            connection_type = getattr(adapter, "connection_type", "")
+            onebot_status.update({
+                "running": bool(getattr(adapter, "_running", False)),
+                "connected": bool(getattr(adapter, "_ws", None)) or bool(reverse_clients) or connection_type == "http",
+                "connection_type": connection_type,
+                "self_id": str(getattr(adapter, "self_id", "") or ""),
+                "self_nickname": str(getattr(adapter, "self_nickname", "") or ""),
+            })
+
+            if onebot_status["running"]:
+                try:
+                    login_info = await asyncio.wait_for(
+                        adapter.call_api("get_login_info", {}, source="napcat-manager"),
+                        timeout=8.0,
+                    )
+                    if isinstance(login_info, dict):
+                        onebot_status["login_info"] = login_info
+                        onebot_status["self_id"] = str(login_info.get("user_id") or onebot_status["self_id"])
+                        onebot_status["self_nickname"] = str(login_info.get("nickname") or onebot_status["self_nickname"])
+                        onebot_status["connected"] = True
+                    else:
+                        onebot_status["login_info"] = login_info
+                except Exception as exc:
+                    onebot_status["connected"] = False
+                    onebot_status["error"] = str(exc)
+
+        return {
+            "napcat": napcat_status,
+            "qrcode": qrcode_info,
+            "webui": napcat_status.get("webui") or napcat_mgr.get_webui_info(),
+            "onebot": onebot_status,
+        }
+
+    @app.post("/api/napcat/onebot/debug-call")
+    async def debug_onebot_api_from_napcat_page(
+        payload: Dict[str, Any] = Body(...),
+        user: Dict[str, Any] = Depends(require_permission(Permission.SYSTEM_CONFIG_EDIT))
+    ):
+        """Call a OneBot API through the framework adapter for debugging."""
+        action = str(payload.get("action") or "").strip()
+        if not action:
+            raise HTTPException(status_code=400, detail="OneBot action is required")
+
+        params = payload.get("params", {})
+        if params is None:
+            params = {}
+        if not isinstance(params, dict):
+            raise HTTPException(status_code=400, detail="OneBot params must be a JSON object")
+
+        try:
+            timeout_seconds = float(payload.get("timeout", 20))
+        except (TypeError, ValueError):
+            timeout_seconds = 20.0
+        timeout_seconds = max(1.0, min(timeout_seconds, 60.0))
+
+        app_instance = get_app()
+        adapter = getattr(app_instance, "onebot_adapter", None)
+        if not adapter or not getattr(adapter, "_running", False):
+            raise HTTPException(status_code=503, detail="OneBot adapter is not running")
+
+        started_at = time.perf_counter()
+        try:
+            result = await asyncio.wait_for(
+                adapter.call_api(action, params, source="napcat-debugger"),
+                timeout=timeout_seconds,
+            )
+        except asyncio.TimeoutError as exc:
+            raise HTTPException(status_code=504, detail=f"OneBot API timeout: {action}") from exc
+        except Exception as exc:
+            raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+        return {
+            "ok": True,
+            "action": action,
+            "params": params,
+            "result": result,
+            "elapsed_ms": int((time.perf_counter() - started_at) * 1000),
+        }
+
     # Serve Vite React SPA for all non-API routes (must be last) - only if WebUI is enabled
     @app.get("/{full_path:path}")
     async def serve_react_app(full_path: str):

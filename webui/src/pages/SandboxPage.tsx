@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef } from 'react'
 import {
+  ArrowLeft,
   Plus,
   Trash2,
   Edit,
@@ -757,7 +758,7 @@ export default function SandboxPage() {
       </div>
 
       <div className="p-4 border-t border-gray-200 bg-white">
-        <div className="flex gap-2 mb-2">
+        <div className="flex flex-col gap-2 mb-2 sm:flex-row">
           <select
             value={messageType}
             onChange={(e) => setMessageType(e.target.value as 'private' | 'group')}
@@ -774,7 +775,7 @@ export default function SandboxPage() {
             {t('sandbox.clearChat')}
           </button>
         </div>
-        <div className="flex gap-2">
+        <div className="flex flex-col gap-2 sm:flex-row">
           <div className="flex-1 relative">
             <MessageSquare className="absolute left-3 top-3 w-5 h-5 text-gray-400" />
             <textarea
@@ -794,7 +795,7 @@ export default function SandboxPage() {
           <button
             onClick={handleSendMessage}
             disabled={loading || !messageInput.trim()}
-            className="px-6 py-2 bg-primary-600 text-white rounded-lg hover:bg-primary-700 disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2 transition-colors"
+            className="px-6 py-2 bg-primary-600 text-white rounded-lg hover:bg-primary-700 disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2 transition-colors sm:w-auto"
           >
             {loading ? (
               <Loader2 className="w-5 h-5 animate-spin" />
@@ -842,7 +843,7 @@ export default function SandboxPage() {
       </div>
 
       <div className="p-4 border-t border-gray-700 bg-gray-900">
-        <div className="flex gap-2">
+        <div className="flex flex-col gap-2 sm:flex-row">
           <div className="flex-1 relative">
             <Terminal className="absolute left-3 top-1/2 transform -translate-y-1/2 w-5 h-5 text-gray-500" />
             <input
@@ -863,7 +864,7 @@ export default function SandboxPage() {
           <button
             onClick={handleExecuteShell}
             disabled={shellLoading || !shellCommand.trim()}
-            className="px-6 py-2 bg-primary-600 text-white rounded-lg hover:bg-primary-700 disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2 transition-colors"
+            className="px-6 py-2 bg-primary-600 text-white rounded-lg hover:bg-primary-700 disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2 transition-colors sm:w-auto"
           >
             {shellLoading ? (
               <Loader2 className="w-5 h-5 animate-spin" />
@@ -874,7 +875,7 @@ export default function SandboxPage() {
           </button>
           <button
             onClick={() => setShellOutput([])}
-            className="px-4 py-2 bg-gray-700 text-gray-300 rounded-lg hover:bg-gray-600 transition-colors"
+            className="px-4 py-2 bg-gray-700 text-gray-300 rounded-lg hover:bg-gray-600 transition-colors sm:w-auto"
           >
             {t('sandbox.shellClear')}
           </button>
@@ -886,11 +887,11 @@ export default function SandboxPage() {
   const renderPythonTab = () => (
     <>
       <div className="flex-1 flex flex-col overflow-hidden">
-        <div className="flex-1 flex overflow-hidden">
-          <div className="flex-1 flex flex-col border-r border-gray-200">
+        <div className="flex-1 flex flex-col lg:flex-row overflow-hidden">
+          <div className="flex-1 min-h-0 flex flex-col border-b border-gray-200 lg:border-b-0 lg:border-r">
             <div className="p-2 bg-gray-100 border-b border-gray-200 flex items-center justify-between">
               <span className="text-sm font-medium text-gray-700">{t('sandbox.pythonEditor')}</span>
-              <div className="flex gap-2">
+              <div className="flex flex-wrap gap-2 justify-end">
                 <button
                   type="button"
                   onClick={() => setPythonCode(`# Sample
@@ -927,7 +928,7 @@ print(f"1-10 sum: {result}")
               value={pythonCode}
               onChange={(e) => setPythonCode(e.target.value)}
               placeholder={t('sandbox.pythonPlaceholder')}
-              className="flex-1 p-4 font-mono text-sm resize-none focus:outline-none border-none"
+              className="flex-1 min-h-[240px] lg:min-h-0 p-4 font-mono text-sm resize-none focus:outline-none border-none"
               disabled={pythonLoading}
               onKeyDown={(e) => {
                 if (e.ctrlKey && e.key === 'Enter') {
@@ -938,7 +939,7 @@ print(f"1-10 sum: {result}")
             />
           </div>
           
-          <div className="flex-1 flex flex-col bg-gray-50">
+          <div className="flex-1 min-h-0 flex flex-col bg-gray-50">
             <div className="p-2 bg-gray-100 border-b border-gray-200 flex items-center justify-between">
               <span className="text-sm font-medium text-gray-700">{t('sandbox.pythonOutput')}</span>
               <button
@@ -993,8 +994,8 @@ print(f"1-10 sum: {result}")
         </div>
       </div>
 
-      <div className="flex-1 flex overflow-hidden">
-        <div className="w-80 border-r border-gray-200 flex flex-col bg-white">
+      <div className="flex-1 flex flex-col md:flex-row overflow-hidden">
+        <div className={`${selectedFile ? 'hidden md:flex' : 'flex'} w-full md:w-80 md:shrink-0 border-r border-gray-200 flex-col bg-white min-h-0`}>
           <div className="p-3 border-b border-gray-200">
             <div className="flex items-center justify-between mb-2">
               <div className="flex items-center gap-2">
@@ -1031,7 +1032,7 @@ print(f"1-10 sum: {result}")
           </div>
 
         <div className="p-2 border-b border-gray-200">
-          <div className="flex items-center gap-1 text-sm">
+          <div className="flex items-center gap-1 text-sm min-w-0">
             <button
               type="button"
               onClick={() => setCurrentPath('.')}
@@ -1125,18 +1126,26 @@ print(f"1-10 sum: {result}")
         </div>
       </div>
 
-        <div className="flex-1 flex flex-col bg-white">
+        <div className={`${selectedFile ? 'flex' : 'hidden md:flex'} flex-1 min-w-0 min-h-0 flex-col bg-white`}>
           {selectedFile ? (
             <>
               <div className="p-3 border-b border-gray-200 flex items-center justify-between">
                 <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setSelectedFile(null)}
+                    className="md:hidden p-1 -ml-1 hover:bg-gray-100 rounded"
+                    aria-label="返回文件列表"
+                  >
+                    <ArrowLeft className="w-4 h-4" />
+                  </button>
                   <FileText className="w-5 h-5 text-gray-600" />
-                  <div>
-                    <div className="text-sm font-medium text-gray-900">{selectedFile.name}</div>
-                    <div className="text-xs text-gray-500">{selectedFile.path}</div>
+                  <div className="min-w-0">
+                    <div className="text-sm font-medium text-gray-900 truncate">{selectedFile.name}</div>
+                    <div className="text-xs text-gray-500 truncate">{selectedFile.path}</div>
                   </div>
                 </div>
-                <div className="flex gap-2">
+                <div className="flex gap-2 shrink-0">
                   {fileEditing ? (
                     <>
                       <button
@@ -1202,7 +1211,7 @@ print(f"1-10 sum: {result}")
   return (
     <div className="fixed top-16 left-0 md:left-64 right-0 bottom-0 flex bg-gray-50 overflow-hidden">
       {/* Sandbox List Sidebar */}
-      <div className="w-80 bg-white border-r border-gray-200 flex flex-col">
+      <div className={`${selectedSandbox ? 'hidden md:flex' : 'flex'} w-full md:w-80 md:shrink-0 bg-white border-r border-gray-200 flex-col min-h-0`}>
         <div className="p-4 border-b border-gray-200 flex items-center justify-between">
           <div className="flex items-center gap-2">
             <FlaskConical className="w-6 h-6 text-primary-600" />
@@ -1292,16 +1301,24 @@ print(f"1-10 sum: {result}")
       </div>
 
       {/* Main Content Area */}
-      <div className="flex-1 flex flex-col">
+      <div className={`${selectedSandbox ? 'flex' : 'hidden md:flex'} flex-1 min-w-0 flex-col`}>
         {selectedSandbox ? (
           <>
             {/* Header */}
-            <div className="h-16 bg-white border-b border-gray-200 flex items-center justify-between px-6">
-              <div className="flex items-center gap-3">
+            <div className="h-16 bg-white border-b border-gray-200 flex items-center justify-between px-4 md:px-6">
+              <div className="flex items-center gap-3 min-w-0">
+                <button
+                  type="button"
+                  onClick={() => setSelectedSandbox(null)}
+                  className="md:hidden p-1 -ml-1 hover:bg-gray-100 rounded"
+                  aria-label="返回沙箱列表"
+                >
+                  <ArrowLeft className="w-5 h-5" />
+                </button>
                 <FlaskConical className="w-6 h-6 text-primary-600" />
-                <div>
-                  <h2 className="font-semibold text-gray-900">{selectedSandbox.name}</h2>
-                  <p className="text-xs text-gray-500">
+                <div className="min-w-0">
+                  <h2 className="font-semibold text-gray-900 truncate">{selectedSandbox.name}</h2>
+                  <p className="text-xs text-gray-500 truncate">
                     {selectedSandbox.description || ''}
                   </p>
                 </div>
@@ -1309,11 +1326,11 @@ print(f"1-10 sum: {result}")
             </div>
 
             {/* Tab Navigation */}
-            <div className="bg-white border-b border-gray-200 flex px-6">
+            <div className="bg-white border-b border-gray-200 flex overflow-x-auto px-2 md:px-6">
               <button
                 type="button"
                 onClick={() => setActiveTab('chat')}
-                className={`flex items-center gap-2 px-4 py-3 border-b-2 transition-colors ${
+                className={`shrink-0 flex items-center gap-2 px-4 py-3 border-b-2 transition-colors ${
                   activeTab === 'chat'
                     ? 'border-primary-600 text-primary-600'
                     : 'border-transparent text-gray-600 hover:text-gray-900'
@@ -1325,7 +1342,7 @@ print(f"1-10 sum: {result}")
               <button
                 type="button"
                 onClick={() => setActiveTab('shell')}
-                className={`flex items-center gap-2 px-4 py-3 border-b-2 transition-colors ${
+                className={`shrink-0 flex items-center gap-2 px-4 py-3 border-b-2 transition-colors ${
                   activeTab === 'shell'
                     ? 'border-primary-600 text-primary-600'
                     : 'border-transparent text-gray-600 hover:text-gray-900'
@@ -1337,7 +1354,7 @@ print(f"1-10 sum: {result}")
               <button
                 type="button"
                 onClick={() => setActiveTab('python')}
-                className={`flex items-center gap-2 px-4 py-3 border-b-2 transition-colors ${
+                className={`shrink-0 flex items-center gap-2 px-4 py-3 border-b-2 transition-colors ${
                   activeTab === 'python'
                     ? 'border-primary-600 text-primary-600'
                     : 'border-transparent text-gray-600 hover:text-gray-900'
@@ -1349,7 +1366,7 @@ print(f"1-10 sum: {result}")
               <button
                 type="button"
                 onClick={() => setActiveTab('files')}
-                className={`flex items-center gap-2 px-4 py-3 border-b-2 transition-colors ${
+                className={`shrink-0 flex items-center gap-2 px-4 py-3 border-b-2 transition-colors ${
                   activeTab === 'files'
                     ? 'border-primary-600 text-primary-600'
                     : 'border-transparent text-gray-600 hover:text-gray-900'

@@ -1,150 +1,608 @@
-import { useState, useEffect } from 'react'
+import { useCallback, useLayoutEffect, useRef } from 'react'
+import gsap from 'gsap'
+import { SplitText } from 'gsap/SplitText'
+import CustomEase from 'gsap/CustomEase'
 import { api } from '../src/utils/api'
-import { Sparkles } from 'lucide-react'
 
 interface SplashScreenProps {
   onComplete: () => void
 }
 
+gsap.registerPlugin(SplitText, CustomEase)
+
+const wait = (ms: number) => new Promise(resolve => window.setTimeout(resolve, ms))
+
 export default function SplashScreen({ onComplete }: SplashScreenProps) {
-  const [stage, setStage] = useState<'init' | 'intro' | 'brand' | 'transition' | 'complete'>('init')
+  const rootRef = useRef<HTMLDivElement>(null)
+  const readyRef = useRef(false)
+  const exitingRef = useRef(false)
 
-  useEffect(() => {
-    const sequence = async () => {
-      try {
-        await new Promise(resolve => setTimeout(resolve, 800)) 
-        
-        setStage('intro')
-        await new Promise(resolve => setTimeout(resolve, 3000)) // 
-        
-        //  intro duration-1000 = 1
-        await new Promise(resolve => setTimeout(resolve, 1200)) 
-        
-        setStage('brand')
-      } catch (error) {
-        console.error('Splash sequence error:', error)
-      }
-    }
-
-    sequence()
-
-    const timer = setTimeout(() => {
-      onComplete()
-    }, 60000)
-
-    return () => clearTimeout(timer)
+  const finishSplash = useCallback(async () => {
+    api.markSplashScreenShown().catch(() => {})
+    await wait(150)
+    onComplete()
   }, [onComplete])
 
-  const handleEnter = async () => {
-    setStage('transition')
-    await new Promise(resolve => setTimeout(resolve, 500))
-    setStage('complete')
-    api.markSplashScreenShown().catch(() => {})
-    await new Promise(resolve => setTimeout(resolve, 100))
-    onComplete()
-  }
+  useLayoutEffect(() => {
+    const root = rootRef.current
+    if (!root) return
+
+    readyRef.current = false
+    exitingRef.current = false
+
+    CustomEase.create('rua-hop', '0.9, 0, 0.1, 1')
+    CustomEase.create('rua-glide', '0.8, 0, 0.2, 1')
+
+    const splitInstances: Array<{ revert: () => void }> = []
+    const fallbackTimer = window.setTimeout(() => {
+      if (!exitingRef.current) {
+        exitingRef.current = true
+        finishSplash()
+      }
+    }, 90000)
+
+    const ctx = gsap.context(() => {
+      const q = gsap.utils.selector(root)
+      const preloaderTexts = q('.rua-preloader p') as HTMLElement[]
+      const btnOutlineTrack = q('.rua-stroke-track')[0] as unknown as SVGCircleElement | undefined
+      const btnOutlineProgress = q('.rua-stroke-progress')[0] as unknown as SVGCircleElement | undefined
+
+      if (!btnOutlineTrack || !btnOutlineProgress) return
+
+      const svgPathLength = btnOutlineTrack.getTotalLength()
+
+      gsap.set([btnOutlineTrack, btnOutlineProgress], {
+        strokeDasharray: svgPathLength,
+        strokeDashoffset: svgPathLength,
+      })
+
+      preloaderTexts.forEach((paragraph) => {
+        splitInstances.push(new SplitText(paragraph, {
+          type: 'lines',
+          linesClass: 'line',
+          mask: 'lines',
+        }))
+      })
+
+      splitInstances.push(new SplitText(q('.rua-hero h1')[0], {
+        type: 'words',
+        wordsClass: 'word',
+        mask: 'words',
+      }))
+
+      const introTl = gsap.timeline({ delay: 0.8 })
+
+      introTl
+        .to('.rua-preloader .rua-p-row p .line', {
+          y: '0%',
+          duration: 0.75,
+          ease: 'power3.out',
+          stagger: 0.1,
+        })
+        .to(
+          btnOutlineTrack,
+          {
+            strokeDashoffset: 0,
+            duration: 2,
+            ease: 'rua-hop',
+          },
+          '<',
+        )
+        .to(
+          '.rua-pbc-svg-strokes svg',
+          {
+            rotation: 270,
+            duration: 2,
+            ease: 'rua-hop',
+          },
+          '<',
+        )
+
+      const progressStops = [0.2, 0.25, 0.85, 1].map((base, index) => {
+        if (index === 3) return 1
+        return base + (Math.random() - 0.5) * 0.1
+      })
+
+      progressStops.forEach((stop, index) => {
+        introTl.to(btnOutlineProgress, {
+          strokeDashoffset: svgPathLength - svgPathLength * stop,
+          duration: 0.75,
+          ease: 'rua-glide',
+          delay: index === 0 ? 0.3 : 0.3 + Math.random() * 0.2,
+        })
+      })
+
+      introTl
+        .to(
+          '.rua-pbc-logo',
+          {
+            opacity: 0,
+            duration: 0.35,
+            ease: 'power1.out',
+          },
+          '-=0.25',
+        )
+        .to(
+          '.rua-preloader-btn-container',
+          {
+            scale: 0.9,
+            duration: 1.5,
+            ease: 'rua-hop',
+          },
+          '-=0.5',
+        )
+        .to(
+          '.rua-pbc-label .line',
+          {
+            y: '0%',
+            duration: 0.75,
+            ease: 'power3.out',
+            onComplete: () => {
+              readyRef.current = true
+              root.classList.add('is-ready')
+            },
+          },
+          '-=0.75',
+        )
+    }, root)
+
+    return () => {
+      window.clearTimeout(fallbackTimer)
+      root.classList.remove('is-ready')
+      ctx.revert()
+      splitInstances.forEach(instance => instance.revert())
+    }
+  }, [finishSplash])
+
+  const handleEnter = useCallback(() => {
+    const root = rootRef.current
+    if (!root || !readyRef.current || exitingRef.current) return
+
+    exitingRef.current = true
+    readyRef.current = false
+
+    const q = gsap.utils.selector(root)
+    const btnOutlineTrack = q('.rua-stroke-track')[0] as unknown as SVGCircleElement | undefined
+    const btnOutlineProgress = q('.rua-stroke-progress')[0] as unknown as SVGCircleElement | undefined
+
+    if (!btnOutlineTrack || !btnOutlineProgress) {
+      finishSplash()
+      return
+    }
+
+    const svgPathLength = btnOutlineTrack.getTotalLength()
+
+    gsap.timeline()
+      .to('.rua-preloader', {
+        scale: 0.75,
+        duration: 1.25,
+        ease: 'rua-hop',
+      })
+      .to(
+        [btnOutlineTrack, btnOutlineProgress],
+        {
+          strokeDashoffset: -svgPathLength,
+          duration: 1.25,
+          ease: 'rua-hop',
+        },
+        '<',
+      )
+      .to(
+        '.rua-pbc-label .line',
+        {
+          y: '-100%',
+          duration: 0.75,
+          ease: 'power3.out',
+        },
+        '-=1.25',
+      )
+      .to(
+        '.rua-pbc-outro-label .line',
+        {
+          y: '0%',
+          duration: 0.75,
+          ease: 'power3.out',
+        },
+        '-=0.75',
+      )
+      .to('.rua-preloader', {
+        clipPath: 'polygon(0% 0%, 0% 0%, 0% 100%, 0% 100%)',
+        duration: 1.5,
+        ease: 'rua-hop',
+      })
+      .to(
+        '.rua-preloader-revealer',
+        {
+          clipPath: 'polygon(0% 0%, 0% 0%, 0% 100%, 0% 100%)',
+          duration: 1.5,
+          ease: 'rua-hop',
+          onComplete: () => {
+            gsap.set('.rua-preloader', { display: 'none' })
+          },
+        },
+        '-=1.45',
+      )
+      .to('.rua-hero', {
+        scale: 1,
+        duration: 1.25,
+        ease: 'rua-hop',
+      })
+      .to(
+        '.rua-hero h1 .word',
+        {
+          y: '0%',
+          duration: 1,
+          ease: 'rua-glide',
+          stagger: 0.05,
+        },
+        '-=1.75',
+      )
+      .call(() => {
+        finishSplash()
+      }, undefined, '+=1.4')
+  }, [finishSplash])
 
   return (
-    <div className={`fixed inset-0 z-[9999] flex items-center justify-center overflow-hidden transition-colors duration-1000 ${
-      stage === 'transition' || stage === 'complete' ? 'bg-white' : 'bg-[#050505]'
-    }`}>
-      {/*  */}
-      <div className="absolute inset-0 overflow-hidden pointer-events-none">
-        <div className="absolute top-[-20%] left-[-10%] w-[70%] h-[70%] bg-blue-600/20 blur-[150px] rounded-full animate-aurora-1" />
-        <div className="absolute bottom-[-20%] right-[-10%] w-[80%] h-[80%] bg-purple-600/20 blur-[180px] rounded-full animate-aurora-2" />
-        <div className="absolute top-[20%] right-[10%] w-[50%] h-[50%] bg-indigo-600/15 blur-[120px] rounded-full animate-aurora-3" />
-      </div>
-
-      {/*  */}
-      <div className="absolute inset-0 opacity-[0.05] pointer-events-none mix-blend-overlay bg-[url('https://grainy-gradients.vercel.app/noise.svg')]" />
-
-      <div className="relative z-10 w-full h-full flex items-center justify-center">
-        
-        {/* Intro Stage: "" */}
-        <div className={`absolute transition-all duration-1000 ease-in-out flex flex-col items-center ${
-          stage === 'intro' ? 'opacity-100 translate-y-0 scale-100 rotate-0' : 'opacity-0 translate-y-12 scale-90 rotate-2 pointer-events-none'
-        }`}>
-          <div className="text-6xl md:text-[10rem] font-black bg-clip-text text-transparent bg-gradient-to-b from-white via-white to-white/20 mb-6 tracking-tighter leading-none">
-            
+    <div ref={rootRef} className="rua-splash" aria-label="RuaBot startup splash">
+      <div className="rua-preloader-backdrop">
+        <div className="rua-pb-row">
+          <div className="rua-pb-col">
+            <p>RUA//NEXT Control Mesh</p>
+            <p>RUA//NEXT Control Mesh</p>
+            <p>RUA//NEXT Control Mesh</p>
+            <p>RUA//NEXT Control Mesh</p>
+            <p>RUA//NEXT Control Mesh</p>
           </div>
-          <div className="text-xl md:text-2xl text-blue-400 font-light tracking-[0.5em] uppercase opacity-60 text-center px-4">
-            Welcome back to your dashboard
+          <div className="rua-pb-col">
+            <p>OneBot / Event Runtime</p>
+          </div>
+          <div className="rua-pb-col">
+            <p>0.392 02SD 008923</p>
+          </div>
+          <div className="rua-pb-col">
+            <p>Material / Plugin Fiber</p>
+          </div>
+          <div className="rua-pb-col">
+            <p>Status / Soft Resonance</p>
+          </div>
+          <div className="rua-pb-col">
+            <img className="rua-pb-logo" src="/splash/logo-dark.png" alt="RuaBot logo" />
+            <p>::.:::.:.:::.:::</p>
           </div>
         </div>
 
-        {/* Brand Stage: "RuaBot" */}
-        <div className={`absolute transition-all duration-1200 cubic-bezier(0.23, 1, 0.32, 1) flex flex-col items-center ${
-          stage === 'brand' ? 'opacity-100 translate-y-0 scale-100' : 'opacity-0 translate-y-20 scale-90 pointer-events-none'
-        }`}>
-          <div className="relative mb-12">
-            <div className="absolute inset-0 bg-blue-500 blur-[80px] opacity-40 animate-pulse" />
-            <div className="p-8 bg-gradient-to-br from-blue-500/20 to-purple-500/20 backdrop-blur-3xl rounded-[2.5rem] border border-white/20 relative z-10 group overflow-hidden">
-              <Sparkles className="w-24 h-24 text-blue-400 animate-bounce-subtle" />
+        <div className="rua-pb-row">
+          <div className="rua-pb-col">
+            <p>Runtime Memory</p>
+          </div>
+          <div className="rua-pb-col">
+            <p>/// Event / Bot / AI / Plugin ///</p>
+          </div>
+          <div className="rua-pb-col">
+            <p>Boot Offset &gt; 17%</p>
+          </div>
+          <div className="rua-pb-col">
+            <p>Kernel Waking</p>
+            <p>Adapters Aligning</p>
+          </div>
+          <div className="rua-pb-col">
+            <p>Dashboard Pending</p>
+            <p>Return -- Layer Zero</p>
+          </div>
+          <div className="rua-pb-col">
+            <p>V-Next</p>
+          </div>
+        </div>
+      </div>
+
+      <div className="rua-preloader">
+        <div className="rua-p-row">
+          <p>Launching</p>
+        </div>
+        <div className="rua-p-row">
+          <div className="rua-p-col">
+            <div className="rua-p-sub-col">
+              <p>Phase 01</p>
+              <p>WebUI Sequence</p>
+            </div>
+            <div className="rua-p-sub-col">
+              <p>Signal Scan</p>
+              <p>07 Layers</p>
             </div>
           </div>
-          
-          <div className="text-5xl md:text-[6rem] font-[1000] tracking-tighter mb-8 text-center leading-[0.9] px-4">
-            <span className="bg-clip-text text-transparent bg-gradient-to-r from-blue-400 via-white to-purple-500 animate-gradient-x drop-shadow-[0_0_30px_rgba(59,130,246,0.5)]">
-              RuaBot Framework
-            </span>
+          <div className="rua-p-col">
+            <p>RUA-NEXT</p>
           </div>
-          <div className="h-px w-48 bg-gradient-to-r from-transparent via-blue-500/50 to-transparent mb-10" />
-          <div className="text-xl md:text-2xl text-gray-400 font-extralight tracking-[0.4em] text-center px-4 uppercase opacity-80 mb-12">
-            Building the <span className="text-white font-normal">Next-Gen</span> Intelligence
-          </div>
-          
-          {/*  */}
-          <button
-            onClick={handleEnter}
-            className="px-12 py-4 bg-gradient-to-r from-blue-500 to-purple-500 text-white font-semibold text-lg rounded-full shadow-lg hover:shadow-xl hover:scale-105 transition-all duration-300 backdrop-blur-sm border border-white/20"
-          >
-            
-          </button>
         </div>
+
+        <button
+          className="rua-preloader-btn-container"
+          type="button"
+          onClick={handleEnter}
+          aria-label="Enter RuaBot WebUI"
+        >
+          <span className="rua-pbc-logo" aria-hidden="true">R</span>
+          <p className="rua-pbc-label">Enter Console</p>
+          <p className="rua-pbc-outro-label">Access Granted</p>
+
+          <div className="rua-pbc-svg-strokes" aria-hidden="true">
+            <svg fill="none" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 320">
+              <circle
+                className="rua-stroke-track"
+                cx="160"
+                cy="160"
+                r="155"
+                stroke="#2b2b2b"
+                strokeWidth="2"
+              />
+              <circle
+                className="rua-stroke-progress"
+                cx="160"
+                cy="160"
+                r="155"
+                stroke="#fff"
+                strokeWidth="2"
+              />
+            </svg>
+          </div>
+        </button>
       </div>
 
-      {/*  */}
-      <div className="absolute inset-0 pointer-events-none">
-        <div className="absolute inset-0 bg-gradient-to-b from-transparent via-blue-500/10 to-transparent h-[2px] w-full animate-scan" />
-        <div className="absolute inset-0 bg-[radial-gradient(circle_at_50%_50%,rgba(59,130,246,0.05)_0%,rgba(0,0,0,0)_70%)]" />
-      </div>
+      <section className="rua-hero">
+        <div className="rua-preloader-revealer" />
+        <div className="rua-hero-copy">
+          <p>Welcome back to Xiaoyi WebUI</p>
+          <h1>RuaBot Console Online</h1>
+        </div>
+      </section>
 
-      <style dangerouslySetInnerHTML={{ __html: `
-        @keyframes aurora-1 {
-          0%, 100% { transform: translate(0, 0) scale(1) rotate(0deg); }
-          33% { transform: translate(15%, 15%) scale(1.2) rotate(5deg); }
-          66% { transform: translate(-10%, 20%) scale(0.9) rotate(-5deg); }
+      <style>{`
+        @import url("https://fonts.googleapis.com/css2?family=Barlow+Condensed:ital,wght@0,100;0,200;0,300;0,400;0,500;0,600;0,700;0,800;0,900;1,100;1,200;1,300;1,400;1,500;1,600;1,700;1,800;1,900&family=Geist+Mono:wght@100..900&display=swap");
+
+        .rua-splash {
+          --base-100: #fff;
+          --base-200: #7a7a7a;
+          --base-300: #000;
+          position: fixed;
+          inset: 0;
+          z-index: 9999;
+          overflow: hidden;
+          background: var(--base-300);
         }
-        @keyframes aurora-2 {
-          0%, 100% { transform: translate(0, 0) scale(1.3) rotate(0deg); }
-          33% { transform: translate(-15%, -10%) scale(1.1) rotate(-10deg); }
-          66% { transform: translate(10%, -20%) scale(1.4) rotate(10deg); }
+
+        .rua-splash,
+        .rua-splash * {
+          box-sizing: border-box;
         }
-        @keyframes aurora-3 {
-          0%, 100% { transform: translate(0, 0) opacity: 0.15; }
-          50% { transform: translate(20%, -15%) opacity: 0.4; }
+
+        .rua-splash h1,
+        .rua-splash p,
+        .rua-splash button {
+          margin: 0;
+          padding: 0;
         }
-        @keyframes scan {
-          0% { transform: translateY(-100vh); opacity: 0; }
-          50% { opacity: 1; }
-          100% { transform: translateY(100vh); opacity: 0; }
+
+        .rua-splash h1 {
+          text-transform: uppercase;
+          font-family: "Barlow Condensed", "Arial Narrow", sans-serif;
+          font-size: clamp(5rem, 15vw, 15rem);
+          font-weight: 800;
+          letter-spacing: -0.02em;
+          line-height: 0.8;
         }
-        @keyframes bounce-subtle {
-          0%, 100% { transform: translateY(0) scale(1); filter: drop-shadow(0 0 20px rgba(59,130,246,0.3)); }
-          50% { transform: translateY(-15px) scale(1.05); filter: drop-shadow(0 0 40px rgba(59,130,246,0.6)); }
+
+        .rua-splash p {
+          text-transform: uppercase;
+          font-family: "Geist Mono", "Courier New", monospace;
+          font-size: 0.75rem;
+          font-weight: 500;
+          line-height: 1;
         }
-        @keyframes gradient-x {
-          0%, 100% { background-size: 200% 200%; background-position: left center; }
-          50% { background-size: 200% 200%; background-position: right center; }
+
+        .rua-splash h1 .word,
+        .rua-splash p .line {
+          position: relative;
+          transform: translateY(100%);
+          will-change: transform;
         }
-        
-        .animate-aurora-1 { animation: aurora-1 25s infinite ease-in-out; }
-        .animate-aurora-2 { animation: aurora-2 30s infinite ease-in-out; }
-        .animate-aurora-3 { animation: aurora-3 22s infinite ease-in-out; }
-        .animate-scan { animation: scan 10s linear infinite; }
-        .animate-bounce-subtle { animation: bounce-subtle 4s infinite ease-in-out; }
-        .animate-gradient-x { animation: gradient-x 8s ease infinite; }
-      `}} />
+
+        .rua-preloader-backdrop {
+          position: fixed;
+          inset: 0;
+          width: 100%;
+          height: 100svh;
+          background-color: var(--base-100);
+          color: var(--base-200);
+          display: flex;
+          flex-direction: column;
+          justify-content: space-between;
+          z-index: 0;
+        }
+
+        .rua-pb-row,
+        .rua-p-row {
+          width: 100%;
+          padding: 1.5rem;
+          display: flex;
+          justify-content: space-between;
+        }
+
+        .rua-pb-row:nth-child(2) {
+          align-items: flex-end;
+        }
+
+        .rua-pb-logo {
+          width: 2.5rem;
+          height: 2.5rem;
+          padding: 0.25rem;
+          border: 1px dashed var(--base-200);
+        }
+
+        .rua-preloader {
+          position: fixed;
+          inset: 0;
+          width: 100%;
+          height: 100svh;
+          background-color: var(--base-300);
+          color: var(--base-100);
+          display: flex;
+          flex-direction: column;
+          justify-content: space-between;
+          clip-path: polygon(0% 0%, 100% 0%, 100% 100%, 0% 100%);
+          transform-origin: center;
+          will-change: transform, clip-path;
+          z-index: 2;
+        }
+
+        .rua-p-row .rua-p-col {
+          display: flex;
+          gap: 6rem;
+          align-items: flex-end;
+        }
+
+        .rua-preloader-btn-container {
+          position: absolute;
+          top: 50%;
+          left: 50%;
+          transform: translate(-50%, -50%);
+          width: min(20rem, 72vw);
+          height: min(20rem, 72vw);
+          border: 0;
+          border-radius: 999px;
+          background: transparent;
+          color: var(--base-100);
+          cursor: wait;
+          opacity: 0.86;
+          transition: opacity 240ms ease, filter 240ms ease;
+        }
+
+        .rua-splash.is-ready .rua-preloader-btn-container {
+          cursor: pointer;
+          opacity: 1;
+          filter: drop-shadow(0 0 1.75rem rgba(255, 255, 255, 0.16));
+        }
+
+        .rua-pbc-svg-strokes,
+        .rua-pbc-logo,
+        .rua-pbc-label,
+        .rua-pbc-outro-label {
+          position: absolute;
+          top: 50%;
+          left: 50%;
+          transform: translate(-50%, -50%);
+        }
+
+        .rua-pbc-logo {
+          display: grid;
+          width: 4rem;
+          height: 4rem;
+          place-items: center;
+          font-family: "Barlow Condensed", "Arial Narrow", sans-serif;
+          font-size: 4.5rem;
+          font-weight: 800;
+          line-height: 0.8;
+          letter-spacing: -0.08em;
+          text-indent: -0.08em;
+          color: var(--base-100);
+          pointer-events: none;
+        }
+
+        .rua-pbc-label,
+        .rua-pbc-outro-label {
+          font-size: 0.9rem;
+          white-space: nowrap;
+          pointer-events: none;
+        }
+
+        .rua-pbc-svg-strokes,
+        .rua-pbc-svg-strokes svg {
+          width: 100%;
+          height: 100%;
+          will-change: transform;
+        }
+
+        .rua-pbc-svg-strokes {
+          pointer-events: none;
+        }
+
+        .rua-hero {
+          position: relative;
+          width: 100%;
+          height: 100svh;
+          padding: 1.5rem;
+          background-color: var(--base-300);
+          color: var(--base-100);
+          display: flex;
+          justify-content: center;
+          align-items: center;
+          text-align: center;
+          transform: scale(0.75);
+          will-change: transform;
+          z-index: 1;
+        }
+
+        .rua-hero-copy {
+          position: relative;
+          z-index: 1;
+          display: grid;
+          gap: 1rem;
+          justify-items: center;
+          width: 92%;
+        }
+
+        .rua-hero-copy p {
+          color: rgba(255, 255, 255, 0.58);
+          letter-spacing: 0.16em;
+        }
+
+        .rua-hero h1 {
+          width: min(90%, 80rem);
+        }
+
+        .rua-preloader-revealer {
+          position: absolute;
+          top: 0;
+          left: 0;
+          width: 100%;
+          height: 100%;
+          background-color: var(--base-100);
+          clip-path: polygon(0% 0%, 100% 0%, 100% 100%, 0% 100%);
+          will-change: clip-path;
+        }
+
+        @media (max-width: 1000px) {
+          .rua-pb-row .rua-pb-col:nth-child(1),
+          .rua-pb-row .rua-pb-col:nth-child(2),
+          .rua-pb-row .rua-pb-col:nth-child(5) {
+            display: none;
+          }
+
+          .rua-p-row .rua-p-col {
+            gap: 2.5rem;
+          }
+        }
+
+        @media (max-width: 640px) {
+          .rua-pb-row,
+          .rua-p-row,
+          .rua-hero {
+            padding: 1rem;
+          }
+
+          .rua-p-row .rua-p-col {
+            gap: 1.5rem;
+          }
+
+          .rua-p-row:nth-child(2) {
+            align-items: flex-end;
+          }
+
+          .rua-p-sub-col:nth-child(2),
+          .rua-p-row:nth-child(2) > .rua-p-col:nth-child(2) {
+            display: none;
+          }
+        }
+      `}</style>
     </div>
   )
 }

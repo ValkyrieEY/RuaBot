@@ -5,8 +5,9 @@ REM Author: ValkyrieEY
 echo Starting Xiaoyi_QQ Framework...
 
 REM Get the directory where this script is located
-set SCRIPT_DIR=%~dp0
-cd /d "%SCRIPT_DIR%"
+set "SCRIPT_DIR=%~dp0"
+for %%I in ("%SCRIPT_DIR%..") do set "PROJECT_ROOT=%%~fI"
+cd /d "%PROJECT_ROOT%"
 
 REM Check Python
 where python >nul 2>nul

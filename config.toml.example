@@ -1,6 +1,6 @@
 [app]
 name = "XQNEXT Framework"
-version = "0.1.2"
+version = "0.2"
 
 # 环境模式："development"（开发）或 "production"（生产）
 environment = "development"

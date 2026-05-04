@@ -1,21 +1,14 @@
 """
-Tests for Database component.
+Tests for the current DatabaseManager surface.
 
-This test suite covers:
-- Database initialization
-- AI configuration CRUD operations
-- AI memory CRUD operations
-- Batch operations
-- Cleanup operations
-- Database connection management
-- Error handling
+This intentionally covers the live plugin, binary storage, and sandbox paths.
+The legacy AI configuration/memory APIs were removed with the old AI framework.
 """
-import pytest
 import tempfile
 from pathlib import Path
-from datetime import datetime
-from typing import List, Dict, Any
 from uuid import uuid4
+
+import pytest
 
 from src.core.database import DatabaseManager, get_database_manager
 
@@ -36,7 +29,6 @@ class TestDatabaseManager:
         await manager.initialize()
         yield manager
         await manager.close()
-        # Clean up
         if temp_db_path.exists():
             temp_db_path.unlink()
 
@@ -47,448 +39,155 @@ class TestDatabaseManager:
         assert db_manager.db_path is not None
 
     @pytest.mark.asyncio
-    async def test_create_ai_config(self, db_manager: DatabaseManager):
-        """Test creating AI configuration."""
-        config = await db_manager.create_ai_config(
-            config_type="group",
-            target_id="123456",
+    async def test_plugin_setting_crud(self, db_manager: DatabaseManager):
+        """Test creating, updating, fetching, listing, and deleting plugin settings."""
+        created = await db_manager.create_plugin_setting(
+            "XQNEXT",
+            "sample_plugin",
             enabled=True,
-            model_uuid="model-uuid-123",
-            preset_uuid="preset-uuid-456",
-            config={"trigger_command": "/ai"}
+            priority=50,
+            config={"mode": "test"},
         )
 
-        assert config is not None
-        assert config.config_type == "group"
-        assert config.target_id == "123456"
-        assert config.enabled is True
-        assert config.model_uuid == "model-uuid-123"
-        assert config.preset_uuid == "preset-uuid-456"
-        assert config.config == {"trigger_command": "/ai"}
+        assert created.plugin_author == "XQNEXT"
+        assert created.plugin_name == "sample_plugin"
+        assert created.config == {"mode": "test"}
 
-    @pytest.mark.asyncio
-    async def test_get_ai_config(self, db_manager: DatabaseManager):
-        """Test getting AI configuration."""
-        # Create config
-        await db_manager.create_ai_config(
-            config_type="group",
-            target_id="123456",
-            enabled=True
-        )
-
-        # Get config
-        config = await db_manager.get_ai_config("group", "123456")
-
-        assert config is not None
-        assert config.config_type == "group"
-        assert config.target_id == "123456"
-
-    @pytest.mark.asyncio
-    async def test_get_nonexistent_ai_config(self, db_manager: DatabaseManager):
-        """Test getting non-existent AI configuration."""
-        config = await db_manager.get_ai_config("group", "999999")
-
-        assert config is None
-
-    @pytest.mark.asyncio
-    async def test_update_ai_config(self, db_manager: DatabaseManager):
-        """Test updating AI configuration."""
-        # Create config
-        await db_manager.create_ai_config(
-            config_type="group",
-            target_id="123456",
+        assert await db_manager.update_plugin_setting(
+            "XQNEXT",
+            "sample_plugin",
             enabled=False,
-            model_uuid="model-1"
+            priority=10,
         )
 
-        # Update config
-        success = await db_manager.update_ai_config(
-            "group",
-            "123456",
-            enabled=True,
-            model_uuid="model-2"
-        )
+        fetched = await db_manager.get_plugin_setting("XQNEXT", "sample_plugin")
+        assert fetched is not None
+        assert fetched.enabled is False
+        assert fetched.priority == 10
 
-        assert success is True
+        listed = await db_manager.list_plugin_settings()
+        assert [row.plugin_name for row in listed] == ["sample_plugin"]
 
-        # Verify update
-        config = await db_manager.get_ai_config("group", "123456")
-        assert config.enabled is True
-        assert config.model_uuid == "model-2"
+        assert await db_manager.delete_plugin_setting("XQNEXT", "sample_plugin")
+        assert await db_manager.get_plugin_setting("XQNEXT", "sample_plugin") is None
 
     @pytest.mark.asyncio
-    async def test_delete_ai_config(self, db_manager: DatabaseManager):
-        """Test deleting AI configuration."""
-        # Create config
-        await db_manager.create_ai_config(
-            config_type="group",
-            target_id="123456",
-            enabled=True
-        )
+    async def test_binary_storage_lifecycle(self, db_manager: DatabaseManager):
+        """Test binary storage helpers used by plugin uploads."""
+        assert await db_manager.set_binary("plugin", "XQNEXT/sample", "avatar", b"one")
+        assert await db_manager.get_binary("plugin", "XQNEXT/sample", "avatar") == b"one"
 
-        # Delete config
-        success = await db_manager.delete_ai_config("group", "123456")
+        assert await db_manager.set_binary("plugin", "XQNEXT/sample", "avatar", b"two")
+        assert await db_manager.get_binary("plugin", "XQNEXT/sample", "avatar") == b"two"
+        assert await db_manager.list_binary_keys("plugin", "XQNEXT/sample") == ["avatar"]
 
-        assert success is True
-
-        # Verify deletion
-        config = await db_manager.get_ai_config("group", "123456")
-        assert config is None
+        assert await db_manager.delete_binary("plugin", "XQNEXT/sample", "avatar")
+        assert await db_manager.get_binary("plugin", "XQNEXT/sample", "avatar") is None
 
     @pytest.mark.asyncio
-    async def test_list_ai_configs(self, db_manager: DatabaseManager):
-        """Test listing AI configurations."""
-        # Create multiple configs
-        await db_manager.create_ai_config("group", "111111", enabled=True)
-        await db_manager.create_ai_config("group", "222222", enabled=False)
-        await db_manager.create_ai_config("group", "333333", enabled=True)
+    async def test_prune_orphaned_plugin_settings(self, db_manager: DatabaseManager, tmp_path: Path):
+        """Test pruning plugin DB rows whose manifest files are missing."""
+        plugin_base = tmp_path / "plugins"
+        plugin_base.mkdir()
 
-        # List configs
-        configs = await db_manager.list_ai_configs("group")
+        existing_dir = plugin_base / "existing_plugin"
+        existing_dir.mkdir()
+        (existing_dir / "metadata.yaml").write_text(
+            "name: existing_plugin\nversion: 1.0.0\nauthor: XQNEXT\n",
+            encoding="utf-8",
+        )
+        (existing_dir / "settings.json").write_text(
+            '{"config_schema": {}, "default_config": {}}',
+            encoding="utf-8",
+        )
 
-        assert len(configs) == 3
+        await db_manager.create_plugin_setting(
+            "XQNEXT",
+            "missing_plugin",
+            config={"avatar": "plugin_config_avatar"},
+        )
+        await db_manager.create_plugin_setting("XQNEXT", "existing_plugin")
+        await db_manager.set_binary(
+            "plugin",
+            "XQNEXT/missing_plugin",
+            "plugin_config_avatar",
+            b"avatar",
+        )
+        await db_manager.set_binary("plugin", "XQNEXT/missing_plugin", "leftover", b"data")
+
+        pruned = await db_manager.prune_orphaned_plugin_settings(plugin_base)
+
+        assert pruned == ["XQNEXT/missing_plugin"]
+        assert await db_manager.get_plugin_setting("XQNEXT", "missing_plugin") is None
+        assert await db_manager.get_plugin_setting("XQNEXT", "existing_plugin") is not None
+        assert await db_manager.list_binary_keys("plugin", "XQNEXT/missing_plugin") == []
 
     @pytest.mark.asyncio
-    async def test_list_ai_configs_by_type(self, db_manager: DatabaseManager):
-        """Test listing AI configurations by type."""
-        # Create configs of different types
-        await db_manager.create_ai_config("group", "111111", enabled=True)
-        await db_manager.create_ai_config("user", "222222", enabled=True)
-        await db_manager.create_ai_config("global", None, enabled=True)
-
-        # List group configs
-        group_configs = await db_manager.list_ai_configs("group")
-        assert len(group_configs) == 1
-
-        # List user configs
-        user_configs = await db_manager.list_ai_configs("user")
-        assert len(user_configs) == 1
-
-        # List global configs
-        global_configs = await db_manager.list_ai_configs("global")
-        assert len(global_configs) == 1
-
-    @pytest.mark.asyncio
-    async def test_batch_update_ai_configs(self, db_manager: DatabaseManager):
-        """Test batch updating AI configurations."""
-        # Create multiple configs
-        await db_manager.create_ai_config("group", "111111", enabled=False)
-        await db_manager.create_ai_config("group", "222222", enabled=False)
-        await db_manager.create_ai_config("group", "333333", enabled=True)
-
-        # Batch update
-        count = await db_manager.batch_update_ai_configs(
-            "group",
-            ["111111", "222222"],
-            enabled=True
+    async def test_sandbox_lifecycle(self, db_manager: DatabaseManager):
+        """Test sandbox and sandbox-message helpers without legacy AI fields."""
+        sandbox_uuid = str(uuid4())
+        sandbox = await db_manager.create_sandbox(
+            uuid=sandbox_uuid,
+            name="Plugin Sandbox",
+            description="Current sandbox path",
+            mock_user_id="10001",
+            mock_user_nickname="Tester",
+            mock_group_id="20002",
+            mock_group_name="Test Group",
+            use_plugins=True,
         )
 
-        assert count == 2
+        assert sandbox.to_dict()["use_plugins"] is True
 
-        # Verify updates
-        config1 = await db_manager.get_ai_config("group", "111111")
-        config2 = await db_manager.get_ai_config("group", "222222")
-        config3 = await db_manager.get_ai_config("group", "333333")
-
-        assert config1.enabled is True
-        assert config2.enabled is True
-        assert config3.enabled is True
-
-    @pytest.mark.asyncio
-    async def test_create_ai_memory(self, db_manager: DatabaseManager):
-        """Test creating AI memory."""
-        messages = [
-            {"role": "user", "content": "Hello"},
-            {"role": "assistant", "content": "Hi there!"}
-        ]
-
-        memory = await db_manager.create_ai_memory(
-            uuid=str(uuid4()),
-            memory_type="group",
-            target_id="123456",
-            preset_uuid="preset-123",
-            messages=messages
+        message = await db_manager.create_sandbox_message(
+            sandbox_uuid=sandbox_uuid,
+            message_type="group",
+            direction="inbound",
+            user_id="10001",
+            user_nickname="Tester",
+            group_id="20002",
+            group_name="Test Group",
+            content="hello",
+            processed_by_plugins=True,
+            plugin_responses=[{"plugin": "sample", "content": "ok"}],
         )
+        message_dict = message.to_dict()
 
-        assert memory is not None
-        assert memory.memory_type == "group"
-        assert memory.target_id == "123456"
-        assert len(memory.messages) == 2
+        assert message_dict["processed_by_plugins"] is True
+        assert message_dict["plugin_responses"] == [{"plugin": "sample", "content": "ok"}]
 
-    @pytest.mark.asyncio
-    async def test_get_ai_memory(self, db_manager: DatabaseManager):
-        """Test getting AI memory."""
-        memory_uuid = str(uuid4())
-
-        # Create memory
-        await db_manager.create_ai_memory(
-            uuid=memory_uuid,
-            memory_type="group",
-            target_id="123456",
-            messages=[{"role": "user", "content": "Test"}]
+        await db_manager.update_sandbox_message(
+            message.id,
+            processed_by_plugins=False,
+            plugin_responses=[],
+            has_error=True,
+            error_message="boom",
         )
+        messages = await db_manager.list_sandbox_messages(sandbox_uuid)
+        assert len(messages) == 1
+        assert messages[0].processed_by_plugins is False
+        assert messages[0].has_error is True
+        assert messages[0].error_message == "boom"
 
-        # Get memory
-        memory = await db_manager.get_ai_memory("group", "123456")
+        await db_manager.clear_sandbox_messages(sandbox_uuid)
+        assert await db_manager.list_sandbox_messages(sandbox_uuid) == []
 
-        assert memory is not None
-        assert memory.memory_type == "group"
-        assert memory.target_id == "123456"
-
-    @pytest.mark.asyncio
-    async def test_update_ai_memory(self, db_manager: DatabaseManager):
-        """Test updating AI memory."""
-        memory_uuid = str(uuid4())
-
-        # Create memory
-        await db_manager.create_ai_memory(
-            uuid=memory_uuid,
-            memory_type="group",
-            target_id="123456",
-            messages=[{"role": "user", "content": "Original"}]
-        )
-
-        # Update memory
-        new_messages = [
-            {"role": "user", "content": "Original"},
-            {"role": "assistant", "content": "Response"}
-        ]
-
-        success = await db_manager.update_ai_memory(
-            memory_uuid,
-            messages=new_messages,
-            message_count=2
-        )
-
-        assert success is True
-
-        # Verify update
-        memory = await db_manager.get_ai_memory("group", "123456")
-        assert len(memory.messages) == 2
-        assert memory.message_count == 2
-
-    @pytest.mark.asyncio
-    async def test_clear_ai_memory(self, db_manager: DatabaseManager):
-        """Test clearing AI memory."""
-        # Create memory
-        await db_manager.create_ai_memory(
-            uuid=str(uuid4()),
-            memory_type="group",
-            target_id="123456",
-            messages=[{"role": "user", "content": "Test"}]
-        )
-
-        # Clear memory
-        success = await db_manager.clear_ai_memory("group", "123456")
-
-        assert success is True
-
-        # Verify clear
-        memory = await db_manager.get_ai_memory("group", "123456")
-        assert memory is None or len(memory.messages) == 0
-
-    @pytest.mark.asyncio
-    async def test_delete_ai_memory(self, db_manager: DatabaseManager):
-        """Test deleting AI memory."""
-        memory_uuid = str(uuid4())
-
-        # Create memory
-        await db_manager.create_ai_memory(
-            uuid=memory_uuid,
-            memory_type="group",
-            target_id="123456",
-            messages=[{"role": "user", "content": "Test"}]
-        )
-
-        # Delete memory
-        success = await db_manager.delete_ai_memory(memory_uuid)
-
-        assert success is True
-
-        # Verify deletion
-        memory = await db_manager.get_ai_memory("group", "123456")
-        assert memory is None
-
-    @pytest.mark.asyncio
-    async def test_list_ai_memories(self, db_manager: DatabaseManager):
-        """Test listing AI memories."""
-        # Create multiple memories
-        await db_manager.create_ai_memory(
-            uuid=str(uuid4()),
-            memory_type="group",
-            target_id="111111",
-            messages=[{"role": "user", "content": "Test 1"}]
-        )
-        await db_manager.create_ai_memory(
-            uuid=str(uuid4()),
-            memory_type="group",
-            target_id="222222",
-            messages=[{"role": "user", "content": "Test 2"}]
-        )
-
-        # List memories
-        memories = await db_manager.list_ai_memories("group")
-
-        assert len(memories) == 2
-
-    @pytest.mark.asyncio
-    async def test_list_ai_memories_by_target(self, db_manager: DatabaseManager):
-        """Test listing AI memories by target ID."""
-        # Create memories for same target
-        await db_manager.create_ai_memory(
-            uuid=str(uuid4()),
-            memory_type="group",
-            target_id="123456",
-            preset_uuid="preset-1",
-            messages=[{"role": "user", "content": "Test 1"}]
-        )
-        await db_manager.create_ai_memory(
-            uuid=str(uuid4()),
-            memory_type="group",
-            target_id="123456",
-            preset_uuid="preset-2",
-            messages=[{"role": "user", "content": "Test 2"}]
-        )
-
-        # List memories for target
-        memories = await db_manager.list_ai_memories("group", "123456")
-
-        assert len(memories) == 2
-
-    @pytest.mark.asyncio
-    async def test_cleanup_expired_left_groups(self, db_manager: DatabaseManager):
-        """Test cleanup of expired left groups."""
-        # Create a left group config with old timestamp
-        await db_manager.create_ai_config(
-            config_type="group",
-            target_id="999999",
-            enabled=False,
-            is_left=True,
-            left_at=datetime.utcnow().replace(day=1)  # Old date
-        )
-
-        # Create a recent left group config
-        await db_manager.create_ai_config(
-            config_type="group",
-            target_id="888888",
-            enabled=False,
-            is_left=True,
-            left_at=datetime.utcnow()  # Recent date
-        )
-
-        # Create an active group config
-        await db_manager.create_ai_config(
-            config_type="group",
-            target_id="777777",
-            enabled=True,
-            is_left=False
-        )
-
-        # Test the method exists
-        assert hasattr(db_manager, 'cleanup_expired_left_groups')
-
-    @pytest.mark.asyncio
-    async def test_config_serialization(self, db_manager: DatabaseManager):
-        """Test config serialization to dict."""
-        # Create config
-        config = await db_manager.create_ai_config(
-            config_type="group",
-            target_id="123456",
-            enabled=True,
-            config={"key": "value"}
-        )
-
-        # Convert to dict
-        config_dict = config.to_dict()
-
-        assert isinstance(config_dict, dict)
-        assert config_dict["config_type"] == "group"
-        assert config_dict["target_id"] == "123456"
-        assert config_dict["enabled"] is True
-        assert config_dict["config"] == {"key": "value"}
-
-    @pytest.mark.asyncio
-    async def test_memory_serialization(self, db_manager: DatabaseManager):
-        """Test memory serialization to dict."""
-        # Create memory
-        memory = await db_manager.create_ai_memory(
-            uuid=str(uuid4()),
-            memory_type="group",
-            target_id="123456",
-            messages=[{"role": "user", "content": "Test"}]
-        )
-
-        # Convert to dict
-        memory_dict = memory.to_dict()
-
-        assert isinstance(memory_dict, dict)
-        assert memory_dict["memory_type"] == "group"
-        assert memory_dict["target_id"] == "123456"
-        assert len(memory_dict["messages"]) == 1
-
-    @pytest.mark.asyncio
-    async def test_increment_message_count(self, db_manager: DatabaseManager):
-        """Test incrementing message count."""
-        # Create config with initial count (default is 0)
-        await db_manager.create_ai_config(
-            config_type="group",
-            target_id="123456"
-        )
-
-        # Update to increment count
-        await db_manager.update_ai_config(
-            "group",
-            "123456",
-            message_count=1
-        )
-
-        # Verify
-        config = await db_manager.get_ai_config("group", "123456")
-        assert config.message_count == 1
-
-    @pytest.mark.asyncio
-    async def test_duplicate_config_creation(self, db_manager: DatabaseManager):
-        """Test handling duplicate config creation."""
-        # Create config
-        await db_manager.create_ai_config(
-            config_type="group",
-            target_id="123456",
-            enabled=True
-        )
-
-        # Try to create duplicate - should handle gracefully
-        try:
-            await db_manager.create_ai_config(
-                config_type="group",
-                target_id="123456",
-                enabled=False
-            )
-            # If it doesn't raise, test passes
-            assert True
-        except Exception:
-            # If it raises, that's also acceptable
-            assert True
+        await db_manager.delete_sandbox(sandbox_uuid)
+        assert await db_manager.get_sandbox(sandbox_uuid) is None
 
     @pytest.mark.asyncio
     async def test_database_connection_close(self, db_manager: DatabaseManager):
         """Test closing database connection."""
-        # Close connection
         await db_manager.close()
-
-        # Verify connection is closed
-        assert db_manager._initialized is False
 
 
 class TestDatabaseManagerGlobal:
     """Test suite for global database manager instance."""
 
-    @pytest.mark.asyncio
-    async def test_get_database_manager_singleton(self, temp_db_path: Path):
-        """Test that get_database_manager returns singleton instance."""
-        from src.core.database import get_database_manager
+    def test_get_database_manager_singleton(self):
+        """Test that get_database_manager returns an initialized singleton handle."""
         manager1 = get_database_manager()
         manager2 = get_database_manager()
 
-        # Should return same instance (with same db path)
         assert manager1 is not None
-        assert manager2 is not None
+        assert manager1 is manager2

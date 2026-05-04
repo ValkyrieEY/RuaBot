@@ -559,9 +559,10 @@ export default function Dashboard() {
             <ThreadPoolMonitor
               stats={primaryThreadPoolStats}
               title="Blocking Task Pool"
-              color="#3b82f6"
-              icon={<Puzzle className="w-5 h-5 text-blue-500" />}
+              color="#64748b"
+              icon={<Puzzle className="w-5 h-5 text-slate-600" />}
               historyData={threadPoolHistory.plugin}
+              headerVariant="plain"
             />
           </div>
         </div>

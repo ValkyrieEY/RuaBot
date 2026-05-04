@@ -135,6 +135,7 @@ class Config(BaseSettings):
                 # to avoid conflicts from previous runs
                 config_keys = [
                     "LOG_LEVEL", "DEBUG", "APP_DEBUG", "LOGGING_LEVEL", "APP_LOG_LEVEL",
+                    "HOST", "PORT", "SERVER_HOST", "SERVER_PORT",
                     "WEB_UI_ENABLED", "WEB_UI_USERNAME", "WEB_UI_PASSWORD", "PLUGIN_AUTO_LOAD"
                 ]
                 for key in config_keys:
@@ -189,6 +190,11 @@ def _flatten_toml(data: Dict[str, Any], result: Dict[str, str], prefix: str = ""
             # [app].log_level -> LOG_LEVEL (not APP_LOG_LEVEL)
             elif env_key == "APP_LOG_LEVEL":
                 result["LOG_LEVEL"] = value
+            # [server].host -> HOST, [server].port -> PORT
+            elif env_key == "SERVER_HOST":
+                result["HOST"] = value
+            elif env_key == "SERVER_PORT":
+                result["PORT"] = value
             # [plugins].dir -> PLUGIN_DIR (not PLUGINS_DIR)
             elif env_key == "PLUGINS_DIR":
                 result["PLUGIN_DIR"] = value

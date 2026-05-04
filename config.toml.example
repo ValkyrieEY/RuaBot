@@ -147,9 +147,6 @@ cleanup_interval_seconds = 86400
 mode = "agent"
 
 [napcat]
-# NapCat 安装路径（托管安装后自动配置，默认位于当前框架目录下的 ./napcat）
-install_path = ""
-
 # NapCat 安装程序基础 URL（留空以使用默认值）
 installer_base = ""
 

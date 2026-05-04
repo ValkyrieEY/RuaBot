@@ -12,7 +12,7 @@ class Sandbox(Base):
     
     Each sandbox creates an isolated testing environment where:
     - Messages are simulated and not sent to real QQ
-    - Plugins and AI can be tested without affecting real data
+    - Plugins can be tested without affecting real data
     - User can switch between different test scenarios
     """
     __tablename__ = 'sandboxes'
@@ -27,9 +27,6 @@ class Sandbox(Base):
     auto_reply = Column(Boolean, nullable=False, default=True)
     record_messages = Column(Boolean, nullable=False, default=True)
     use_plugins = Column(Boolean, nullable=False, default=True)
-    use_ai = Column(Boolean, nullable=False, default=True)
-    ai_model_uuid = Column(String(255), nullable=True)
-    ai_preset_uuid = Column(String(255), nullable=True)
     message_count = Column(Integer, nullable=False, default=0)
     last_activity = Column(DateTime, nullable=True)
     config = Column(JSON, nullable=False, default=dict)
@@ -50,10 +47,7 @@ class Sandbox(Base):
             'mock_group_name': self.mock_group_name,
             'auto_reply': self.auto_reply,
             'record_messages': self.record_messages,
-            'use_plugins': self.use_plugins,
-            'use_ai': self.use_ai,
-            'ai_model_uuid': self.ai_model_uuid,
-            'ai_preset_uuid': self.ai_preset_uuid,
+            'use_plugins': True,
             'message_count': self.message_count,
             'last_activity': self.last_activity.isoformat() if self.last_activity else None,
             'config': self.config,
@@ -79,9 +73,7 @@ class SandboxMessage(Base):
     content = Column(Text, nullable=False)
     raw_message = Column(Text, nullable=True)
     processed_by_plugins = Column(Boolean, nullable=False, default=False)
-    processed_by_ai = Column(Boolean, nullable=False, default=False)
     plugin_responses = Column(JSON, nullable=False, default=list)
-    ai_response = Column(Text, nullable=True)
     has_error = Column(Boolean, nullable=False, default=False)
     error_message = Column(Text, nullable=True)
     created_at = Column(DateTime, nullable=False, default=datetime.utcnow, index=True)
@@ -100,9 +92,7 @@ class SandboxMessage(Base):
             'content': self.content,
             'raw_message': self.raw_message,
             'processed_by_plugins': self.processed_by_plugins,
-            'processed_by_ai': self.processed_by_ai,
             'plugin_responses': self.plugin_responses,
-            'ai_response': self.ai_response,
             'has_error': self.has_error,
             'error_message': self.error_message,
             'created_at': self.created_at.isoformat() if self.created_at else None,

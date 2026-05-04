@@ -747,8 +747,9 @@ docker compose logs -f xqnext | grep -i error
 # 1. 检查插件目录挂载
 docker compose exec xqnext ls -la /app/plugins/
 
-# 2. 检查插件配置文件
-docker compose exec xqnext cat /app/plugins/your_plugin/plugin.json
+# 2. 检查插件元数据和设置定义
+docker compose exec xqnext cat /app/plugins/your_plugin/metadata.yaml
+docker compose exec xqnext cat /app/plugins/your_plugin/settings.json
 
 # 3. 查看插件加载日志
 docker compose logs xqnext | grep -i plugin

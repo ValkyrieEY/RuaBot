@@ -130,6 +130,64 @@ class ImageCacheManager:
             return "bin"
         return "png"
 
+    def _extension_from_bytes(self, raw_bytes: bytes, media_kind: str) -> str:
+        """Guess a file extension from magic bytes when CQ media omits MIME metadata."""
+        if raw_bytes.startswith(b"\x89PNG\r\n\x1a\n"):
+            return "png"
+        if raw_bytes.startswith(b"\xff\xd8\xff"):
+            return "jpg"
+        if raw_bytes.startswith((b"GIF87a", b"GIF89a")):
+            return "gif"
+        if raw_bytes.startswith(b"RIFF") and raw_bytes[8:12] == b"WEBP":
+            return "webp"
+        if raw_bytes.startswith(b"BM"):
+            return "bmp"
+        if media_kind == "video":
+            return "mp4"
+        if media_kind == "record":
+            return "amr"
+        if media_kind == "file":
+            return "bin"
+        return "png"
+
+    async def save_base64_media(self, base64_ref: str, media_kind: str = "image") -> Optional[str]:
+        """Save a CQ ``base64://`` media payload into the media cache."""
+        if not isinstance(base64_ref, str):
+            return None
+
+        payload = base64_ref.strip()
+        if payload.startswith("base64://"):
+            payload = payload[len("base64://"):]
+        if not payload:
+            return None
+
+        try:
+            raw_bytes = base64.b64decode(payload, validate=True)
+        except (binascii.Error, ValueError) as e:
+            logger.warning(f"Failed to decode base64 CQ media: {e}")
+            return None
+
+        if not raw_bytes:
+            return None
+
+        ext = self._extension_from_bytes(raw_bytes, media_kind)
+        digest = hashlib.sha256(raw_bytes).hexdigest()
+        cache_path = self.cache_dir / f"{digest}.{ext}"
+
+        try:
+            if cache_path.exists() and cache_path.stat().st_size == len(raw_bytes):
+                return str(cache_path)
+            async with aiofiles.open(cache_path, "wb") as f:
+                await f.write(raw_bytes)
+            logger.info(
+                f"Base64 CQ media cached successfully: {cache_path} ({len(raw_bytes)} bytes) "
+                f"kind={media_kind}"
+            )
+            return str(cache_path)
+        except Exception as e:
+            logger.warning(f"Failed to save base64 CQ media cache: {e}", exc_info=True)
+            return None
+
     async def save_data_url_media(self, data_url: str, media_kind: str = "image") -> Optional[str]:
         """Save a browser-uploaded data URL into the media cache and return its local path."""
         if not isinstance(data_url, str) or not data_url.startswith("data:"):
@@ -416,6 +474,97 @@ class ImageCacheManager:
             Local file path if cached, None otherwise
         """
         return await self.get_cached_media_path(image_url, media_kind="image")
+
+    @staticmethod
+    def _parse_cq_params(params_str: str) -> Dict[str, str]:
+        """Parse CQ params while preserving values that contain commas."""
+        params: Dict[str, str] = {}
+        allowed_keys = {
+            "file",
+            "url",
+            "type",
+            "cache",
+            "proxy",
+            "timeout",
+            "name",
+            "id",
+            "size",
+            "md5",
+            "sha1",
+            "sub_type",
+            "summary",
+        }
+        key_pattern = re.compile(r"(?:^|,)([A-Za-z_][A-Za-z0-9_-]*)=")
+        key_matches = [
+            m for m in key_pattern.finditer(params_str or "") if m.group(1).strip() in allowed_keys
+        ]
+        for idx, match in enumerate(key_matches):
+            key = match.group(1).strip()
+            value_start = match.end()
+            value_end = key_matches[idx + 1].start() if idx + 1 < len(key_matches) else len(params_str)
+            value = params_str[value_start:value_end].strip()
+            if value.endswith(","):
+                value = value[:-1]
+            if key and value:
+                params[key] = value
+        return params
+
+    @staticmethod
+    def _build_cq(cq_type: str, params: Dict[str, str]) -> str:
+        parts = [f"{k}={v}" for k, v in params.items() if v is not None and str(v).strip() != ""]
+        return f"[CQ:{cq_type}{',' + ','.join(parts) if parts else ''}]"
+
+    async def cache_embedded_cq_media_for_display(
+        self,
+        raw_message: str,
+        onebot_adapter=None,
+    ) -> str:
+        """Cache embedded CQ media and rewrite display-only refs to local file URIs."""
+        if not isinstance(raw_message, str) or "[CQ:" not in raw_message:
+            return raw_message
+
+        media_kind_map = {
+            "image": "image",
+            "video": "video",
+            "record": "record",
+            "file": "file",
+        }
+        cq_pattern = re.compile(r"\[CQ:(image|video|record|file),([^\]]+)\]")
+
+        out = []
+        last = 0
+        changed = False
+        for match in cq_pattern.finditer(raw_message):
+            out.append(raw_message[last:match.start()])
+            cq_type = match.group(1)
+            params = self._parse_cq_params(match.group(2))
+            media_ref = (params.get("url") or params.get("file") or "").strip()
+            media_kind = media_kind_map.get(cq_type, "file")
+            cached_path = None
+
+            if media_ref.startswith("base64://"):
+                cached_path = await self.save_base64_media(media_ref, media_kind=media_kind)
+            elif media_ref.startswith("data:"):
+                cached_path = await self.save_data_url_media(media_ref, media_kind=media_kind)
+            elif media_ref:
+                cached_path = await self.download_and_cache_media(
+                    media_ref,
+                    onebot_adapter=onebot_adapter,
+                    media_kind=media_kind,
+                )
+
+            if cached_path and Path(cached_path).exists():
+                display_params = dict(params)
+                display_params["file"] = Path(cached_path).resolve().as_uri()
+                display_params.pop("url", None)
+                out.append(self._build_cq(cq_type, display_params))
+                changed = True
+            else:
+                out.append(match.group(0))
+            last = match.end()
+
+        out.append(raw_message[last:])
+        return "".join(out) if changed else raw_message
     
     async def extract_and_cache_images(self, raw_message: str, onebot_adapter=None) -> Dict[str, str]:
         """
@@ -451,8 +600,12 @@ class ImageCacheManager:
             # Prefer URL if available, otherwise use file reference
             image_ref = url_ref or file_ref
             if image_ref:
-                # Download and cache
-                cached_path = await self.download_and_cache_image(image_ref, onebot_adapter)
+                if image_ref.startswith("base64://"):
+                    cached_path = await self.save_base64_media(image_ref, media_kind="image")
+                elif image_ref.startswith("data:"):
+                    cached_path = await self.save_data_url_media(image_ref, media_kind="image")
+                else:
+                    cached_path = await self.download_and_cache_image(image_ref, onebot_adapter)
                 if cached_path:
                     image_map[image_ref] = cached_path
                     # Also map the original CQ code

@@ -7,6 +7,7 @@ import contextlib
 import tempfile
 import shutil
 import subprocess
+import uuid
 from pathlib import Path
 from typing import Any, Dict, Optional, List
 from ...blocking_task_pool import run_in_blocking_pool
@@ -15,8 +16,241 @@ from .base import ComputerBooter, ShellComponent, PythonComponent, FileSystemCom
 logger = get_logger(__name__)
 class LocalShellComponent(ShellComponent):
     """Local shell execution component."""
+    IDLE_TIMEOUT_SECONDS = 30 * 60
+
     def __init__(self, work_dir: Path):
         self.work_dir = work_dir
+        self.current_cwd = work_dir.resolve()
+        self.session_env: Dict[str, str] = {}
+        self._process: Optional[asyncio.subprocess.Process] = None
+        self._lock = asyncio.Lock()
+        self._idle_task: Optional[asyncio.Task] = None
+        self._last_used_at = 0.0
+
+    def _build_exec_env(self, env: Optional[Dict[str, str]] = None) -> Dict[str, str]:
+        exec_env = os.environ.copy()
+        exec_env.update(self.session_env)
+        if env:
+            exec_env.update(env)
+        return exec_env
+
+    def _decode_output(self, data: bytes) -> str:
+        try:
+            text = data.decode('utf-8')
+        except UnicodeDecodeError:
+            if sys.platform == 'win32':
+                text = data.decode('gbk', errors='replace')
+            else:
+                text = data.decode('utf-8', errors='replace')
+        return text.replace("\x08 \x08", "").replace("\x08", "")
+
+    def _wrap_stateful_command(self, command: str, marker: str, cwd: Optional[Path] = None) -> str:
+        exit_marker = f"__XQNEXT_SANDBOX_EXIT_{marker}__"
+        cwd_marker = f"__XQNEXT_SANDBOX_CWD_{marker}__"
+        env_marker = f"__XQNEXT_SANDBOX_ENV_{marker}__"
+        done_marker = f"__XQNEXT_SANDBOX_DONE_{marker}__"
+
+        if sys.platform == 'win32':
+            lines = []
+            if cwd is not None:
+                lines.append(f'cd /d "{str(cwd).replace("\"", "\"\"")}"')
+            lines.extend([
+                command,
+                'set "__XQNEXT_SANDBOX_EXIT=%ERRORLEVEL%"',
+                f"echo {exit_marker}%__XQNEXT_SANDBOX_EXIT%",
+                f"echo {cwd_marker}",
+                "cd",
+                f"echo {env_marker}",
+                "set",
+                f"echo {done_marker}",
+            ])
+            return "\r\n".join(lines)
+
+        lines = []
+        if cwd is not None:
+            quoted_cwd = "'" + str(cwd).replace("'", "'\"'\"'") + "'"
+            lines.append(f"cd {quoted_cwd}")
+        lines.extend([
+            command,
+            "__xqnext_sandbox_exit=$?",
+            f"printf '\\n{exit_marker}%s\\n' \"$__xqnext_sandbox_exit\"",
+            f"printf '{cwd_marker}\\n'",
+            "pwd",
+            f"printf '{env_marker}\\n'",
+            "env",
+            f"printf '{done_marker}\\n'",
+        ])
+        return "\n".join(lines)
+
+    def _write_stateful_script(self, work_dir: Path, command: str, marker: str) -> Path:
+        suffix = ".cmd" if sys.platform == 'win32' else ".sh"
+        script_path = work_dir / f".xqnext_sandbox_{marker}{suffix}"
+        script_path.write_text(
+            self._wrap_stateful_command(command, marker),
+            encoding="utf-8",
+            newline="" if sys.platform == 'win32' else "\n",
+        )
+        if sys.platform != 'win32':
+            try:
+                script_path.chmod(script_path.stat().st_mode | 0o700)
+            except Exception:
+                pass
+        return script_path
+
+    def _split_stateful_output(self, stdout: str, marker: str) -> tuple[str, Optional[int]]:
+        exit_marker = f"__XQNEXT_SANDBOX_EXIT_{marker}__"
+        cwd_marker = f"__XQNEXT_SANDBOX_CWD_{marker}__"
+        env_marker = f"__XQNEXT_SANDBOX_ENV_{marker}__"
+        done_marker = f"__XQNEXT_SANDBOX_DONE_{marker}__"
+
+        if exit_marker not in stdout or cwd_marker not in stdout or env_marker not in stdout:
+            return stdout, None
+
+        user_stdout, state_output = stdout.split(exit_marker, 1)
+        exit_output, state_output = state_output.split(cwd_marker, 1)
+        cwd_output, env_output = state_output.split(env_marker, 1)
+        env_output = env_output.split(done_marker, 1)[0]
+
+        exit_code = None
+        exit_lines = [line.strip() for line in exit_output.splitlines() if line.strip()]
+        if exit_lines:
+            try:
+                exit_code = int(exit_lines[0])
+            except ValueError:
+                exit_code = None
+
+        cwd_lines = [line.strip() for line in cwd_output.splitlines() if line.strip()]
+        if cwd_lines:
+            next_cwd = Path(cwd_lines[-1])
+            if next_cwd.exists():
+                self.current_cwd = next_cwd.resolve()
+
+        next_env: Dict[str, str] = {}
+        for line in env_output.splitlines():
+            if not line or "=" not in line:
+                continue
+            # Windows `set` includes pseudo variables like `=C:=C:\...`.
+            if line.startswith("="):
+                continue
+            key, value = line.split("=", 1)
+            if key == "__XQNEXT_SANDBOX_EXIT":
+                continue
+            next_env[key] = value
+        if next_env:
+            self.session_env = next_env
+
+        return user_stdout.rstrip("\r\n"), exit_code
+
+    async def _ensure_shell_process(self, work_dir: Path, exec_env: Dict[str, str]) -> None:
+        if self._process and self._process.returncode is None:
+            return
+
+        if sys.platform == 'win32':
+            exec_env = dict(exec_env)
+            exec_env["PROMPT"] = "$H"
+            self._process = await asyncio.create_subprocess_exec(
+                "cmd.exe",
+                "/d",
+                "/q",
+                cwd=str(work_dir),
+                env=exec_env,
+                stdin=asyncio.subprocess.PIPE,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.STDOUT,
+            )
+            init_marker = f"__XQNEXT_SANDBOX_INIT_{uuid.uuid4().hex}__"
+            await self._write_to_shell(f"chcp 65001 > nul\r\necho {init_marker}\r\n")
+            await self._read_until_text(init_marker, timeout=5)
+        else:
+            self._process = await asyncio.create_subprocess_exec(
+                "/bin/sh",
+                cwd=str(work_dir),
+                env=exec_env,
+                stdin=asyncio.subprocess.PIPE,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.STDOUT,
+            )
+        self.current_cwd = work_dir
+
+    async def _write_to_shell(self, text: str) -> None:
+        if not self._process or not self._process.stdin:
+            raise RuntimeError("Shell process is not running")
+        self._process.stdin.write(text.encode("utf-8", errors="replace"))
+        await self._process.stdin.drain()
+
+    async def _read_until_text(self, needle: str, timeout: int) -> str:
+        if not self._process or not self._process.stdout:
+            raise RuntimeError("Shell process is not running")
+
+        chunks: List[str] = []
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + timeout
+        while True:
+            remaining = deadline - loop.time()
+            if remaining <= 0:
+                raise asyncio.TimeoutError()
+            line = await asyncio.wait_for(self._process.stdout.readline(), timeout=remaining)
+            if not line:
+                raise RuntimeError("Shell process exited")
+            text = self._decode_output(line)
+            chunks.append(text)
+            if needle in text:
+                return "".join(chunks)
+
+    async def _read_until_done(self, marker: str, timeout: Optional[int]) -> str:
+        if not self._process or not self._process.stdout:
+            raise RuntimeError("Shell process is not running")
+
+        done_marker = f"__XQNEXT_SANDBOX_DONE_{marker}__"
+        chunks: List[str] = []
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + (timeout or 30)
+
+        while True:
+            remaining = deadline - loop.time()
+            if remaining <= 0:
+                raise asyncio.TimeoutError()
+            line = await asyncio.wait_for(self._process.stdout.readline(), timeout=remaining)
+            if not line:
+                raise RuntimeError("Shell process exited")
+            text = self._decode_output(line)
+            chunks.append(text)
+            if done_marker in text:
+                break
+        return "".join(chunks)
+
+    def _schedule_idle_shutdown(self) -> None:
+        self._last_used_at = asyncio.get_running_loop().time()
+        if self._idle_task:
+            self._idle_task.cancel()
+        self._idle_task = asyncio.create_task(self._shutdown_after_idle())
+
+    async def _shutdown_after_idle(self) -> None:
+        try:
+            await asyncio.sleep(self.IDLE_TIMEOUT_SECONDS)
+            now = asyncio.get_running_loop().time()
+            if now - self._last_used_at >= self.IDLE_TIMEOUT_SECONDS:
+                await self.shutdown()
+        except asyncio.CancelledError:
+            pass
+
+    async def shutdown(self) -> None:
+        if self._idle_task:
+            self._idle_task.cancel()
+            self._idle_task = None
+        process = self._process
+        self._process = None
+        if process and process.returncode is None:
+            try:
+                if process.stdin:
+                    exit_command = "exit\r\n" if sys.platform == 'win32' else "exit\n"
+                    process.stdin.write(exit_command.encode("utf-8"))
+                    await process.stdin.drain()
+                await asyncio.wait_for(process.wait(), timeout=3)
+            except Exception:
+                process.kill()
+                await process.wait()
+
     async def exec(
         self,
         command: str,
@@ -27,12 +261,12 @@ class LocalShellComponent(ShellComponent):
         background: bool = False,
     ) -> Dict[str, Any]:
         """Execute shell command locally."""
+        original_command = command
         try:
-            work_dir = Path(cwd) if cwd else self.work_dir
+            work_dir = Path(cwd) if cwd else self.current_cwd
             work_dir.mkdir(parents=True, exist_ok=True)
-            exec_env = os.environ.copy()
-            if env:
-                exec_env.update(env)
+            work_dir = work_dir.resolve()
+            exec_env = self._build_exec_env(env)
             if background:
                 process = subprocess.Popen(
                     command,
@@ -49,11 +283,43 @@ class LocalShellComponent(ShellComponent):
                     "stderr": "",
                     "exit_code": None,
                     "success": True,
-                    "command": command,
+                    "command": original_command,
+                    "cwd": str(work_dir),
                 }
-            if sys.platform == 'win32':
-                command = f'chcp 65001 > nul && {command}'
-            process = await asyncio.create_subprocess_shell(
+
+            if shell:
+                async with self._lock:
+                    await self._ensure_shell_process(work_dir, exec_env)
+                    marker = uuid.uuid4().hex
+                    cwd_override = work_dir if cwd else None
+                    await self._write_to_shell(self._wrap_stateful_command(command, marker, cwd_override))
+                    await self._write_to_shell("\r\n" if sys.platform == 'win32' else "\n")
+                    try:
+                        raw_stdout = await self._read_until_done(marker, timeout)
+                        stdout, parsed_exit_code = self._split_stateful_output(raw_stdout, marker)
+                        exit_code = parsed_exit_code if parsed_exit_code is not None else 0
+                        self._schedule_idle_shutdown()
+                    except asyncio.TimeoutError:
+                        await self.shutdown()
+                        return {
+                            "stdout": "",
+                            "stderr": f"Command timed out after {timeout} seconds",
+                            "exit_code": -1,
+                            "success": False,
+                            "command": original_command,
+                            "cwd": str(work_dir),
+                        }
+                return {
+                    "stdout": stdout,
+                    "stderr": "",
+                    "exit_code": exit_code,
+                    "success": exit_code == 0,
+                    "command": original_command,
+                    "cwd": str(self.current_cwd),
+                    "persistent": True,
+                }
+
+            process = await asyncio.create_subprocess_exec(
                 command,
                 cwd=str(work_dir),
                 env=exec_env,
@@ -65,20 +331,8 @@ class LocalShellComponent(ShellComponent):
                     process.communicate(),
                     timeout=timeout
                 )
-                try:
-                    stdout = stdout_bytes.decode('utf-8')
-                except UnicodeDecodeError:
-                    if sys.platform == 'win32':
-                        stdout = stdout_bytes.decode('gbk', errors='replace')
-                    else:
-                        stdout = stdout_bytes.decode('utf-8', errors='replace')
-                try:
-                    stderr = stderr_bytes.decode('utf-8')
-                except UnicodeDecodeError:
-                    if sys.platform == 'win32':
-                        stderr = stderr_bytes.decode('gbk', errors='replace')
-                    else:
-                        stderr = stderr_bytes.decode('utf-8', errors='replace')
+                stdout = self._decode_output(stdout_bytes)
+                stderr = self._decode_output(stderr_bytes)
                 exit_code = process.returncode
             except asyncio.TimeoutError:
                 process.kill()
@@ -88,14 +342,16 @@ class LocalShellComponent(ShellComponent):
                     "stderr": f"Command timed out after {timeout} seconds",
                     "exit_code": -1,
                     "success": False,
-                    "command": command,
+                    "command": original_command,
+                    "cwd": str(work_dir),
                 }
             return {
                 "stdout": stdout,
                 "stderr": stderr,
                 "exit_code": exit_code,
                 "success": exit_code == 0,
-                "command": command,
+                "command": original_command,
+                "cwd": str(self.current_cwd),
             }
         except Exception as e:
             logger.error(f"Shell execution error: {e}", exc_info=True)
@@ -104,7 +360,7 @@ class LocalShellComponent(ShellComponent):
                 "stderr": str(e),
                 "exit_code": -1,
                 "success": False,
-                "command": command,
+                "command": original_command,
             }
 class LocalPythonComponent(PythonComponent):
     """Local Python code execution component."""
@@ -376,6 +632,8 @@ class LocalBooter(ComputerBooter):
         logger.info(f"Local sandbox booted: {self.work_dir}")
     async def shutdown(self) -> None:
         """Shutdown and cleanup sandbox."""
+        if self._shell is not None:
+            await self._shell.shutdown()
         if self.work_dir and self.work_dir.exists():
             try:
                 shutil.rmtree(self.work_dir)

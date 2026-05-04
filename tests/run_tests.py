@@ -27,34 +27,34 @@ class TestRunner:
                 "command": "pytest tests/test_core/ -v --tb=short"
             },
             "2": {
-                "name": "AI 模块测试",
-                "description": "测试 AI 功能，包括 ai_manager、model_manager、llm_client 和 message_handler",
-                "path": "tests/test_ai/",
-                "command": "pytest tests/test_ai/ -v --tb=short"
-            },
-            "3": {
                 "name": "协议模块测试",
                 "description": "测试协议适配器，包括 OneBot、基础协议和消息处理",
                 "path": "tests/test_protocol/",
                 "command": "pytest tests/test_protocol/ -v --tb=short"
             },
-            "4": {
-                "name": "路由模块测试",
-                "description": "测试路由功能，包括规则、处理器和消息路由",
-                "path": "tests/test_router/",
-                "command": "pytest tests/test_router/ -v --tb=short"
-            },
-            "5": {
-                "name": "安全模块测试",
-                "description": "测试安全功能，包括认证、权限和访问控制",
-                "path": "tests/test_security/",
-                "command": "pytest tests/test_security/ -v --tb=short"
-            },
-            "6": {
+            "3": {
                 "name": "插件模块测试",
                 "description": "测试插件系统，包括拦截器、运行时和插件生命周期",
                 "path": "tests/test_plugins/",
                 "command": "pytest tests/test_plugins/ -v --tb=short"
+            },
+            "4": {
+                "name": "沙箱模块测试",
+                "description": "测试本地 shell 沙箱状态",
+                "path": "tests/test_sandbox/",
+                "command": "pytest tests/test_sandbox/ -v --tb=short"
+            },
+            "5": {
+                "name": "NapCat 模块测试",
+                "description": "测试 NapCat 管理配置持久化",
+                "path": "tests/test_napcat/",
+                "command": "pytest tests/test_napcat/ -v --tb=short"
+            },
+            "6": {
+                "name": "UI 模块测试",
+                "description": "测试 Web UI API 集成路径",
+                "path": "tests/test_ui/",
+                "command": "pytest tests/test_ui/ -v --tb=short"
             },
             "7": {
                 "name": "运行所有测试",

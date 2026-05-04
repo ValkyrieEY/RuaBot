@@ -4,6 +4,7 @@ import asyncio
 from contextlib import asynccontextmanager
 from typing import Any, Dict, List, Optional, Tuple
 import ipaddress
+import mimetypes
 import platform
 import sys
 import uuid
@@ -65,12 +66,54 @@ security = HTTPBearer()
 
 # Plugin installation progress tracking
 _plugin_install_progress: Dict[str, Dict[str, Any]] = {}
+_PLUGIN_PROGRESS_MAX_LOGS = 300
 _onebot_login_info_last_connectivity_log_at: float = 0.0
 _ONEBOT_LOGIN_INFO_CONNECTIVITY_LOG_INTERVAL_SECONDS = 60.0
 _record_proxy_fail_until: Dict[str, float] = {}
 _BT_IP_INFO_API_URL = "https://www.bt.cn/api/panel/get_ip_info"
 _IP_GEO_CACHE_TTL_SECONDS = 6 * 60 * 60
 _ip_geo_cache: Dict[str, Tuple[float, Dict[str, Any]]] = {}
+
+
+def _set_plugin_progress(
+    task_id: str,
+    *,
+    status: str,
+    progress: int,
+    message: str,
+    result: Optional[Dict[str, Any]] = None,
+) -> None:
+    existing = _plugin_install_progress.get(task_id, {})
+    logs = list(existing.get("logs") or [])
+    payload: Dict[str, Any] = {
+        "status": status,
+        "progress": max(0, min(100, int(progress))),
+        "message": message,
+        "logs": logs[-_PLUGIN_PROGRESS_MAX_LOGS:],
+    }
+    if result is not None:
+        payload["result"] = result
+    _plugin_install_progress[task_id] = payload
+
+
+def _append_plugin_progress_log(task_id: str, line: str, *, progress: Optional[int] = None) -> None:
+    text = str(line or "").strip()
+    if not text:
+        return
+
+    existing = _plugin_install_progress.get(task_id) or {
+        "status": "running",
+        "progress": 0,
+        "message": text,
+        "logs": [],
+    }
+    logs = list(existing.get("logs") or [])
+    logs.append(text)
+    existing["logs"] = logs[-_PLUGIN_PROGRESS_MAX_LOGS:]
+    existing["message"] = text
+    if progress is not None:
+        existing["progress"] = max(0, min(100, int(progress)))
+    _plugin_install_progress[task_id] = existing
 
 # Request/Response Models
 class LoginRequest(BaseModel):
@@ -255,6 +298,56 @@ async def _resolve_plugin_identity(plugin_name: str, app: Any) -> Dict[str, Any]
         "name": resolved_name,
         "plugin_owner": f"{author}/{resolved_name}",
     }
+
+
+def _resolve_declared_plugin_logo_path(plugin_dir: Path, logo_value: Any) -> Tuple[Path, str]:
+    """Resolve a declared local logo path inside a plugin directory."""
+    if not isinstance(logo_value, str) or not logo_value.strip():
+        raise HTTPException(status_code=404, detail="Plugin logo not configured")
+
+    logo = logo_value.strip().replace("\\", "/")
+    if re.match(r"^[a-zA-Z][a-zA-Z0-9+.-]*:", logo) or logo.startswith("//"):
+        raise HTTPException(status_code=404, detail="Plugin logo is remote")
+
+    plugin_root = plugin_dir.resolve()
+    logo_path = (plugin_root / logo).resolve()
+    try:
+        logo_path.relative_to(plugin_root)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Plugin logo path is outside plugin directory")
+
+    if not logo_path.is_file():
+        raise HTTPException(status_code=404, detail="Plugin logo file not found")
+
+    media_type = mimetypes.guess_type(str(logo_path))[0] or ""
+    if not media_type.startswith("image/"):
+        raise HTTPException(status_code=400, detail="Plugin logo must be an image file")
+
+    return logo_path, media_type
+
+
+async def _read_plugin_readme(plugin_dir: Path, thread_pool: Any = None) -> Tuple[str, str]:
+    """Read the first README file found in a plugin directory."""
+    filenames = ("README.md", "README.MD", "readme.md", "README.txt", "readme.txt")
+    search_dirs = (Path("."), Path("_legacy"), Path("docs"))
+
+    def read_readme() -> Tuple[str, str]:
+        plugin_root = plugin_dir.resolve()
+        for search_dir in search_dirs:
+            for filename in filenames:
+                readme_path = (plugin_root / search_dir / filename).resolve()
+                try:
+                    readme_path.relative_to(plugin_root)
+                except ValueError:
+                    continue
+                if readme_path.is_file():
+                    display_name = str(readme_path.relative_to(plugin_root)).replace("\\", "/")
+                    return display_name, readme_path.read_text(encoding="utf-8", errors="replace")
+        raise FileNotFoundError("Plugin README not found")
+
+    if thread_pool:
+        return await thread_pool.run_in_executor(read_readme)
+    return await run_in_blocking_pool(read_readme)
 
 
 async def _discover_plugins_on_disk(plugin_base: Path, thread_pool: Any = None) -> List[Dict[str, Any]]:
@@ -1212,6 +1305,30 @@ def create_app() -> FastAPI:
         if logo_path.exists():
             return FileResponse(str(logo_path))
         raise HTTPException(status_code=404)
+
+    @app.get("/api/plugins/{plugin_name}/logo")
+    async def plugin_logo(plugin_name: str):
+        """Serve a plugin logo declared as a local path in metadata.yaml."""
+        config = get_config()
+        if not config.web_ui_enabled:
+            raise HTTPException(status_code=404, detail="Not found")
+
+        app_instance = get_app()
+        plugin_dir = _resolve_plugin_base_dir() / plugin_name
+        if not plugin_dir.exists() or not plugin_manifest_exists(plugin_dir):
+            raise HTTPException(status_code=404, detail="Plugin not found")
+
+        thread_pool = getattr(app_instance, 'blocking_task_pool', None)
+        try:
+            manifest = await _load_plugin_manifest_async(plugin_dir, thread_pool)
+        except Exception as exc:
+            logger.warning("Failed to read plugin logo metadata for %s: %s", plugin_name, exc)
+            raise HTTPException(status_code=404, detail="Plugin logo not found")
+
+        logo_path, media_type = _resolve_declared_plugin_logo_path(plugin_dir, manifest.get("logo"))
+        response = FileResponse(str(logo_path), media_type=media_type)
+        response.headers["X-Content-Type-Options"] = "nosniff"
+        return response
     
     # Authentication endpoints
     @app.post("/api/auth/login", response_model=LoginResponse)
@@ -1567,6 +1684,86 @@ def create_app() -> FastAPI:
                 "config": config_data
             }
         }
+
+    @app.get("/api/plugins/{plugin_name}/readme")
+    async def get_plugin_readme(
+        plugin_name: str,
+        user: Dict[str, Any] = Depends(require_permission(Permission.PLUGIN_VIEW))
+    ):
+        """Get README content from a plugin directory."""
+        app = get_app()
+        plugin_dir = _resolve_plugin_base_dir() / plugin_name
+
+        if not plugin_dir.exists() or not plugin_dir.is_dir():
+            raise HTTPException(status_code=404, detail="Plugin not found")
+
+        thread_pool = getattr(app, 'blocking_task_pool', None)
+        try:
+            filename, content = await _read_plugin_readme(plugin_dir, thread_pool)
+        except FileNotFoundError:
+            raise HTTPException(status_code=404, detail="Plugin README not found")
+        except Exception as e:
+            logger.error("Failed to read plugin README for %s: %s", plugin_name, e)
+            raise HTTPException(status_code=500, detail="Failed to read plugin README")
+
+        return {
+            "plugin_name": plugin_name,
+            "filename": filename,
+            "content": content,
+        }
+
+    @app.post("/api/plugins/{plugin_name}/metadata/refresh")
+    async def refresh_plugin_metadata(
+        plugin_name: str,
+        user: Dict[str, Any] = Depends(require_permission(Permission.PLUGIN_RELOAD))
+    ):
+        """Refresh one plugin's metadata from its manifest files."""
+        username = user.get("username", "unknown")
+        app = get_app()
+        db_manager = app.db_manager if hasattr(app, 'db_manager') and app.db_manager else None
+        identity = await _resolve_plugin_identity(plugin_name, app)
+        manifest = identity["manifest"]
+        author = identity["author"]
+        name = identity["name"]
+        metadata = build_plugin_api_metadata(manifest, plugin_name)
+        priority = coerce_plugin_priority(manifest.get("priority"), 100)
+        default_config = normalize_plugin_default_config(manifest.get("default_config", {}))
+        version = metadata.get("version", "1.0.0")
+
+        if db_manager:
+            setting = await db_manager.get_plugin_setting(author, name)
+            install_info = dict(setting.install_info or {}) if setting else {}
+            install_info.update({
+                "version": version,
+                "metadata_refreshed_at": datetime.now().isoformat(),
+                "metadata_refreshed_by": username,
+            })
+            if setting:
+                await db_manager.update_plugin_setting(author, name, install_info=install_info)
+            else:
+                await db_manager.create_plugin_setting(
+                    author=author,
+                    name=name,
+                    enabled=False,
+                    priority=priority,
+                    config=default_config,
+                    install_source='local',
+                    install_info=install_info,
+                )
+
+        await get_audit_logger().log_plugin_action(
+            "metadata_refresh",
+            plugin_name,
+            username,
+            True,
+            {"version": version},
+        )
+
+        return {
+            "name": name,
+            "metadata": metadata,
+            "message": "Plugin metadata refreshed",
+        }
     
     @app.delete("/api/plugins/{plugin_name}")
     async def delete_plugin(
@@ -1815,6 +2012,157 @@ def create_app() -> FastAPI:
             raise HTTPException(status_code=500, detail=f"Failed to {action.action} plugin")
         
         return {"message": f"Plugin {action.action} successful"}
+
+    @app.post("/api/plugins/{plugin_name}/action-progress")
+    async def plugin_action_progress(
+        plugin_name: str,
+        action: PluginAction,
+        http_request: Request,
+        user: Dict[str, Any] = Depends(get_current_user)
+    ):
+        """Start a plugin action and expose progress/logs via SSE."""
+        from ..core.app import get_app
+
+        app = get_app()
+        db_manager = app.db_manager if hasattr(app, 'db_manager') and app.db_manager else None
+        plugin_connector = app.plugin_connector if hasattr(app, 'plugin_connector') and app.plugin_connector else None
+        perm_manager = get_permission_manager()
+        username = user.get("username")
+
+        if not db_manager:
+            raise HTTPException(status_code=500, detail="Database manager not available")
+
+        perm_map = {
+            "load": Permission.PLUGIN_LOAD,
+            "unload": Permission.PLUGIN_UNLOAD,
+            "reload": Permission.PLUGIN_RELOAD,
+            "enable": Permission.PLUGIN_ENABLE,
+            "disable": Permission.PLUGIN_DISABLE,
+        }
+
+        required_perm = perm_map.get(action.action)
+        if required_perm and not perm_manager.has_permission(username, required_perm):
+            details = await _request_audit_details(http_request)
+            await get_audit_logger().log_access_denied(
+                username=username,
+                resource=f"plugin:{plugin_name}",
+                action=action.action,
+                reason="Insufficient permissions",
+                ip_address=details.get("ip"),
+                details=details,
+            )
+            raise HTTPException(status_code=403, detail="Insufficient permissions")
+
+        async def get_plugin_author(plugin_name: str) -> tuple[str, str]:
+            plugin_dir = _resolve_plugin_base_dir() / plugin_name
+            if plugin_manifest_exists(plugin_dir):
+                try:
+                    thread_pool = getattr(app, 'blocking_task_pool', None)
+                    metadata = await _load_plugin_manifest_async(plugin_dir, thread_pool)
+                    author = metadata.get('author', 'Unknown')
+                    name = metadata.get('name', plugin_name)
+                    return author, name
+                except Exception as e:
+                    logger.warning(f"Failed to read plugin manifest for {plugin_name}: {e}")
+            return 'Unknown', plugin_name
+
+        task_id = str(uuid.uuid4())
+        _set_plugin_progress(
+            task_id,
+            status="queued",
+            progress=0,
+            message=f"准备执行插件操作: {action.action}",
+        )
+
+        async def run_action() -> None:
+            success = False
+            try:
+                author, name = await get_plugin_author(plugin_name)
+                _set_plugin_progress(
+                    task_id,
+                    status="running",
+                    progress=5,
+                    message=f"已读取插件信息: {author}/{name}",
+                )
+
+                def progress_callback(line: str) -> None:
+                    _append_plugin_progress_log(task_id, line, progress=60)
+
+                if action.action in ["load", "enable"]:
+                    _set_plugin_progress(task_id, status="running", progress=10, message="正在启用插件...")
+                    setting = await db_manager.get_plugin_setting(author, name)
+                    if not setting:
+                        result = await db_manager.create_plugin_setting(
+                            author=author,
+                            name=name,
+                            enabled=True,
+                            config={},
+                            install_source='local'
+                        )
+                        success = result is not None
+                    else:
+                        success = await db_manager.update_plugin_setting(author, name, enabled=True)
+
+                    if success and plugin_connector:
+                        _set_plugin_progress(task_id, status="running", progress=20, message="正在检查并安装插件依赖...")
+                        success = await plugin_connector.reload_plugin(
+                            plugin_name,
+                            progress_callback=progress_callback,
+                        )
+
+                elif action.action in ["unload", "disable"]:
+                    _set_plugin_progress(task_id, status="running", progress=20, message="正在禁用插件...")
+                    setting = await db_manager.get_plugin_setting(author, name)
+                    if not setting:
+                        raise HTTPException(status_code=404, detail="Plugin not found in database")
+
+                    success = await db_manager.update_plugin_setting(author, name, enabled=False)
+                    if success and plugin_connector:
+                        _set_plugin_progress(task_id, status="running", progress=60, message="正在卸载插件运行实例...")
+                        success = await plugin_connector.unload_plugin(plugin_name)
+
+                elif action.action == "reload":
+                    if not plugin_connector:
+                        raise HTTPException(status_code=500, detail="Plugin connector not available")
+                    _set_plugin_progress(task_id, status="running", progress=15, message="正在检查并安装插件依赖...")
+                    success = await plugin_connector.reload_plugin(
+                        plugin_name,
+                        progress_callback=progress_callback,
+                    )
+
+                else:
+                    raise HTTPException(status_code=400, detail=f"Invalid action: {action.action}")
+
+                await get_audit_logger().log_plugin_action(action.action, plugin_name, username, success)
+
+                if not success:
+                    raise RuntimeError(f"Failed to {action.action} plugin")
+
+                _set_plugin_progress(
+                    task_id,
+                    status="completed",
+                    progress=100,
+                    message=f"插件{action.action}完成",
+                )
+            except Exception as e:
+                logger.error(f"Failed to {action.action} plugin {plugin_name}: {e}", exc_info=True)
+                await get_audit_logger().log_plugin_action(
+                    action.action,
+                    plugin_name,
+                    username,
+                    False,
+                    {"error": str(e)}
+                )
+                _append_plugin_progress_log(task_id, str(e))
+                _set_plugin_progress(
+                    task_id,
+                    status="failed",
+                    progress=0,
+                    message=f"插件{action.action}失败: {str(e)}",
+                )
+
+        asyncio.create_task(run_action())
+        return {"task_id": task_id}
     
     @app.post("/api/plugins/reload-all")
     async def reload_all_plugins(
@@ -2159,9 +2507,18 @@ def create_app() -> FastAPI:
     @app.get("/api/plugins/install-progress/{task_id}")
     async def get_plugin_install_progress(
         task_id: str,
-        user: Dict[str, Any] = Depends(get_current_user)
+        request: Request,
     ):
         """Get plugin installation progress via SSE."""
+        auth_header = request.headers.get("authorization", "")
+        token = request.query_params.get("token") or ""
+        if not token and auth_header.lower().startswith("bearer "):
+            token = auth_header.split(" ", 1)[1].strip()
+
+        session = await get_auth_manager().verify_session(token)
+        if not session:
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid or expired token")
+
         async def event_generator():
             while True:
                 if task_id in _plugin_install_progress:
@@ -2225,129 +2582,183 @@ def create_app() -> FastAPI:
         
         # Generate task ID for progress tracking
         task_id = str(uuid.uuid4())
-        _plugin_install_progress[task_id] = {
-            'status': 'downloading',
-            'progress': 0,
-            'message': '开始下载...'
-        }
-        
-        # Download ZIP from GitHub with progress tracking
-        download_url = f"https://github.com/{owner}/{repo}/archive/refs/heads/main.zip"
-        
-        # Create temporary directory
-        with tempfile.TemporaryDirectory() as temp_dir:
-            temp_path = Path(temp_dir)
-            zip_path = temp_path / f"{repo}.zip"
-            
+        _set_plugin_progress(
+            task_id,
+            status='queued',
+            progress=0,
+            message='准备下载插件...'
+        )
+
+        async def run_github_install_task() -> None:
+            temp_dir = Path(tempfile.mkdtemp(prefix=f"plugin_install_{repo}_"))
             try:
-                async with httpx.AsyncClient(follow_redirects=True, timeout=120.0) as client:
-                    logger.info(f"Downloading plugin from GitHub: {owner}/{repo}")
-                    
-                    # Try main branch first
-                    async with client.stream('GET', download_url) as response:
-                        # Try master branch if main doesn't exist
-                        if response.status_code == 404:
-                            download_url = f"https://github.com/{owner}/{repo}/archive/refs/heads/master.zip"
-                            async with client.stream('GET', download_url) as response2:
-                                response2.raise_for_status()
-                                total_size = int(response2.headers.get('content-length', 0))
-                                zip_path = await _download_with_progress(response2, task_id, total_size, zip_path)
-                        else:
-                            response.raise_for_status()
-                            total_size = int(response.headers.get('content-length', 0))
-                            zip_path = await _download_with_progress(response, task_id, total_size, zip_path)
-                            
-            except httpx.HTTPStatusError as e:
-                logger.error(f"Failed to download plugin from GitHub: {e}")
-                _plugin_install_progress[task_id] = {
-                    'status': 'failed',
-                    'progress': 0,
-                    'message': f'下载失败: HTTP {e.response.status_code}'
-                }
-                raise HTTPException(
-                    status_code=400, 
-                    detail=f"Failed to download from GitHub. Please check the repository URL and ensure it's public."
-                )
-            except Exception as e:
-                logger.error(f"Error downloading plugin: {e}")
-                _plugin_install_progress[task_id] = {
-                    'status': 'failed',
-                    'progress': 0,
-                    'message': f'下载错误: {str(e)}'
-                }
-                raise HTTPException(status_code=500, detail=f"Download error: {str(e)}")
-            
-            # Install plugin
-            try:
-                _plugin_install_progress[task_id] = {
-                    'status': 'installing',
-                    'progress': 90,
-                    'message': '正在安装插件...'
-                }
-                
-                result = await _install_plugin_from_zip(zip_path, config, db_manager, plugin_connector, user)
-                
-                _plugin_install_progress[task_id] = {
-                    'status': 'completed',
-                    'progress': 100,
-                    'message': '安装完成！',
-                    'result': result
-                }
-                
-                # Log action
-                await get_audit_logger().log_plugin_action(
-                    action="install_from_github",
-                    plugin_name=result.get('plugin_name', repo),
-                    username=username,
-                    success=True,
-                    details={"repo": f"{owner}/{repo}"}
-                )
-                
-                return {"task_id": task_id, **result}
-            except Exception as e:
-                _plugin_install_progress[task_id] = {
-                    'status': 'failed',
-                    'progress': 0,
-                    'message': f'安装失败: {str(e)}'
-                }
-                await get_audit_logger().log_plugin_action(
-                    action="install_from_github",
-                    plugin_name=repo,
-                    username=username,
-                    success=False,
-                    details={"repo": f"{owner}/{repo}", "error": str(e)}
-                )
-                raise
-    
+                zip_path = temp_dir / f"{repo}.zip"
+                download_url = f"https://github.com/{owner}/{repo}/archive/refs/heads/main.zip"
+
+                try:
+                    async with httpx.AsyncClient(follow_redirects=True, timeout=120.0) as client:
+                        logger.info(f"Downloading plugin from GitHub: {owner}/{repo}")
+                        _append_plugin_progress_log(task_id, f"下载地址: {download_url}", progress=2)
+
+                        async with client.stream('GET', download_url) as response:
+                            if response.status_code == 404:
+                                download_url = f"https://github.com/{owner}/{repo}/archive/refs/heads/master.zip"
+                                _append_plugin_progress_log(task_id, "main 分支不存在，尝试 master 分支", progress=3)
+                                _append_plugin_progress_log(task_id, f"下载地址: {download_url}", progress=3)
+                                async with client.stream('GET', download_url) as response2:
+                                    response2.raise_for_status()
+                                    total_size = int(response2.headers.get('content-length', 0))
+                                    zip_path = await _download_with_progress(response2, task_id, total_size, zip_path)
+                            else:
+                                response.raise_for_status()
+                                total_size = int(response.headers.get('content-length', 0))
+                                zip_path = await _download_with_progress(response, task_id, total_size, zip_path)
+
+                except httpx.HTTPStatusError as e:
+                    logger.error(f"Failed to download plugin from GitHub: {e}")
+                    _set_plugin_progress(
+                        task_id,
+                        status='failed',
+                        progress=0,
+                        message=f'下载失败: HTTP {e.response.status_code}'
+                    )
+                    await get_audit_logger().log_plugin_action(
+                        action="install_from_github",
+                        plugin_name=repo,
+                        username=username,
+                        success=False,
+                        details={"repo": f"{owner}/{repo}", "error": f"HTTP {e.response.status_code}"}
+                    )
+                    return
+                except Exception as e:
+                    logger.error(f"Error downloading plugin: {e}", exc_info=True)
+                    _set_plugin_progress(
+                        task_id,
+                        status='failed',
+                        progress=0,
+                        message=f'下载错误: {str(e)}'
+                    )
+                    await get_audit_logger().log_plugin_action(
+                        action="install_from_github",
+                        plugin_name=repo,
+                        username=username,
+                        success=False,
+                        details={"repo": f"{owner}/{repo}", "error": str(e)}
+                    )
+                    return
+
+                try:
+                    _set_plugin_progress(
+                        task_id,
+                        status='installing',
+                        progress=82,
+                        message='正在解压并安装插件...'
+                    )
+
+                    result = await _install_plugin_from_zip(
+                        zip_path,
+                        config,
+                        db_manager,
+                        plugin_connector,
+                        user,
+                        task_id=task_id,
+                    )
+
+                    _set_plugin_progress(
+                        task_id,
+                        status='completed',
+                        progress=100,
+                        message='安装完成！',
+                        result=result
+                    )
+
+                    await get_audit_logger().log_plugin_action(
+                        action="install_from_github",
+                        plugin_name=result.get('plugin_name', repo),
+                        username=username,
+                        success=True,
+                        details={"repo": f"{owner}/{repo}"}
+                    )
+                except Exception as e:
+                    logger.error(f"Failed to install plugin from GitHub: {e}", exc_info=True)
+                    detail = getattr(e, "detail", str(e))
+                    _append_plugin_progress_log(task_id, str(detail))
+                    _set_plugin_progress(
+                        task_id,
+                        status='failed',
+                        progress=0,
+                        message=f'安装失败: {detail}'
+                    )
+                    await get_audit_logger().log_plugin_action(
+                        action="install_from_github",
+                        plugin_name=repo,
+                        username=username,
+                        success=False,
+                        details={"repo": f"{owner}/{repo}", "error": str(detail)}
+                    )
+            finally:
+                shutil.rmtree(temp_dir, ignore_errors=True)
+
+        asyncio.create_task(run_github_install_task())
+        return {"task_id": task_id}
+
     async def _download_with_progress(response, task_id: str, total_size: int, zip_path: Path):
         """Download file with progress tracking."""
         downloaded = 0
-        
+        last_update = 0.0
+        total_mb = total_size / 1024 / 1024 if total_size else 0
+        _set_plugin_progress(
+            task_id,
+            status='downloading',
+            progress=5,
+            message='开始下载插件压缩包...'
+        )
+
         with open(zip_path, 'wb') as f:
             async for chunk in response.aiter_bytes(chunk_size=8192):
                 f.write(chunk)
                 downloaded += len(chunk)
-                
+
+                now = time.monotonic()
+                if now - last_update < 0.25 and downloaded != total_size:
+                    continue
+                last_update = now
+
+                downloaded_mb = downloaded / 1024 / 1024
                 if total_size > 0:
-                    progress = int((downloaded / total_size) * 90)  # 90% for download, 10% for install
-                    _plugin_install_progress[task_id] = {
-                        'status': 'downloading',
-                        'progress': progress,
-                        'message': f'下载中... {downloaded // 1024 // 1024}MB / {total_size // 1024 // 1024}MB'
-                    }
+                    progress = 5 + int((downloaded / total_size) * 75)
+                    message = f'下载中... {downloaded_mb:.2f}MB / {total_mb:.2f}MB'
                 else:
-                    # If total size is unknown, show indeterminate progress
-                    _plugin_install_progress[task_id] = {
-                        'status': 'downloading',
-                        'progress': min(90, downloaded // 1024 // 1024),  # Rough estimate
-                        'message': f'下载中... {downloaded // 1024 // 1024}MB'
-                    }
-        
+                    progress = min(80, 5 + int(downloaded_mb))
+                    message = f'下载中... {downloaded_mb:.2f}MB'
+
+                _set_plugin_progress(
+                    task_id,
+                    status='downloading',
+                    progress=progress,
+                    message=message
+                )
+
+        size_mb = downloaded / 1024 / 1024
+        _append_plugin_progress_log(task_id, f"下载完成: {size_mb:.2f}MB", progress=80)
+        _set_plugin_progress(
+            task_id,
+            status='installing',
+            progress=80,
+            message='下载完成，准备安装...'
+        )
         return zip_path
-    
-    async def _install_plugin_from_zip(zip_path: Path, config, db_manager, plugin_connector, user):
+
+    async def _install_plugin_from_zip(
+        zip_path: Path,
+        config,
+        db_manager,
+        plugin_connector,
+        user,
+        task_id: Optional[str] = None,
+    ):
         """Helper function to install plugin from ZIP file.
-        
+
         Standard plugin repository structure:
           repo/
             main/         <- plugin content always lives here
@@ -2356,41 +2767,45 @@ def create_app() -> FastAPI:
               main.py
               ...
             README.md     <- anything else can go outside main/
-        
+
         GitHub ZIP extracts to: repo-name-branch/main/metadata.yaml
         Plain ZIP should contain: main/metadata.yaml and main/settings.json
         (or wrap in one folder: folder/main/metadata.yaml and folder/main/settings.json)
         """
         extract_dir = zip_path.parent / "extracted"
         extract_dir.mkdir(exist_ok=True)
-        
+
+        if task_id:
+            _set_plugin_progress(task_id, status='installing', progress=82, message='正在解压插件压缩包...')
+
         try:
             with zipfile.ZipFile(zip_path, 'r') as zip_ref:
                 zip_ref.extractall(extract_dir)
         except zipfile.BadZipFile:
             raise HTTPException(status_code=400, detail="Invalid ZIP file")
-        
-        # Find plugin directory: always located in a `main/` subdirectory.
-        # GitHub ZIP format: extracted/repo-branch/main/metadata.yaml + settings.json
-        # Plain ZIP format:  extracted/main/metadata.yaml + settings.json
-        #                or  extracted/any-folder/main/metadata.yaml + settings.json
+
+        if task_id:
+            _append_plugin_progress_log(task_id, "解压完成", progress=84)
+
         plugin_dir = None
-        
-        # Check direct: extracted/main/metadata.yaml + settings.json
+
         candidate = extract_dir / "main"
         if plugin_manifest_exists(candidate):
             plugin_dir = extract_dir / "main"
             logger.info("Found plugin in main/ (direct structure)")
+            if task_id:
+                _append_plugin_progress_log(task_id, "找到插件目录: main/", progress=85)
         else:
-            # Check one level deep: extracted/repo-branch/main/metadata.yaml + settings.json
             first_level_dirs = [d for d in extract_dir.iterdir() if d.is_dir()]
             for first_dir in first_level_dirs:
                 candidate = first_dir / "main"
                 if plugin_manifest_exists(candidate):
                     plugin_dir = first_dir / "main"
                     logger.info(f"Found plugin in {first_dir.name}/main/ (GitHub ZIP structure)")
+                    if task_id:
+                        _append_plugin_progress_log(task_id, f"找到插件目录: {first_dir.name}/main/", progress=85)
                     break
-        
+
         if not plugin_dir:
             raise HTTPException(
                 status_code=400,
@@ -2400,54 +2815,72 @@ def create_app() -> FastAPI:
                     "GitHub ZIP 格式：repo-branch/main/metadata.yaml。"
                 )
             )
-        
-        plugin_folder_name = plugin_dir.name  # always "main"
-        
+
         # Validate and parse plugin manifest using thread pool
         try:
             app = get_app()
             thread_pool = getattr(app, 'blocking_task_pool', None)
             plugin_metadata = await _load_plugin_manifest_async(plugin_dir, thread_pool)
-                
+
             plugin_author = plugin_metadata.get('author', 'Unknown')
             plugin_name = plugin_metadata['name']
             plugin_version = plugin_metadata['version']
             default_config = plugin_metadata.get('default_config', {})
-                
+
+            if task_id:
+                _append_plugin_progress_log(
+                    task_id,
+                    f"读取插件清单: {plugin_author}/{plugin_name} v{plugin_version}",
+                    progress=86,
+                )
+
         except json.JSONDecodeError:
             raise HTTPException(status_code=400, detail="Invalid settings.json format")
         except HTTPException:
             raise
         except Exception as e:
             raise HTTPException(status_code=400, detail=f"Error reading plugin manifest: {str(e)}")
-        
-        # Target directory: plugins/{name}
+
         target_dir = _resolve_plugin_base_dir() / plugin_name
-        
-        # Copy to plugin directory
+
+        if task_id:
+            _set_plugin_progress(task_id, status='installing', progress=87, message='正在复制插件文件...')
+
         if target_dir.exists():
             shutil.rmtree(target_dir)
-        # Ensure parent directory exists
         target_dir.parent.mkdir(parents=True, exist_ok=True)
-        # Copy the plugin directory
         shutil.copytree(plugin_dir, target_dir)
-        
+
         # Auto-install dependencies
         from src.plugins.runtime.connector import install_plugin_dependencies
         logger.info(f"Checking dependencies for plugin: {plugin_author}/{plugin_name}")
-        await install_plugin_dependencies(target_dir, plugin_metadata)
-        
+        if task_id:
+            _set_plugin_progress(task_id, status='installing', progress=88, message='正在检查并安装插件依赖...')
+
+        def progress_callback(line: str) -> None:
+            if task_id:
+                _append_plugin_progress_log(task_id, line, progress=92)
+
+        dependencies_ok = await install_plugin_dependencies(
+            target_dir,
+            plugin_metadata,
+            progress_callback=progress_callback if task_id else None,
+        )
+        if not dependencies_ok:
+            raise HTTPException(status_code=500, detail="Plugin dependency installation failed")
+
+        if task_id:
+            _set_plugin_progress(task_id, status='installing', progress=95, message='正在注册插件...')
+
         # Register plugin in database
         db_manager = get_database_manager()
         try:
-            # Check if plugin already exists
             existing = await db_manager.get_plugin_setting(plugin_author, plugin_name)
             if existing:
-                # Update existing plugin
                 await db_manager.update_plugin_setting(
                     plugin_author,
                     plugin_name,
-                    config=existing.config,  # Keep existing config
+                    config=existing.config,
                     install_source='upload',
                     install_info={
                         'version': plugin_version,
@@ -2457,11 +2890,9 @@ def create_app() -> FastAPI:
                 )
                 logger.info(f"Updated existing plugin: {plugin_author}/{plugin_name}")
             else:
-                # Create new plugin setting (disabled by default)
-                # Get priority from metadata.yaml if available, otherwise use default 100
                 priority_from_manifest = plugin_metadata.get('priority')
                 initial_priority = priority_from_manifest if priority_from_manifest is not None else 100
-                
+
                 await db_manager.create_plugin_setting(
                     author=plugin_author,
                     name=plugin_name,
@@ -2478,18 +2909,17 @@ def create_app() -> FastAPI:
                 logger.info(f"Created new plugin setting: {plugin_author}/{plugin_name}")
         except Exception as e:
             logger.error(f"Failed to register plugin in database: {e}")
-            # Clean up on failure
             if target_dir.exists():
                 shutil.rmtree(target_dir)
             raise HTTPException(status_code=500, detail=f"Failed to register plugin: {str(e)}")
-        
+
         await get_audit_logger().log_plugin_action(
             "upload",
             plugin_name,
             user.get("username"),
             True
         )
-        
+
         return {
             "message": "Plugin uploaded successfully. Please enable it in the plugin list to use.",
             "plugin_name": plugin_name,
@@ -2908,6 +3338,23 @@ def create_app() -> FastAPI:
                     continue
 
                 raw_text = payload.get("raw_message") or payload.get("message") or ""
+                if isinstance(raw_text, str) and "[CQ:" in raw_text and (
+                    "base64://" in raw_text or "data:" in raw_text
+                ):
+                    try:
+                        from ..ui.image_cache import get_image_cache_manager
+                        app_instance = get_app()
+                        onebot_adapter = (
+                            app_instance.onebot_adapter
+                            if app_instance and hasattr(app_instance, "onebot_adapter")
+                            else None
+                        )
+                        raw_text = await get_image_cache_manager().cache_embedded_cq_media_for_display(
+                            raw_text,
+                            onebot_adapter=onebot_adapter,
+                        )
+                    except Exception as cache_error:
+                        logger.debug(f"Failed to rewrite cached history CQ media: {cache_error}")
                 sender = payload.get("sender", {})
                 if not isinstance(sender, dict):
                     sender = {}
@@ -2997,6 +3444,65 @@ def create_app() -> FastAPI:
             include_notices=include_notices,
             include_requests=include_requests,
         )
+
+    @app.get("/api/chat/forward/{forward_id:path}")
+    async def get_chat_forward_message(
+        forward_id: str,
+        user: Dict[str, Any] = Depends(get_current_user)
+    ):
+        """Get merged-forward message content through OneBot/NapCat."""
+        from ..core.app import get_app
+
+        forward_id = str(forward_id or "").strip()
+        if not forward_id:
+            raise HTTPException(status_code=400, detail="Missing forward message id")
+
+        app_instance = get_app()
+        if not hasattr(app_instance, 'onebot_adapter') or not app_instance.onebot_adapter:
+            raise HTTPException(status_code=503, detail="OneBot adapter not available")
+
+        adapter = app_instance.onebot_adapter
+        request_username = str(user.get("username") or "unknown").strip() or "unknown"
+        source = f"webui:{request_username}"
+
+        last_error: Optional[Exception] = None
+        payloads = [{"id": forward_id}]
+        if forward_id.isdigit():
+            payloads.append({"message_id": forward_id})
+
+        for payload in payloads:
+            try:
+                result = await asyncio.wait_for(
+                    adapter.call_api("get_forward_msg", payload, source=source),
+                    timeout=30.0,
+                )
+                data = result.get("data", result) if isinstance(result, dict) else result
+                messages = []
+                if isinstance(data, dict):
+                    raw_messages = (
+                        data.get("messages")
+                        or data.get("message")
+                        or data.get("content")
+                        or []
+                    )
+                    messages = raw_messages if isinstance(raw_messages, list) else [raw_messages]
+                elif isinstance(data, list):
+                    messages = data
+
+                return {
+                    "id": forward_id,
+                    "messages": messages,
+                    "raw": data,
+                }
+            except asyncio.TimeoutError as e:
+                last_error = e
+                logger.warning(f"Timeout getting forward message {forward_id} with payload {payload}")
+            except Exception as e:
+                last_error = e
+                logger.debug(f"Failed to get forward message {forward_id} with payload {payload}: {e}")
+
+        detail = f"Failed to get forward message: {last_error}" if last_error else "Failed to get forward message"
+        raise HTTPException(status_code=500, detail=detail)
     
     @app.websocket("/ws/messages")
     async def websocket_messages(websocket: WebSocket):
@@ -3475,13 +3981,15 @@ def create_app() -> FastAPI:
         kind: str = "image",
         url: str = None,
         file: str = None,
+        name: str = None,
     ):
         """Proxy chat media (image/video/record/file) via local cache for stable display."""
         from ..ui.image_cache import get_image_cache_manager
         from fastapi.responses import FileResponse, Response
+        from starlette.background import BackgroundTask
         import httpx
         import mimetypes
-        from urllib.parse import unquote, urlparse
+        from urllib.parse import parse_qs, quote, unquote, urlparse
 
         def _media_type_for_path(path: str) -> str:
             suffix = Path(path).suffix.lower()
@@ -3491,6 +3999,46 @@ def create_app() -> FastAPI:
                 return "audio/x-silk"
             guessed, _ = mimetypes.guess_type(path)
             return guessed or "application/octet-stream"
+
+        def _safe_download_name(raw_name: Optional[str], media_ref: str = "", local_path: str = "") -> Optional[str]:
+            candidate = str(raw_name or "").strip()
+            if not candidate and media_ref:
+                try:
+                    parsed = urlparse(media_ref)
+                    query = parse_qs(parsed.query)
+                    candidate = str((query.get("fname") or query.get("filename") or [""])[0] or "").strip()
+                    if not candidate:
+                        candidate = Path(unquote(parsed.path)).name
+                except Exception:
+                    candidate = ""
+            if not candidate and local_path:
+                candidate = Path(local_path).name
+
+            candidate = unquote(str(candidate or "")).strip().strip('"').strip("'")
+            candidate = candidate.replace("\\", "/").split("/")[-1]
+            candidate = re.sub(r"[\x00-\x1f\x7f<>:\"/\\|?*]", " ", candidate).strip()
+            candidate = re.sub(r"\s+", " ", candidate)
+            return candidate or None
+
+        def _download_headers(download_name: Optional[str]) -> Dict[str, str]:
+            if not download_name:
+                return {}
+            return {"Content-Disposition": f"attachment; filename*=UTF-8''{quote(download_name)}"}
+
+        def _is_cache_file(path: str, cache_dir: Path) -> bool:
+            try:
+                resolved_path = Path(path).resolve()
+                resolved_cache_dir = cache_dir.resolve()
+                return resolved_path.is_file() and resolved_path.is_relative_to(resolved_cache_dir)
+            except Exception:
+                return False
+
+        def _delete_cache_file(path: str) -> None:
+            try:
+                Path(path).unlink(missing_ok=True)
+                logger.debug(f"Deleted transient file download cache: {path}")
+            except Exception as e:
+                logger.warning(f"Failed to delete transient file download cache {path}: {e}")
         
         try:
             media_ref = file if (kind or "image").strip().lower() == "record" and file else (url or file)
@@ -3501,11 +4049,46 @@ def create_app() -> FastAPI:
             if media_kind not in {"image", "video", "record", "file"}:
                 media_kind = "image"
 
+            def _file_response(serve_path: str):
+                media_type = _media_type_for_path(serve_path)
+                if media_kind == "file":
+                    download_name = _safe_download_name(name, media_ref=media_ref, local_path=serve_path)
+                    background = (
+                        BackgroundTask(_delete_cache_file, serve_path)
+                        if _is_cache_file(serve_path, image_cache.cache_dir)
+                        else None
+                    )
+                    if download_name:
+                        return FileResponse(
+                            serve_path,
+                            media_type=media_type,
+                            filename=download_name,
+                            background=background,
+                        )
+                    return FileResponse(serve_path, media_type=media_type, background=background)
+                return FileResponse(serve_path, media_type=media_type)
+
             image_cache = get_image_cache_manager()
 
             # URL decode if needed
             if media_ref.startswith("http%3A") or media_ref.startswith("https%3A") or media_ref.startswith("file%3A"):
                 media_ref = unquote(media_ref)
+
+            if media_ref.startswith("base64://"):
+                cached_path = await image_cache.save_base64_media(media_ref, media_kind=media_kind)
+                if cached_path and Path(cached_path).exists():
+                    serve_path = cached_path
+                    if media_kind == "record":
+                        serve_path = await image_cache.ensure_browser_playable_record(serve_path)
+                    return _file_response(serve_path)
+
+            if media_ref.startswith("data:"):
+                cached_path = await image_cache.save_data_url_media(media_ref, media_kind=media_kind)
+                if cached_path and Path(cached_path).exists():
+                    serve_path = cached_path
+                    if media_kind == "record":
+                        serve_path = await image_cache.ensure_browser_playable_record(serve_path)
+                    return _file_response(serve_path)
 
             # Serve local file:// path directly
             if media_ref.startswith("file://"):
@@ -3517,7 +4100,7 @@ def create_app() -> FastAPI:
                     serve_path = str(local_path)
                     if media_kind == "record":
                         serve_path = await image_cache.ensure_browser_playable_record(serve_path)
-                    return FileResponse(serve_path, media_type=_media_type_for_path(serve_path))
+                    return _file_response(serve_path)
 
             onebot_adapter = None
             app = get_app()
@@ -3571,7 +4154,7 @@ def create_app() -> FastAPI:
                 serve_path = cached_path
                 if media_kind == "record":
                     serve_path = await image_cache.ensure_browser_playable_record(serve_path)
-                return FileResponse(serve_path, media_type=_media_type_for_path(serve_path))
+                return _file_response(serve_path)
 
             # Download and cache
             cached_path = await image_cache.download_and_cache_media(
@@ -3583,7 +4166,7 @@ def create_app() -> FastAPI:
                 serve_path = cached_path
                 if media_kind == "record":
                     serve_path = await image_cache.ensure_browser_playable_record(serve_path)
-                return FileResponse(serve_path, media_type=_media_type_for_path(serve_path))
+                return _file_response(serve_path)
 
             # Fallback direct proxy (HTTP/HTTPS only)
             if not (media_ref.startswith("http://") or media_ref.startswith("https://")):
@@ -3605,7 +4188,10 @@ def create_app() -> FastAPI:
                     raise HTTPException(status_code=404, detail="Media unavailable")
                 return Response(
                     content=response.content,
-                    media_type=response.headers.get("content-type", "application/octet-stream")
+                    media_type=response.headers.get("content-type", "application/octet-stream"),
+                    headers=_download_headers(
+                        _safe_download_name(name, media_ref=media_ref) if media_kind == "file" else None
+                    ),
                 )
         except HTTPException:
             raise
@@ -4974,10 +5560,7 @@ def create_app() -> FastAPI:
                 mock_user_nickname=(body.get("mock_user_nickname") or "") or "",
                 mock_group_id=_sandbox_norm_opt(body.get("mock_group_id")),
                 mock_group_name=_sandbox_norm_opt(body.get("mock_group_name")),
-                use_plugins=bool(body.get("use_plugins", True)),
-                use_ai=bool(body.get("use_ai", True)),
-                ai_model_uuid=_sandbox_norm_opt(body.get("ai_model_uuid")),
-                ai_preset_uuid=_sandbox_norm_opt(body.get("ai_preset_uuid")),
+                use_plugins=True,
             )
             return {"ok": True, "sandbox": sandbox.to_dict()}
         except Exception as e:
@@ -5010,14 +5593,7 @@ def create_app() -> FastAPI:
             fields["mock_group_id"] = _sandbox_norm_opt(body.get("mock_group_id"))
         if "mock_group_name" in body:
             fields["mock_group_name"] = _sandbox_norm_opt(body.get("mock_group_name"))
-        if "use_plugins" in body:
-            fields["use_plugins"] = bool(body.get("use_plugins"))
-        if "use_ai" in body:
-            fields["use_ai"] = bool(body.get("use_ai"))
-        if "ai_model_uuid" in body:
-            fields["ai_model_uuid"] = _sandbox_norm_opt(body.get("ai_model_uuid"))
-        if "ai_preset_uuid" in body:
-            fields["ai_preset_uuid"] = _sandbox_norm_opt(body.get("ai_preset_uuid"))
+        fields["use_plugins"] = True
         if "enabled" in body:
             fields["enabled"] = bool(body.get("enabled"))
 

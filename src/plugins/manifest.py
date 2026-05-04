@@ -132,8 +132,9 @@ def load_plugin_manifest(plugin_dir: Path) -> Dict[str, Any]:
 def build_plugin_api_metadata(manifest: Dict[str, Any], fallback_name: str | None = None) -> Dict[str, Any]:
     """Build the API metadata payload expected by the Web UI."""
     plugin_name = str(manifest.get("name") or fallback_name or "").strip()
+    logo = str(manifest.get("logo", "")).strip()
 
-    return {
+    metadata = {
         "name": plugin_name,
         "version": manifest.get("version", "1.0.0"),
         "author": str(manifest.get("author", "Unknown")).strip() or "Unknown",
@@ -149,3 +150,6 @@ def build_plugin_api_metadata(manifest: Dict[str, Any], fallback_name: str | Non
         "repository": manifest.get("repository"),
         "documentation": manifest.get("documentation"),
     }
+    if logo:
+        metadata["logo"] = logo
+    return metadata

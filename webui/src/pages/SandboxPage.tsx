@@ -40,10 +40,6 @@ interface Sandbox {
   mock_group_name: string | null
   auto_reply: boolean
   record_messages: boolean
-  use_plugins: boolean
-  use_ai: boolean
-  ai_model_uuid: string | null
-  ai_preset_uuid: string | null
   message_count: number
   last_activity: string | null
   created_at: string
@@ -60,27 +56,10 @@ interface SandboxMessage {
   group_id: string | null
   content: string
   processed_by_plugins: boolean
-  processed_by_ai: boolean
   plugin_responses: any[]
-  ai_response: string | null
   has_error: boolean
   error_message: string | null
   created_at: string
-}
-
-interface LLMModel {
-  uuid: string
-  name: string
-  description: string | null
-  provider: string
-  model_name: string
-}
-
-interface AIPreset {
-  uuid: string
-  name: string
-  description: string | null
-  system_prompt: string
 }
 
 interface FileEntry {
@@ -104,8 +83,6 @@ export default function SandboxPage() {
   const [editDialogOpen, setEditDialogOpen] = useState(false)
   const [messageInput, setMessageInput] = useState('')
   const [messageType, setMessageType] = useState<'private' | 'group'>('private')
-  const [models] = useState<LLMModel[]>([])
-  const [presets] = useState<AIPreset[]>([])
   const [activeTab, setActiveTab] = useState<TabType>('chat')
   
   // Confirm dialog state
@@ -168,10 +145,6 @@ export default function SandboxPage() {
     mock_user_nickname: '',
     mock_group_id: '',
     mock_group_name: '',
-    use_plugins: true,
-    use_ai: true,
-    ai_model_uuid: '',
-    ai_preset_uuid: '',
   })
 
   useEffect(() => {
@@ -656,10 +629,6 @@ export default function SandboxPage() {
       mock_user_nickname: '',
       mock_group_id: '',
       mock_group_name: '',
-      use_plugins: true,
-      use_ai: true,
-      ai_model_uuid: '',
-      ai_preset_uuid: '',
     })
   }
 
@@ -671,32 +640,27 @@ export default function SandboxPage() {
       mock_user_nickname: sandbox.mock_user_nickname,
       mock_group_id: sandbox.mock_group_id || '',
       mock_group_name: sandbox.mock_group_name || '',
-      use_plugins: sandbox.use_plugins,
-      use_ai: sandbox.use_ai,
-      ai_model_uuid: sandbox.ai_model_uuid || '',
-      ai_preset_uuid: sandbox.ai_preset_uuid || '',
     })
     setEditDialogOpen(true)
   }
 
   const renderMessage = (message: SandboxMessage) => {
-    const isInbound = message.direction === 'inbound'
-    const isOutbound = message.direction === 'outbound'
+    const isTestUser = message.direction === 'inbound'
 
     return (
       <div
         key={message.id}
-        className={`flex ${isOutbound ? 'justify-end' : 'justify-start'} mb-4`}
+        className={`flex ${isTestUser ? 'justify-end' : 'justify-start'} mb-4`}
       >
         <div
           className={`max-w-[70%] rounded-lg p-3 ${
-            isOutbound
+            isTestUser
               ? 'bg-primary-600 text-white'
               : 'bg-white text-gray-900 border border-gray-200'
           }`}
         >
           <div className="flex items-center gap-2 mb-1">
-            {isInbound ? (
+            {isTestUser ? (
               <User className="w-4 h-4" />
             ) : (
               <Bot className="w-4 h-4" />
@@ -706,7 +670,7 @@ export default function SandboxPage() {
             </span>
             {message.message_type === 'group' && (
               <span className={`text-xs px-2 py-0.5 rounded ${
-                isOutbound ? 'bg-white bg-opacity-20' : 'bg-gray-100'
+                isTestUser ? 'bg-white bg-opacity-20' : 'bg-gray-100'
               }`}>
                 <Users className="w-3 h-3 inline mr-1" />
                 {message.group_id}
@@ -719,7 +683,7 @@ export default function SandboxPage() {
           {message.has_error && (
             <div className="mb-1">
               <span className={`text-xs px-2 py-0.5 rounded ${
-                isOutbound ? 'bg-red-500 bg-opacity-30' : 'bg-red-100 text-red-700'
+                isTestUser ? 'bg-red-500 bg-opacity-30' : 'bg-red-100 text-red-700'
               }`}>
                 {t('sandbox.processingError')}
               </span>
@@ -728,13 +692,13 @@ export default function SandboxPage() {
 
           {message.has_error && message.error_message && (
             <div className={`mt-2 p-2 rounded text-xs ${
-              isOutbound ? 'bg-red-500 bg-opacity-20' : 'bg-red-100 text-red-800'
+              isTestUser ? 'bg-red-500 bg-opacity-20' : 'bg-red-100 text-red-800'
             }`}>
               {message.error_message}
             </div>
           )}
 
-          <div className={`text-xs mt-1 ${isOutbound ? 'opacity-70' : 'text-gray-500'}`}>
+          <div className={`text-xs mt-1 ${isTestUser ? 'opacity-70' : 'text-gray-500'}`}>
             {new Date(message.created_at).toLocaleString()}
           </div>
         </div>
@@ -1277,23 +1241,13 @@ print(f"1-10 sum: {result}")
                 <div>
                   {t('sandbox.messages')}: {sandbox.message_count}
                 </div>
-                <div className="flex gap-2 mt-2">
-                  {sandbox.use_plugins && (
-                    <span className="text-xs bg-green-100 text-green-700 px-2 py-0.5 rounded">
-                      {t('sandbox.badgePlugins')}
-                    </span>
-                  )}
-                  {sandbox.use_ai && (
-                    <span className="text-xs bg-blue-100 text-blue-700 px-2 py-0.5 rounded">
-                      AI
-                    </span>
-                  )}
-                  {!sandbox.enabled && (
+                {!sandbox.enabled && (
+                  <div className="flex gap-2 mt-2">
                     <span className="text-xs bg-gray-100 text-gray-700 px-2 py-0.5 rounded">
                       {t('sandbox.badgeDisabled')}
                     </span>
-                  )}
-                </div>
+                  </div>
+                )}
               </div>
             </div>
           ))}
@@ -1478,59 +1432,6 @@ print(f"1-10 sum: {result}")
                 </div>
               </div>
 
-              <div>
-                <label className="block text-sm font-medium mb-1">{t('sandbox.aiModel')}</label>
-                <select
-                  value={formData.ai_model_uuid}
-                  onChange={(e) => setFormData({ ...formData, ai_model_uuid: e.target.value })}
-                  className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary-500"
-                >
-                  <option value="">{t('sandbox.selectModel')}</option>
-                  {models.map((model) => (
-                    <option key={model.uuid} value={model.uuid}>
-                      {model.name}
-                    </option>
-                  ))}
-                </select>
-              </div>
-
-              <div>
-                <label className="block text-sm font-medium mb-1">{t('sandbox.aiPreset')}</label>
-                <select
-                  value={formData.ai_preset_uuid}
-                  onChange={(e) => setFormData({ ...formData, ai_preset_uuid: e.target.value })}
-                  className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary-500"
-                >
-                  <option value="">{t('sandbox.selectPreset')}</option>
-                  {presets.map((preset) => (
-                    <option key={preset.uuid} value={preset.uuid}>
-                      {preset.name}
-                    </option>
-                  ))}
-                </select>
-              </div>
-
-              <div className="flex gap-4">
-                <label className="flex items-center gap-2">
-                  <input
-                    type="checkbox"
-                    checked={formData.use_plugins}
-                    onChange={(e) => setFormData({ ...formData, use_plugins: e.target.checked })}
-                    className="w-4 h-4"
-                  />
-                  <span className="text-sm">{t('sandbox.usePlugins')}</span>
-                </label>
-
-                <label className="flex items-center gap-2">
-                  <input
-                    type="checkbox"
-                    checked={formData.use_ai}
-                    onChange={(e) => setFormData({ ...formData, use_ai: e.target.checked })}
-                    className="w-4 h-4"
-                  />
-                  <span className="text-sm">{t('sandbox.useAi')}</span>
-                </label>
-              </div>
             </div>
 
             <div className="flex justify-end gap-2 mt-6">
@@ -1591,59 +1492,6 @@ print(f"1-10 sum: {result}")
                 />
               </div>
 
-              <div>
-                <label className="block text-sm font-medium mb-1">{t('sandbox.aiModel')}</label>
-                <select
-                  value={formData.ai_model_uuid}
-                  onChange={(e) => setFormData({ ...formData, ai_model_uuid: e.target.value })}
-                  className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary-500"
-                >
-                  <option value="">{t('sandbox.selectModel')}</option>
-                  {models.map((model) => (
-                    <option key={model.uuid} value={model.uuid}>
-                      {model.name}
-                    </option>
-                  ))}
-                </select>
-              </div>
-
-              <div>
-                <label className="block text-sm font-medium mb-1">{t('sandbox.aiPreset')}</label>
-                <select
-                  value={formData.ai_preset_uuid}
-                  onChange={(e) => setFormData({ ...formData, ai_preset_uuid: e.target.value })}
-                  className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary-500"
-                >
-                  <option value="">{t('sandbox.selectPreset')}</option>
-                  {presets.map((preset) => (
-                    <option key={preset.uuid} value={preset.uuid}>
-                      {preset.name}
-                    </option>
-                  ))}
-                </select>
-              </div>
-
-              <div className="flex gap-4">
-                <label className="flex items-center gap-2">
-                  <input
-                    type="checkbox"
-                    checked={formData.use_plugins}
-                    onChange={(e) => setFormData({ ...formData, use_plugins: e.target.checked })}
-                    className="w-4 h-4"
-                  />
-                  <span className="text-sm">{t('sandbox.usePlugins')}</span>
-                </label>
-
-                <label className="flex items-center gap-2">
-                  <input
-                    type="checkbox"
-                    checked={formData.use_ai}
-                    onChange={(e) => setFormData({ ...formData, use_ai: e.target.checked })}
-                    className="w-4 h-4"
-                  />
-                  <span className="text-sm">{t('sandbox.useAi')}</span>
-                </label>
-              </div>
             </div>
 
             <div className="flex justify-end gap-2 mt-6">

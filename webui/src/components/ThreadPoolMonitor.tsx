@@ -21,6 +21,7 @@ interface ThreadPoolMonitorProps {
   color: string
   icon?: React.ReactNode
   historyData?: Array<{ time: string; tasks: number; timestamp: number }>
+  headerVariant?: 'gradient' | 'plain'
 }
 
 export const ThreadPoolMonitor: React.FC<ThreadPoolMonitorProps> = ({
@@ -28,7 +29,8 @@ export const ThreadPoolMonitor: React.FC<ThreadPoolMonitorProps> = ({
   title,
   color,
   icon,
-  historyData = []
+  historyData = [],
+  headerVariant = 'gradient'
 }) => {
   if (!stats || !stats.initialized) {
     return (
@@ -84,6 +86,7 @@ export const ThreadPoolMonitor: React.FC<ThreadPoolMonitorProps> = ({
 
   const chartData = getChartData()
   const gradientId = `gradient-${title.replace(/\s+/g, '-').toLowerCase()}`
+  const isPlainHeader = headerVariant === 'plain'
   
   // Theme configuration
   const isAmber = color === '#f59e0b'
@@ -113,24 +116,24 @@ export const ThreadPoolMonitor: React.FC<ThreadPoolMonitorProps> = ({
 
   return (
     <div className="relative overflow-hidden rounded-2xl bg-white shadow-lg border border-gray-200 hover:shadow-xl transition-all duration-300">
-      {/* Header with gradient background */}
-      <div className={`relative bg-gradient-to-r ${theme.bgFrom} ${theme.bgTo} p-5`}>
+      {/* Header */}
+      <div className={`relative p-5 ${isPlainHeader ? 'bg-white border-b border-gray-100' : `bg-gradient-to-r ${theme.bgFrom} ${theme.bgTo}`}`}>
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-3">
-            <div className="p-2.5 rounded-xl bg-white/20 backdrop-blur-sm">
+            <div className={`p-2.5 rounded-xl ${isPlainHeader ? 'bg-slate-100 text-slate-600' : 'bg-white/20 backdrop-blur-sm'}`}>
               {icon && React.cloneElement(icon as React.ReactElement, { 
-                className: 'w-5 h-5 text-white' 
+                className: `w-5 h-5 ${isPlainHeader ? 'text-slate-600' : 'text-white'}` 
               })}
             </div>
             <div>
-              <h3 className="font-bold text-white text-lg tracking-tight">{title}</h3>
-              <p className="text-[11px] text-white/80 mt-0.5">Framework blocking work executor</p>
+              <h3 className={`font-bold text-lg tracking-tight ${isPlainHeader ? 'text-slate-950' : 'text-white'}`}>{title}</h3>
+              <p className={`text-[11px] mt-0.5 ${isPlainHeader ? 'text-slate-500' : 'text-white/80'}`}>Framework blocking work executor</p>
               <div className="flex items-center gap-2 mt-0.5">
                 <span className="relative flex h-2 w-2">
                   <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-green-300 opacity-75"></span>
                   <span className="relative inline-flex rounded-full h-2 w-2 bg-green-400"></span>
                 </span>
-                <span className="text-xs text-white/90 font-medium">
+                <span className={`text-xs font-medium ${isPlainHeader ? 'text-slate-600' : 'text-white/90'}`}>
                   UP {formatUptime(stats.uptime_seconds)}
                 </span>
               </div>
@@ -139,10 +142,10 @@ export const ThreadPoolMonitor: React.FC<ThreadPoolMonitorProps> = ({
           
           {/* Active Tasks Display */}
           <div className="text-right">
-            <div className="text-4xl font-black text-white tracking-tighter tabular-nums">
+            <div className={`text-4xl font-black tracking-tighter tabular-nums ${isPlainHeader ? 'text-slate-950' : 'text-white'}`}>
               {stats.active_tasks}
             </div>
-            <div className="text-[10px] font-bold text-white/70 uppercase tracking-widest">
+            <div className={`text-[10px] font-bold uppercase tracking-widest ${isPlainHeader ? 'text-slate-500' : 'text-white/70'}`}>
               Active
             </div>
           </div>
@@ -151,14 +154,14 @@ export const ThreadPoolMonitor: React.FC<ThreadPoolMonitorProps> = ({
         {/* Load Progress Bar */}
         <div className="mt-4">
           <div className="flex items-center justify-between mb-1.5">
-            <span className="text-xs font-semibold text-white/90">Load</span>
-            <span className="text-xs font-bold text-white tabular-nums">
+            <span className={`text-xs font-semibold ${isPlainHeader ? 'text-slate-600' : 'text-white/90'}`}>Load</span>
+            <span className={`text-xs font-bold tabular-nums ${isPlainHeader ? 'text-slate-900' : 'text-white'}`}>
               {utilizationRate.toFixed(1)}%
             </span>
           </div>
-          <div className="w-full bg-white/20 rounded-full h-2 overflow-hidden backdrop-blur-sm">
+          <div className={`w-full rounded-full h-2 overflow-hidden ${isPlainHeader ? 'bg-slate-100' : 'bg-white/20 backdrop-blur-sm'}`}>
             <div 
-              className="h-full bg-white/90 rounded-full transition-all duration-500 shadow-sm"
+              className={`h-full rounded-full transition-all duration-500 shadow-sm ${isPlainHeader ? 'bg-slate-700' : 'bg-white/90'}`}
               style={{ width: `${Math.min(utilizationRate, 100)}%` }}
             />
           </div>
@@ -230,9 +233,6 @@ export const ThreadPoolMonitor: React.FC<ThreadPoolMonitorProps> = ({
               <span className="text-2xl font-black text-gray-900 tabular-nums">
                 {(stats.live_workers ?? 0)} / {stats.max_workers}
               </span>
-              {stats.max_workers_auto && (
-                <span className="text-[9px] font-bold text-blue-600 bg-blue-100 px-1.5 py-0.5 rounded">AUTO</span>
-              )}
             </div>
           </div>
           

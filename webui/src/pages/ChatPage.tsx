@@ -1,6 +1,6 @@
 import { useEffect, useState, useRef } from 'react'
 import { useTranslation } from 'react-i18next'
-import { Send, Users, User, Search, RefreshCw, MessageSquare, ArrowLeft, Wifi, WifiOff, Image as ImageIcon, X } from 'lucide-react'
+import { Send, Users, User, Search, RefreshCw, MessageSquare, ArrowLeft, ArrowDown, Wifi, WifiOff, Image as ImageIcon, X } from 'lucide-react'
 import { api } from '@/utils/api'
 import { useWebSocket, type WebSocketMessage } from '@/hooks/useWebSocket'
 import { parseMessageContent } from '@/utils/messageParser'
@@ -53,6 +53,17 @@ function messageAvatar(msg: Message, fallbackLabel: string): string {
   return msg.sender?.avatar || qqAvatar(userId) || fallbackAvatar(msg.is_self ? 'Bot' : fallbackLabel)
 }
 
+const TEXT_BUBBLE_CQ_TYPES = new Set(['text', 'at', 'reply', 'face', 'markdown'])
+
+function shouldUseTextBubble(message: string): boolean {
+  if (!message || !message.includes('[CQ:')) return true
+
+  const matches = Array.from(message.matchAll(/\[CQ:([a-zA-Z0-9_]+)/g))
+  if (matches.length === 0) return true
+
+  return matches.every((match) => TEXT_BUBBLE_CQ_TYPES.has(match[1].toLowerCase()))
+}
+
 export default function ChatPage() {
   const { t } = useTranslation()
   const toast = useToast()
@@ -71,10 +82,13 @@ export default function ChatPage() {
   const [showMembersModal, setShowMembersModal] = useState(false)
   const [groupMembers, setGroupMembers] = useState<any[]>([])
   const [loadingMembers, setLoadingMembers] = useState(false)
+  const [isChatAtBottom, setIsChatAtBottom] = useState(true)
+  const [mentionNameMap, setMentionNameMap] = useState<Record<string, string>>({})
   
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const messageContainerRef = useRef<HTMLDivElement>(null)
   const prevMessagesLengthRef = useRef(0)
+  const shouldStickChatBottomRef = useRef(true)
 
   // WebSocket for real-time message updates
   const { isConnected } = useWebSocket({
@@ -251,35 +265,83 @@ export default function ChatPage() {
   // Load messages when contact is selected
   useEffect(() => {
     if (selectedContact) {
-      loadMessages(selectedContact, true) // Initial load with scroll
-      prevMessagesLengthRef.current = 0 // Reset counter
+      shouldStickChatBottomRef.current = true
+      setIsChatAtBottom(true)
+      prevMessagesLengthRef.current = 0
+      loadMessages(selectedContact, true)
       // Auto refresh messages - use longer interval when WebSocket is connected
       const refreshInterval = isConnected ? 30000 : 5000 // 30s with WebSocket, 5s without
       const interval = setInterval(() => {
-        loadMessages(selectedContact, false) // Refresh without forced scroll
+        loadMessages(selectedContact, false)
       }, refreshInterval)
       return () => clearInterval(interval)
     }
   }, [selectedContact, isConnected])
 
-  // Scroll to bottom when NEW messages arrive (not when switching contacts)
   useEffect(() => {
-    if (messages.length > prevMessagesLengthRef.current && prevMessagesLengthRef.current > 0) {
-      // Only scroll if there are new messages (length increased)
-      scrollToBottom('smooth')
-    } else if (messages.length > 0 && prevMessagesLengthRef.current === 0) {
-      // Initial load - scroll instantly
-      scrollToBottom('instant')
+    let cancelled = false
+    setMentionNameMap({})
+
+    if (!selectedContact || selectedContact.type !== 'group') {
+      return () => {
+        cancelled = true
+      }
+    }
+
+    api.getGroupMembers(selectedContact.id)
+      .then((data) => {
+        if (cancelled) return
+        const nextMap: Record<string, string> = {}
+        for (const member of data.members || []) {
+          const userId = String(member.user_id || member.uin || member.id || '').trim()
+          const displayName = String(member.card || member.nickname || member.remark || member.name || '').trim()
+          if (userId && displayName) {
+            nextMap[userId] = displayName
+          }
+        }
+        setMentionNameMap(nextMap)
+      })
+      .catch((error) => {
+        if (!cancelled) {
+          console.warn('Failed to load group mention names:', error)
+        }
+      })
+
+    return () => {
+      cancelled = true
+    }
+  }, [selectedContact?.id, selectedContact?.type])
+
+  // Keep the chat pinned only when the user is already near the bottom.
+  useEffect(() => {
+    const previousLength = prevMessagesLengthRef.current
+    if (messages.length > 0 && previousLength === 0) {
+      requestAnimationFrame(() => scrollToBottom('instant'))
+    } else if (messages.length > previousLength && shouldStickChatBottomRef.current) {
+      requestAnimationFrame(() => scrollToBottom('smooth'))
     }
     prevMessagesLengthRef.current = messages.length
   }, [messages])
 
   const scrollToBottom = (behavior: 'smooth' | 'instant' = 'smooth') => {
-    if (behavior === 'instant') {
-      messagesEndRef.current?.scrollIntoView({ behavior: 'auto' })
-    } else {
-      messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
-    }
+    const container = messageContainerRef.current
+    if (!container) return
+
+    container.scrollTo({
+      top: container.scrollHeight,
+      behavior: behavior === 'instant' ? 'auto' : behavior,
+    })
+    shouldStickChatBottomRef.current = true
+    setIsChatAtBottom(true)
+  }
+
+  const updateChatScrollState = () => {
+    const container = messageContainerRef.current
+    if (!container) return
+
+    const nearBottom = container.scrollHeight - container.scrollTop - container.clientHeight <= 80
+    shouldStickChatBottomRef.current = nearBottom
+    setIsChatAtBottom(nearBottom)
   }
 
   const loadContacts = async () => {
@@ -682,54 +744,81 @@ export default function ChatPage() {
             </div>
 
             {/* Messages */}
-            <div ref={messageContainerRef} className="flex-1 overflow-y-auto p-3 md:p-6 space-y-3 md:space-y-4 bg-gray-50">
-              {messages.length === 0 ? (
-                <div className="flex items-center justify-center h-full text-gray-400">
-                  <p>{t('chat.noMessages')}</p>
-                </div>
-              ) : (
-                messages.map((msg) => {
-                  const senderName = msg.sender?.card || msg.sender?.nickname || `用户${msg.user_id}`
-                  const isGroup = selectedContact.type === 'group'
-                  const avatarSrc = messageAvatar(msg, senderName)
-                  
-                  return (
-                    <div key={msg.id} className={`flex gap-2 md:gap-3 ${msg.is_self ? 'flex-row-reverse' : ''}`}>
-                      <img
-                        src={avatarSrc}
-                        alt={senderName}
-                        className="w-8 h-8 md:w-10 md:h-10 rounded-full object-cover flex-shrink-0"
-                        onError={(e) => {
-                          e.currentTarget.src = fallbackAvatar(msg.is_self ? 'Bot' : senderName, 40)
-                        }}
-                      />
-                      <div className={`flex-1 min-w-0 ${msg.is_self ? 'flex flex-col items-end' : ''}`}>
-                        {isGroup && !msg.is_self && (
-                          <p className="text-xs text-gray-500 mb-1 truncate">
-                            {senderName}
-                            <span className="text-gray-400 ml-1">({msg.user_id})</span>
-                          </p>
-                        )}
-                        <div
-                          className={`inline-block max-w-[85%] md:max-w-xl px-3 md:px-4 py-2 rounded-lg text-sm md:text-base ${
-                            msg.is_self
-                              ? 'bg-primary-600 text-white'
-                              : 'bg-white text-gray-900 border border-gray-200'
-                          }`}
-                        >
-                          <div className="whitespace-pre-wrap break-words">
-                            {parseMessageContent(msg.message, msg.is_self)}
+            <div className="relative flex-1 min-h-0 bg-gray-50">
+              <div
+                ref={messageContainerRef}
+                onScroll={updateChatScrollState}
+                className="h-full overflow-y-auto p-3 md:p-6 space-y-3 md:space-y-4"
+              >
+                {messages.length === 0 ? (
+                  <div className="flex items-center justify-center h-full text-gray-400">
+                    <p>{t('chat.noMessages')}</p>
+                  </div>
+                ) : (
+                  messages.map((msg) => {
+                    const senderName = msg.sender?.card || msg.sender?.nickname || `用户${msg.user_id}`
+                    const isGroup = selectedContact.type === 'group'
+                    const avatarSrc = messageAvatar(msg, senderName)
+                    const useTextBubble = shouldUseTextBubble(msg.message)
+                    const renderedMessage = parseMessageContent(
+                      msg.message,
+                      useTextBubble ? msg.is_self : false,
+                      { atNames: mentionNameMap }
+                    )
+                    
+                    return (
+                      <div key={msg.id} className={`flex gap-2 md:gap-3 ${msg.is_self ? 'flex-row-reverse' : ''}`}>
+                        <img
+                          src={avatarSrc}
+                          alt={senderName}
+                          className="w-8 h-8 md:w-10 md:h-10 rounded-full object-cover flex-shrink-0"
+                          onError={(e) => {
+                            e.currentTarget.src = fallbackAvatar(msg.is_self ? 'Bot' : senderName, 40)
+                          }}
+                        />
+                        <div className={`flex-1 min-w-0 ${msg.is_self ? 'flex flex-col items-end' : ''}`}>
+                          {isGroup && !msg.is_self && (
+                            <p className="text-xs text-gray-500 mb-1 truncate">
+                              {senderName}
+                              <span className="text-gray-400 ml-1">({msg.user_id})</span>
+                            </p>
+                          )}
+                          <div
+                            className={`inline-block max-w-[85%] md:max-w-xl text-sm md:text-base ${
+                              useTextBubble
+                                ? `px-3 md:px-4 py-2 rounded-lg ${
+                                    msg.is_self
+                                      ? 'bg-primary-600 text-white'
+                                      : 'bg-white text-gray-900 border border-gray-200'
+                                  }`
+                                : 'text-gray-900'
+                            }`}
+                          >
+                            <div className="whitespace-pre-wrap break-words">
+                              {renderedMessage}
+                            </div>
                           </div>
+                          <p className="text-xs text-gray-400 mt-1">
+                            {formatTime(msg.timestamp)}
+                          </p>
                         </div>
-                        <p className="text-xs text-gray-400 mt-1">
-                          {formatTime(msg.timestamp)}
-                        </p>
                       </div>
-                    </div>
-                  )
-                })
-              )}
-              <div ref={messagesEndRef} />
+                    )
+                  })
+                )}
+                <div ref={messagesEndRef} />
+              </div>
+
+              {!isChatAtBottom && messages.length > 0 ? (
+                <button
+                  type="button"
+                  onClick={() => scrollToBottom('smooth')}
+                  className="absolute bottom-4 right-4 z-10 flex items-center gap-2 rounded-lg border border-gray-200 bg-white/95 px-3 py-2 text-xs font-medium text-gray-700 shadow-lg transition-colors hover:bg-gray-50"
+                >
+                  <ArrowDown className="h-4 w-4" />
+                  返回底部
+                </button>
+              ) : null}
             </div>
 
             {/* Input Area */}

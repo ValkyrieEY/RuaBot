@@ -11,8 +11,30 @@ if (!API_BASE_URL.endsWith('/api')) {
   API_BASE_URL = API_BASE_URL + (API_BASE_URL.endsWith('/') ? 'api' : '/api')
 }
 
+const DEFAULT_MARKETPLACE_API_BASE_URL = 'https://ruabot.yuafeng.cn/api/marketplace'
+const MARKETPLACE_API_BASE_URL = (
+  import.meta.env.VITE_MARKETPLACE_API_BASE_URL || DEFAULT_MARKETPLACE_API_BASE_URL
+).replace(/\/+$/, '')
+
+function normalizeMarketplacePluginList(payload: any): MarketplacePlugin[] {
+  if (Array.isArray(payload)) {
+    return payload
+  }
+
+  if (Array.isArray(payload?.plugins)) {
+    return payload.plugins
+  }
+
+  if (Array.isArray(payload?.data?.plugins)) {
+    return payload.data.plugins
+  }
+
+  throw new Error('Plugin marketplace API did not return a plugin list')
+}
+
 class ApiClient {
   private client: AxiosInstance
+  private marketplaceClient: AxiosInstance
 
   constructor() {
     this.client = axios.create({
@@ -55,6 +77,14 @@ class ApiClient {
         return Promise.reject(error)
       }
     )
+
+    this.marketplaceClient = axios.create({
+      baseURL: MARKETPLACE_API_BASE_URL,
+      timeout: 15000,
+      headers: {
+        Accept: 'application/json',
+      },
+    })
   }
 
   // Generic HTTP methods
@@ -113,6 +143,10 @@ class ApiClient {
     return response.data
   }
 
+  getPluginLogoUrl(name: string): string {
+    return `${API_BASE_URL}/plugins/${encodeURIComponent(name)}/logo`
+  }
+
   async getPlugin(name: string): Promise<any> {
     const response = await this.client.get(`/plugins/${name}`)
     return response.data
@@ -124,8 +158,33 @@ class ApiClient {
     return response.data
   }
 
+  async pluginActionWithProgress(name: string, action: string): Promise<{ task_id: string }> {
+    const payload: any = { action }
+    const response = await this.client.post(`/plugins/${encodeURIComponent(name)}/action-progress`, payload)
+    return response.data
+  }
+
+  getPluginProgressUrl(taskId: string): string {
+    const token = localStorage.getItem('access_token') || ''
+    const apiBase = /^https?:\/\//i.test(API_BASE_URL)
+      ? API_BASE_URL
+      : `${window.location.protocol}//${window.location.host}${API_BASE_URL}`
+    const base = `${apiBase}/plugins/install-progress/${encodeURIComponent(taskId)}`
+    return token ? `${base}?token=${encodeURIComponent(token)}` : base
+  }
+
   async reloadPlugin(name: string): Promise<any> {
     const response = await this.client.post(`/plugins/${name}/action`, { action: 'reload' })
+    return response.data
+  }
+
+  async refreshPluginMetadata(name: string): Promise<any> {
+    const response = await this.client.post(`/plugins/${encodeURIComponent(name)}/metadata/refresh`)
+    return response.data
+  }
+
+  async getPluginReadme(name: string): Promise<{ plugin_name: string; filename: string; content: string }> {
+    const response = await this.client.get(`/plugins/${encodeURIComponent(name)}/readme`)
     return response.data
   }
 
@@ -164,6 +223,23 @@ class ApiClient {
       repo_url: repoUrl
     })
     return response.data
+  }
+
+  async getMarketplacePlugins(): Promise<MarketplacePlugin[]> {
+    const response = await this.marketplaceClient.get('/plugins')
+    return normalizeMarketplacePluginList(response.data)
+  }
+
+  async getMarketplacePlugin(id: string): Promise<MarketplacePlugin> {
+    const response = await this.marketplaceClient.get(`/plugins/${encodeURIComponent(id)}`)
+    const payload = response.data
+    return payload?.plugin || payload?.data?.plugin || payload
+  }
+
+  async recordMarketplaceDownload(id: string): Promise<MarketplacePlugin | null> {
+    const response = await this.marketplaceClient.post(`/plugins/${encodeURIComponent(id)}/download`)
+    const payload = response.data
+    return payload?.plugin || payload?.data?.plugin || payload || null
   }
 
   async uploadPluginConfigFile(pluginName: string, file: File): Promise<{ file_key: string }> {
@@ -314,6 +390,11 @@ class ApiClient {
     return response.data
   }
 
+  async getForwardMessage(forwardId: string): Promise<ForwardMessageResponse> {
+    const response = await this.client.get<ForwardMessageResponse>(`/chat/forward/${encodeURIComponent(forwardId)}`)
+    return response.data
+  }
+
   async getGroupMembers(groupId: string): Promise<{ group_id: string, members: any[], count: number }> {
     const response = await this.client.get(`/chat/groups/${groupId}/members`)
     return response.data
@@ -424,6 +505,7 @@ export interface PluginInfo {
     version: string
     author: string
     description: string
+    logo?: string
     category?: string
     tags?: string[]
     dependencies?: string[]
@@ -437,6 +519,25 @@ export interface PluginInfo {
   description?: string
   author?: string
   system_data?: any
+}
+
+export interface MarketplacePlugin {
+  id: string
+  name: string
+  version?: string
+  author?: string
+  description?: string
+  logo?: string
+  readme?: string
+  repository?: string
+  github?: string
+  githubUrl?: string
+  repo_url?: string
+  url?: string
+  homepage?: string
+  updatedAt?: string
+  lastUpdated?: string
+  [key: string]: any
 }
 
 export interface SystemStatus {
@@ -506,6 +607,37 @@ export interface MessageLog {
   message: string
   raw_message?: string
   [key: string]: any
+}
+
+export interface ForwardMessageNode {
+  type?: string
+  data?: {
+    user_id?: string | number
+    uin?: string | number
+    nickname?: string
+    name?: string
+    time?: number
+    message?: any
+    content?: any
+    [key: string]: any
+  }
+  user_id?: string | number
+  nickname?: string
+  sender?: {
+    user_id?: string | number
+    nickname?: string
+    [key: string]: any
+  }
+  message?: any
+  content?: any
+  time?: number
+  [key: string]: any
+}
+
+export interface ForwardMessageResponse {
+  id: string
+  messages: ForwardMessageNode[]
+  raw?: any
 }
 
 export interface SystemLogFile {

@@ -49,12 +49,12 @@ class DatabaseManager:
     """Database manager for framework system.
     
     Manages SQLAlchemy connections and provides high-level API
-    for plugin settings, binary storage, AI config, and knowledge graph.
+    for plugin settings, binary storage, message history, and sandbox data.
     
     This database stores all framework data including:
     - Plugin settings and configurations
     - Binary storage
-    - AI configurations (models, presets, memories, MCP)
+    - Message and sandbox data
     - Knowledge graph data
     """
     
@@ -96,13 +96,11 @@ class DatabaseManager:
             from .models.plugin import Base as PluginBase
             from .models.storage import Base as StorageBase
             from .models.message_event import Base as MessageEventBase
-            from .models.tool_permission import Base as ToolPermissionBase
             
             # Create tables for all subsystems
             await conn.run_sync(PluginBase.metadata.create_all)
             await conn.run_sync(StorageBase.metadata.create_all)
             await conn.run_sync(MessageEventBase.metadata.create_all)
-            await conn.run_sync(ToolPermissionBase.metadata.create_all)
 
             from .models.sandbox import Base as SandboxBase
             await conn.run_sync(SandboxBase.metadata.create_all)
@@ -120,7 +118,7 @@ class DatabaseManager:
     
     async def _run_migrations(self, conn):
         """Run database migrations to add missing columns."""
-        # Old AI migrations were removed with the legacy AI subsystem.
+        # Legacy subsystem migrations were removed with their tables.
         return
     
     @asynccontextmanager
@@ -299,7 +297,7 @@ class DatabaseManager:
                 logger.info(
                     "Removed orphaned plugin record (manifest missing): %s (expected %s)",
                     plugin_id,
-                    manifest,
+                    manifest_dir,
                 )
             except Exception as e:
                 logger.error("Orphan prune failed for %s: %s", plugin_id, e, exc_info=True)
@@ -581,147 +579,6 @@ class DatabaseManager:
             rows.reverse()  # oldest -> newest for chat display
             return rows
     
-    # ==================== AI Compatibility Stubs ====================
-
-    async def get_ai_config(self, config_type: str, target_id: Optional[str] = None) -> Optional[Dict[str, Any]]:
-        return None
-
-    async def list_ai_configs(self, config_type: Optional[str] = None, exclude_left: bool = False) -> List[Any]:
-        return []
-
-    async def create_ai_config(self, config_type: str, target_id: Optional[str], enabled: bool = False, model_uuid: Optional[str] = None, preset_uuid: Optional[str] = None, config: Optional[Dict[str, Any]] = None, message_count: int = 0, is_left: bool = False, left_at: Optional[datetime] = None) -> Dict[str, Any]:
-        return {
-            "config_type": config_type,
-            "target_id": target_id,
-            "enabled": enabled,
-            "model_uuid": model_uuid,
-            "preset_uuid": preset_uuid,
-            "config": config or {},
-            "message_count": message_count,
-            "is_left": is_left,
-            "left_at": left_at.isoformat() if left_at else None,
-        }
-
-    async def update_ai_config(self, config_type: str, target_id: Optional[str], **kwargs) -> bool:
-        return False
-
-    async def delete_ai_config(self, config_type: str, target_id: Optional[str]) -> bool:
-        return False
-
-    async def batch_update_ai_configs(self, config_type: str, target_ids: List[str], **kwargs) -> int:
-        return 0
-
-    async def mark_group_left(self, group_id: str) -> bool:
-        return False
-
-    async def cleanup_expired_left_groups(self, days: int = 30) -> int:
-        return 0
-
-    async def get_llm_model(self, uuid: str) -> Optional[Dict[str, Any]]:
-        return None
-
-    async def list_llm_models(self) -> List[Any]:
-        return []
-
-    async def create_llm_model(self, uuid: str, name: str, provider: str, model_name: str, api_key: Optional[str] = None, base_url: Optional[str] = None, is_default: bool = False, supports_tools: bool = False, supports_vision: bool = False, description: Optional[str] = None, config: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-        return {
-            "uuid": uuid,
-            "name": name,
-            "provider": provider,
-            "model_name": model_name,
-            "base_url": base_url,
-            "is_default": is_default,
-            "supports_tools": supports_tools,
-            "supports_vision": supports_vision,
-            "description": description,
-            "config": config or {},
-        }
-
-    async def update_llm_model(self, uuid: str, **kwargs) -> bool:
-        return False
-
-    async def delete_llm_model(self, uuid: str) -> bool:
-        return False
-
-    async def get_ai_preset(self, uuid: str) -> Optional[Any]:
-        return None
-
-    async def list_ai_presets(self) -> List[Any]:
-        return []
-
-    async def create_ai_preset(self, uuid: str, name: str, system_prompt: str, temperature: float = 1.0, max_tokens: int = 2000, description: Optional[str] = None, top_p: Optional[float] = None, top_k: Optional[int] = None, repetition_penalty: Optional[float] = None, config: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-        return {
-            "uuid": uuid,
-            "name": name,
-            "system_prompt": system_prompt,
-            "temperature": temperature,
-            "max_tokens": max_tokens,
-            "description": description,
-            "top_p": top_p,
-            "top_k": top_k,
-            "repetition_penalty": repetition_penalty,
-            "config": config or {},
-        }
-
-    async def update_ai_preset(self, uuid: str, **kwargs) -> bool:
-        return False
-
-    async def delete_ai_preset(self, uuid: str) -> bool:
-        return False
-
-    async def get_ai_memory(self, memory_type: str, target_id: str, preset_uuid: Optional[str] = None) -> Optional[Any]:
-        return None
-
-    async def list_ai_memories(self, memory_type: Optional[str] = None, target_id: Optional[str] = None) -> List[Any]:
-        return []
-
-    async def create_ai_memory(self, uuid: str, memory_type: str, target_id: str, preset_uuid: Optional[str] = None, messages: Optional[List[Dict[str, Any]]] = None, message_count: int = 0, last_active: Optional[datetime] = None) -> Dict[str, Any]:
-        return {
-            "uuid": uuid,
-            "memory_type": memory_type,
-            "target_id": target_id,
-            "preset_uuid": preset_uuid,
-            "messages": messages or [],
-            "message_count": message_count,
-            "last_active": (last_active or datetime.utcnow()).isoformat(),
-        }
-
-    async def update_ai_memory(self, uuid: str, **kwargs) -> bool:
-        return False
-
-    async def delete_ai_memory(self, uuid: str) -> bool:
-        return False
-
-    async def clear_ai_memory(self, memory_type: str, target_id: str, preset_uuid: Optional[str] = None) -> bool:
-        return False
-
-    async def get_mcp_server(self, uuid: str) -> Optional[Any]:
-        return None
-
-    async def list_mcp_servers(self, enabled_only: bool = False) -> List[Any]:
-        return []
-
-    async def create_mcp_server(self, uuid: str, name: str, mode: str, description: Optional[str] = None, enabled: bool = False, command: Optional[str] = None, args: Optional[List[str]] = None, env: Optional[Dict[str, str]] = None, url: Optional[str] = None, headers: Optional[Dict[str, str]] = None, timeout: int = 10, config: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-        return {
-            "uuid": uuid,
-            "name": name,
-            "mode": mode,
-            "description": description,
-            "enabled": enabled,
-            "command": command,
-            "args": args or [],
-            "env": env or {},
-            "url": url,
-            "headers": headers or {},
-            "timeout": timeout,
-            "config": config or {},
-        }
-
-    async def update_mcp_server(self, uuid: str, **kwargs) -> bool:
-        return False
-
-    async def delete_mcp_server(self, uuid: str) -> bool:
-        return False
     # ==================== Sandbox ====================
 
     async def list_sandboxes(self) -> List[Sandbox]:
@@ -747,9 +604,6 @@ class DatabaseManager:
         mock_group_id: Optional[str] = None,
         mock_group_name: Optional[str] = None,
         use_plugins: bool = True,
-        use_ai: bool = True,
-        ai_model_uuid: Optional[str] = None,
-        ai_preset_uuid: Optional[str] = None,
         enabled: bool = True,
         **kwargs: Any,
     ) -> Sandbox:
@@ -764,10 +618,7 @@ class DatabaseManager:
                 mock_user_nickname=mock_user_nickname or "",
                 mock_group_id=mock_group_id or None,
                 mock_group_name=mock_group_name or None,
-                use_plugins=use_plugins,
-                use_ai=use_ai,
-                ai_model_uuid=ai_model_uuid or None,
-                ai_preset_uuid=ai_preset_uuid or None,
+                use_plugins=True,
                 config=kwargs.get("config") if kwargs.get("config") is not None else {},
             )
             session.add(row)
@@ -826,9 +677,7 @@ class DatabaseManager:
         group_name: Optional[str] = None,
         raw_message: Optional[str] = None,
         processed_by_plugins: bool = False,
-        processed_by_ai: bool = False,
         plugin_responses: Optional[List[Any]] = None,
-        ai_response: Optional[str] = None,
         has_error: bool = False,
         error_message: Optional[str] = None,
     ) -> SandboxMessage:
@@ -844,9 +693,7 @@ class DatabaseManager:
                 content=content,
                 raw_message=raw_message,
                 processed_by_plugins=processed_by_plugins,
-                processed_by_ai=processed_by_ai,
                 plugin_responses=plugin_responses or [],
-                ai_response=ai_response,
                 has_error=has_error,
                 error_message=error_message,
             )
@@ -863,9 +710,7 @@ class DatabaseManager:
         self,
         message_id: int,
         processed_by_plugins: Optional[bool] = None,
-        processed_by_ai: Optional[bool] = None,
         plugin_responses: Optional[List[Any]] = None,
-        ai_response: Optional[str] = None,
         has_error: Optional[bool] = None,
         error_message: Optional[str] = None,
     ) -> None:
@@ -875,12 +720,8 @@ class DatabaseManager:
                 return
             if processed_by_plugins is not None:
                 msg.processed_by_plugins = processed_by_plugins
-            if processed_by_ai is not None:
-                msg.processed_by_ai = processed_by_ai
             if plugin_responses is not None:
                 msg.plugin_responses = plugin_responses
-            if ai_response is not None:
-                msg.ai_response = ai_response
             if has_error is not None:
                 msg.has_error = has_error
             if error_message is not None:

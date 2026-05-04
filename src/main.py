@@ -33,6 +33,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from src.core.config import get_config, get_config_manager, get_config_file_path
 from src.core.logger import setup_logger, get_logger
+from src.core.startup_urls import append_url_path, build_startup_urls
 from src.ui.api import create_app
 
 # Setup logger first
@@ -132,7 +133,6 @@ def main():
     
     config = get_config()
     
-    # Beautiful startup banner
     print("\n")
     print(" __  _____    _    _____   _____     ___   ___  ")
     print(" \\ \\/ /_ _|  / \\  / _ \\ \\ / /_ _|   / _ \\ / _ \\ ")
@@ -141,10 +141,26 @@ def main():
     print(" /_/\\_\\___/_/   \\_\\___/ |_| |___|___\\__\\_\\\\__\\_\\")
     print("                               |_____|          ")
     print("\n" + "=" * 60)
+    startup_urls = build_startup_urls(
+        config.host,
+        config.port,
+    )
+    print(f"Listen:     {config.host}:{config.port}")
     if config.web_ui_enabled:
-        print(f"  Web UI:     http://{config.host}:{config.port}/")
-        print(f"  Login:      admin / admin123")
-    print(f"  API Docs:   http://{config.host}:{config.port}/docs")
+        for item in startup_urls:
+            print(f"Web UI {item.label + ':':<8} {item.url}")
+        if not any(item.label == "External" for item in startup_urls) and str(config.host).strip() in {"0.0.0.0", "::", ""}:
+            print("Web UI External: (not detected)")
+        if not any(item.label == "LAN" for item in startup_urls) and str(config.host).strip() in {"0.0.0.0", "::", ""}:
+            print("Web UI LAN:      (not detected)")
+        print(f"Login User: {config.web_ui_username}")
+        if config.web_ui_password == "admin123":
+            print("Login Pass: using default password")
+    docs_base_url = next(
+        (item.url for item in startup_urls if item.label == "Local"),
+        startup_urls[0].url if startup_urls else f"http://{config.host}:{config.port}/",
+    )
+    print(f"API Docs:   {append_url_path(docs_base_url, '/docs')}")
     print("=" * 60 + "\n")
     
     # Custom loop setup for Windows + Python 3.13 compatibility

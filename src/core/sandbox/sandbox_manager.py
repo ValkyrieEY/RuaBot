@@ -1,12 +1,13 @@
 """Enhanced sandbox manager with code execution capabilities."""
 import asyncio
+import json
 import uuid as uuid_module
 from typing import Any, Dict, List, Optional, Callable
 from datetime import datetime
 from pathlib import Path
 from ..logger import get_logger
 from ..database import get_database_manager
-from ..models.sandbox import Sandbox, SandboxMessage
+from ..models.sandbox import Sandbox
 from ..event_bus import get_event_bus
 from .booters.base import ComputerBooter
 from .booters.local import LocalBooter
@@ -18,7 +19,7 @@ class SandboxManager:
     - Create multiple sandboxes with different configurations
     - Simulate message sending/receiving
     - Execute shell commands, Python code, file operations
-    - Route messages through plugin and AI systems
+    - Route messages through plugin systems
     - Record message and execution history
     - Session-based isolated execution environments
     """
@@ -26,7 +27,6 @@ class SandboxManager:
         self.db_manager = get_database_manager()
         self.event_bus = get_event_bus()
         self._plugin_connector = None
-        self._ai_message_handler = None
         self._message_callbacks: Dict[str, List[Callable]] = {}
         self._booters: Dict[str, ComputerBooter] = {}
         self._base_work_dir = Path("data/sandbox_work")
@@ -36,10 +36,6 @@ class SandboxManager:
         """Set plugin connector for routing messages to plugins."""
         self._plugin_connector = plugin_connector
         logger.info("Plugin connector set for sandbox manager")
-    def set_ai_message_handler(self, ai_message_handler):
-        """Set AI message handler for routing messages to AI."""
-        self._ai_message_handler = ai_message_handler
-        logger.info("AI message handler set for sandbox manager")
     def register_message_callback(self, sandbox_uuid: str, callback: Callable):
         """Register callback for receiving sandbox messages (e.g., WebSocket)."""
         if sandbox_uuid not in self._message_callbacks:
@@ -123,6 +119,83 @@ class SandboxManager:
             logger.debug(f"Recorded plugin response in sandbox: {source_plugin}")
         except Exception as e:
             logger.error(f"Failed to record plugin response: {e}", exc_info=True)
+
+    def _stringify_plugin_message(self, message: Any) -> str:
+        if isinstance(message, str):
+            return message
+        try:
+            return json.dumps(message, ensure_ascii=False)
+        except Exception:
+            return str(message)
+
+    def _sandbox_send_target(self, action: str, params: Dict[str, Any]) -> tuple[Optional[str], Optional[str]]:
+        action = str(action or "")
+        if action == "send_group_msg":
+            return "group", str(params.get("group_id") or "").strip() or None
+        if action == "send_private_msg":
+            return "private", str(params.get("user_id") or "").strip() or None
+        if action == "send_msg":
+            message_type = str(params.get("message_type") or params.get("type") or "").strip().lower()
+            if message_type == "group" or params.get("group_id"):
+                return "group", str(params.get("group_id") or "").strip() or None
+            if message_type == "private" or params.get("user_id"):
+                return "private", str(params.get("user_id") or "").strip() or None
+        return None, None
+
+    async def record_plugin_api_call(
+        self,
+        source_plugin: str,
+        action: str,
+        params: Dict[str, Any]
+    ) -> Optional[Dict[str, Any]]:
+        """Capture plugin message sends whose target belongs to an enabled sandbox."""
+        target_type, target_id = self._sandbox_send_target(action, params or {})
+        if not target_type or not target_id:
+            return None
+
+        sandboxes = await self.db_manager.list_sandboxes()
+        if self._current_sandbox_uuid:
+            sandboxes.sort(key=lambda item: 0 if item.uuid == self._current_sandbox_uuid else 1)
+
+        matched_sandbox = None
+        for sandbox in sandboxes:
+            if not sandbox.enabled:
+                continue
+            if target_type == "private" and str(sandbox.mock_user_id or "") == target_id:
+                matched_sandbox = sandbox
+                break
+            if target_type == "group" and str(sandbox.mock_group_id or "") == target_id:
+                matched_sandbox = sandbox
+                break
+
+        if not matched_sandbox:
+            return None
+
+        message_content = self._stringify_plugin_message((params or {}).get("message", ""))
+        outbound_msg = await self.db_manager.create_sandbox_message(
+            sandbox_uuid=matched_sandbox.uuid,
+            message_type=target_type,
+            direction="outbound",
+            user_id="bot",
+            user_nickname=source_plugin or "Plugin",
+            group_id=matched_sandbox.mock_group_id if target_type == "group" else None,
+            group_name=matched_sandbox.mock_group_name if target_type == "group" else None,
+            content=message_content,
+            raw_message=message_content,
+            processed_by_plugins=True,
+        )
+        await self._notify_callbacks(matched_sandbox.uuid, outbound_msg.to_dict())
+        logger.info(
+            "Captured plugin API call as sandbox message",
+            sandbox_uuid=matched_sandbox.uuid,
+            action=action,
+            source_plugin=source_plugin,
+        )
+        return {
+            "message_id": outbound_msg.id,
+            "sandbox": True,
+            "sandbox_uuid": matched_sandbox.uuid,
+        }
     async def shutdown_booter(self, sandbox_uuid: str):
         """Shutdown booter for sandbox."""
         if sandbox_uuid in self._booters:
@@ -139,9 +212,6 @@ class SandboxManager:
         mock_group_id: Optional[str] = None,
         mock_group_name: Optional[str] = None,
         use_plugins: bool = True,
-        use_ai: bool = True,
-        ai_model_uuid: Optional[str] = None,
-        ai_preset_uuid: Optional[str] = None,
         **kwargs
     ) -> Sandbox:
         """Create a new sandbox."""
@@ -154,10 +224,7 @@ class SandboxManager:
             mock_user_nickname=mock_user_nickname,
             mock_group_id=mock_group_id,
             mock_group_name=mock_group_name,
-            use_plugins=use_plugins,
-            use_ai=use_ai,
-            ai_model_uuid=ai_model_uuid,
-            ai_preset_uuid=ai_preset_uuid,
+            use_plugins=True,
             **kwargs
         )
         logger.info(f"Created sandbox: {name} ({sandbox_uuid})")
@@ -366,11 +433,10 @@ class SandboxManager:
         onebot_event = self._build_onebot_event(sandbox, message_content, message_type)
         responses = []
         plugin_responses = []
-        ai_response = None
         has_error = False
         error_message = None
         try:
-            if sandbox.use_plugins and self._plugin_connector:
+            if self._plugin_connector:
                 logger.debug(f"Processing sandbox message through plugins")
                 try:
                     from ..event_context import EventContext
@@ -378,7 +444,11 @@ class SandboxManager:
                         event_name='message.received',
                         event_data=onebot_event,
                         source="sandbox",
-                        sandbox_mode=True
+                        metadata={
+                            "sandbox_mode": True,
+                            "sandbox_uuid": sandbox_uuid,
+                            "sandbox_name": sandbox.name,
+                        }
                     )
                     modified_ctx = await self._plugin_connector.emit_event_with_context(
                         ctx,
@@ -399,54 +469,6 @@ class SandboxManager:
                     logger.error(f"Error processing through plugins in sandbox: {e}", exc_info=True)
                     has_error = True
                     error_message = f"Plugin error: {str(e)}"
-            if sandbox.use_ai and self._ai_message_handler:
-                logger.debug(f"Processing sandbox message through AI")
-                try:
-                    target_id = None
-                    config_type = "global"
-                    if message_type == "group" and sandbox.mock_group_id:
-                        target_id = sandbox.mock_group_id
-                        config_type = "group"
-                    elif message_type == "private":
-                        target_id = sandbox.mock_user_id
-                        config_type = "user"
-                    ai_config_override = {}
-                    if sandbox.ai_model_uuid:
-                        ai_config_override['model_uuid'] = sandbox.ai_model_uuid
-                    if sandbox.ai_preset_uuid:
-                        ai_config_override['preset_uuid'] = sandbox.ai_preset_uuid
-                    ai_reply = await self._process_ai_message(
-                        sandbox=sandbox,
-                        message=message_content,
-                        user_id=sandbox.mock_user_id,
-                        group_id=sandbox.mock_group_id if message_type == "group" else None,
-                        config_type=config_type,
-                        target_id=target_id,
-                        ai_config_override=ai_config_override
-                    )
-                    if ai_reply:
-                        ai_response = ai_reply
-                        responses.append({
-                            "type": "ai",
-                            "content": ai_reply
-                        })
-                        outbound_msg = await self.db_manager.create_sandbox_message(
-                            sandbox_uuid=sandbox_uuid,
-                            message_type=message_type,
-                            direction="outbound",
-                            user_id="bot",
-                            user_nickname="AI",
-                            group_id=sandbox.mock_group_id if message_type == "group" else None,
-                            group_name=sandbox.mock_group_name if message_type == "group" else None,
-                            content=ai_reply,
-                            processed_by_ai=True,
-                            ai_response=ai_reply
-                        )
-                        await self._notify_callbacks(sandbox_uuid, outbound_msg.to_dict())
-                except Exception as e:
-                    logger.error(f"Error processing through AI in sandbox: {e}", exc_info=True)
-                    has_error = True
-                    error_message = f"AI error: {str(e)}"
         except Exception as e:
             logger.error(f"Error processing sandbox message: {e}", exc_info=True)
             has_error = True
@@ -455,10 +477,8 @@ class SandboxManager:
             self._current_sandbox_uuid = None
         await self.db_manager.update_sandbox_message(
             inbound_msg.id,
-            processed_by_plugins=sandbox.use_plugins,
-            processed_by_ai=sandbox.use_ai,
+            processed_by_plugins=True,
             plugin_responses=plugin_responses,
-            ai_response=ai_response,
             has_error=has_error,
             error_message=error_message
         )
@@ -467,7 +487,6 @@ class SandboxManager:
             "inbound_message_id": inbound_msg.id,
             "responses": responses,
             "plugin_responses": plugin_responses,
-            "ai_response": ai_response,
             "has_error": has_error,
             "error_message": error_message
         }
@@ -477,7 +496,7 @@ class SandboxManager:
         message_content: str,
         message_type: str
     ) -> Dict[str, Any]:
-        """Build OneBot-like event for plugin/AI processing."""
+        """Build OneBot-like event for plugin processing."""
         event = {
             "time": int(datetime.now().timestamp()),
             "self_id": "sandbox_bot",
@@ -500,95 +519,6 @@ class SandboxManager:
             event["group_id"] = sandbox.mock_group_id
             event["sender"]["role"] = "member"
         return event
-    async def _process_ai_message(
-        self,
-        sandbox: Sandbox,
-        message: str,
-        user_id: str,
-        group_id: Optional[str],
-        config_type: str,
-        target_id: Optional[str],
-        ai_config_override: Dict[str, Any]
-    ) -> Optional[str]:
-        """Process message through AI system."""
-        try:
-            ai_config = await self.db_manager.get_ai_config(config_type, target_id)
-            if not ai_config or not ai_config.enabled:
-                logger.debug(f"AI not enabled for sandbox {config_type}:{target_id}")
-                return None
-            model_uuid = ai_config_override.get('model_uuid') or ai_config.model_uuid
-            preset_uuid = ai_config_override.get('preset_uuid') or ai_config.preset_uuid
-            if not model_uuid or not preset_uuid:
-                logger.warning("AI model or preset not configured")
-                return None
-            model = await self.db_manager.get_llm_model(model_uuid)
-            preset = await self.db_manager.get_ai_preset(preset_uuid)
-            if not model or not preset:
-                logger.warning("AI model or preset not found")
-                return None
-            memory_type = "group" if group_id else "user"
-            memory_target_id = group_id or user_id
-            memory = await self.db_manager.get_ai_memory(
-                memory_type=memory_type,
-                target_id=memory_target_id,
-                preset_uuid=preset_uuid
-            )
-            if not memory:
-                memory = await self.db_manager.create_ai_memory(
-                    uuid=str(uuid_module.uuid4()),
-                    memory_type=memory_type,
-                    target_id=memory_target_id,
-                    preset_uuid=preset_uuid,
-                    messages=[]
-                )
-            if self._ai_message_handler:
-                try:
-                    event_data = {
-                        "time": int(datetime.now().timestamp()),
-                        "self_id": "sandbox_bot",
-                        "post_type": "message",
-                        "message_type": "group" if group_id else "private",
-                        "sub_type": "normal",
-                        "message_id": int(datetime.now().timestamp() * 1000),
-                        "user_id": user_id,
-                        "message": message,
-                        "raw_message": message,
-                        "font": 0,
-                        "sender": {
-                            "user_id": user_id,
-                            "nickname": sandbox.mock_user_nickname,
-                            "card": "",
-                            "role": "member"
-                        }
-                    }
-                    if group_id:
-                        event_data["group_id"] = group_id
-                    ai_response = await self._ai_message_handler.handle_message(event_data)
-                    if ai_response:
-                        return ai_response
-                except Exception as e:
-                    logger.error(f"Failed to call AI handler: {e}", exc_info=True)
-            messages = [
-                {"role": "system", "content": preset.system_prompt}
-            ]
-            if memory.messages:
-                messages.extend(memory.messages[-10:])
-            messages.append({"role": "user", "content": message})
-            ai_response = f"[AI] : {message[:30]}... (AI handler )"
-            new_messages = memory.messages + [
-                {"role": "user", "content": message},
-                {"role": "assistant", "content": ai_response}
-            ]
-            await self.db_manager.update_ai_memory(
-                uuid=memory.uuid,
-                messages=new_messages,
-                message_count=len(new_messages),
-                last_active=datetime.utcnow()
-            )
-            return ai_response
-        except Exception as e:
-            logger.error(f"Error in AI processing for sandbox: {e}", exc_info=True)
-            return None
 _sandbox_manager: Optional[SandboxManager] = None
 def get_sandbox_manager() -> SandboxManager:
     """Get global sandbox manager instance."""

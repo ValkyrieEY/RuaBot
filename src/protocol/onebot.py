@@ -1067,6 +1067,16 @@ class OneBotAdapter(ProtocolAdapter):
                 else:
                     raw_message = str(raw_message_value) if raw_message_value is not None else ""
 
+                if "[CQ:" in raw_message:
+                    try:
+                        from ..ui.image_cache import get_image_cache_manager
+                        raw_message = await get_image_cache_manager().cache_embedded_cq_media_for_display(
+                            raw_message,
+                            onebot_adapter=self,
+                        )
+                    except Exception as cache_error:
+                        logger.debug(f"Failed to cache sent-message CQ media: {cache_error}")
+
                 sender_payload = framework_meta.get("sender") or params.get("sender")
                 sender = dict(sender_payload) if isinstance(sender_payload, dict) else {}
                 source_user_id = str(framework_meta.get("self_id") or params.get("self_id") or self.self_id or "")

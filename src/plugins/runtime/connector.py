@@ -22,10 +22,18 @@ from ..interceptor import InterceptorRegistry, MessageInterceptor, InterceptorRe
 
 logger = get_logger(__name__)
 
+PLUGIN_DEPS_DIR_NAME = ".deps"
+DependencyProgressCallback = Optional[Callable[[str], None]]
+
 
 def _get_blocking_task_pool(app: Any = None):
     """Get the shared blocking task pool, preferring the app-bound instance."""
     return getattr(app, "blocking_task_pool", None) or get_blocking_task_pool_manager()
+
+
+def get_plugin_dependency_dir(plugin_path: Path) -> Path:
+    """Return the private dependency target directory for a plugin."""
+    return plugin_path.parent / PLUGIN_DEPS_DIR_NAME / plugin_path.name
 
 
 async def _load_plugin_manifest_async(plugin_dir: Path, thread_pool: Any = None) -> Dict[str, Any]:
@@ -39,7 +47,216 @@ async def _load_plugin_manifest_async(plugin_dir: Path, thread_pool: Any = None)
     return await run_in_blocking_pool(load_plugin_manifest, plugin_dir)
 
 
-async def install_plugin_dependencies(plugin_path: Path, plugin_metadata: Dict[str, Any]) -> bool:
+def _build_dependency_install_args(plugin_path: Path, plugin_metadata: Dict[str, Any]) -> List[str]:
+    """Build pip install requirement arguments from plugin metadata and requirements.txt."""
+    args: List[str] = []
+    seen = set()
+
+    def add_arg(value: str) -> None:
+        value = value.strip()
+        if value and value not in seen:
+            args.append(value)
+            seen.add(value)
+
+    deps = plugin_metadata.get('dependencies')
+    if isinstance(deps, list):
+        for dep in deps:
+            if isinstance(dep, dict):
+                dep_name = str(dep.get('name', '')).strip()
+                dep_version = str(dep.get('version', '')).strip()
+                if not dep_name:
+                    continue
+                if dep_version:
+                    if dep_version.startswith(("=", "<", ">", "!", "~")):
+                        add_arg(f"{dep_name}{dep_version}")
+                    else:
+                        add_arg(f"{dep_name}=={dep_version}")
+                else:
+                    add_arg(dep_name)
+            elif isinstance(dep, str):
+                add_arg(dep)
+
+    requirements_file = plugin_path / "requirements.txt"
+    if requirements_file.exists():
+        args.extend(["-r", str(requirements_file)])
+
+    return args
+
+
+def _build_dependency_fingerprint(plugin_path: Path, pip_requirement_args: List[str]) -> str:
+    """Create a stable fingerprint for plugin dependency inputs."""
+    import hashlib
+
+    requirements_file = plugin_path / "requirements.txt"
+    requirements_hash = ""
+    if requirements_file.exists():
+        requirements_hash = hashlib.sha256(requirements_file.read_bytes()).hexdigest()
+
+    payload = json.dumps(
+        {
+            "python": f"{sys.version_info.major}.{sys.version_info.minor}",
+            "platform": sys.platform,
+            "args": pip_requirement_args,
+            "requirements_hash": requirements_hash,
+        },
+        ensure_ascii=False,
+        sort_keys=True,
+    )
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def _log_pip_output(
+    plugin_name: str,
+    text: str,
+    progress_callback: DependencyProgressCallback = None,
+) -> None:
+    """Log pip output without flooding empty/control-only lines."""
+    for raw_line in text.replace("\r", "\n").splitlines():
+        line = raw_line.strip()
+        if line:
+            logger.info("pip[%s] %s", plugin_name, line)
+            if progress_callback:
+                progress_callback(line)
+
+
+class _PipLogWriter:
+    """File-like writer that forwards pip stdout/stderr to the application logger."""
+
+    def __init__(self, plugin_name: str, progress_callback: DependencyProgressCallback = None):
+        self.plugin_name = plugin_name
+        self.progress_callback = progress_callback
+        self._buffer = ""
+
+    def write(self, text: str) -> int:
+        if not text:
+            return 0
+
+        self._buffer += text
+        while "\n" in self._buffer or "\r" in self._buffer:
+            newline_index = self._buffer.find("\n")
+            carriage_index = self._buffer.find("\r")
+            indexes = [i for i in (newline_index, carriage_index) if i >= 0]
+            split_index = min(indexes)
+            chunk = self._buffer[:split_index]
+            self._buffer = self._buffer[split_index + 1:]
+            _log_pip_output(self.plugin_name, chunk, self.progress_callback)
+        return len(text)
+
+    def flush(self) -> None:
+        if self._buffer.strip():
+            _log_pip_output(self.plugin_name, self._buffer, self.progress_callback)
+        self._buffer = ""
+
+
+def _run_pip_subprocess(
+    plugin_path: Path,
+    pip_args: List[str],
+    progress_callback: DependencyProgressCallback = None,
+) -> Tuple[bool, str]:
+    """Run source-mode pip and stream output to logs."""
+    import subprocess
+
+    cmd = [sys.executable, "-m", "pip", *pip_args]
+    logger.info("pip[%s] running: %s", plugin_path.name, " ".join(cmd))
+
+    try:
+        process = subprocess.Popen(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            bufsize=1,
+        )
+    except Exception as e:
+        return False, str(e)
+
+    output_tail: List[str] = []
+    try:
+        assert process.stdout is not None
+        for line in process.stdout:
+            stripped = line.strip()
+            if stripped:
+                output_tail.append(stripped)
+                output_tail = output_tail[-20:]
+            _log_pip_output(plugin_path.name, line, progress_callback)
+
+        return_code = process.wait(timeout=30)
+    except subprocess.TimeoutExpired:
+        process.kill()
+        return False, "pip did not exit cleanly after output stream ended"
+    except Exception as e:
+        process.kill()
+        return False, str(e)
+
+    if return_code == 0:
+        return True, "\n".join(output_tail)
+    return False, "\n".join(output_tail) or f"pip exited with code {return_code}"
+
+
+def _run_pip_install_for_plugin(
+    plugin_path: Path,
+    pip_requirement_args: List[str],
+    progress_callback: DependencyProgressCallback = None,
+) -> Tuple[bool, str]:
+    """Install dependencies into a plugin-private target directory."""
+    deps_dir = get_plugin_dependency_dir(plugin_path)
+    deps_dir.mkdir(parents=True, exist_ok=True)
+
+    pip_args = [
+        "install",
+        "--upgrade",
+        "--disable-pip-version-check",
+        "--no-warn-script-location",
+        "--progress-bar",
+        "raw",
+        "--target",
+        str(deps_dir),
+        *pip_requirement_args,
+    ]
+
+    if getattr(sys, "frozen", False):
+        try:
+            from pip._internal.cli.main import main as pip_main
+        except Exception as e:
+            return (
+                False,
+                "pip is not bundled in this package. Rebuild with pip hidden imports "
+                f"or install dependencies manually. Original error: {e}",
+            )
+
+        try:
+            import contextlib
+
+            writer = _PipLogWriter(plugin_path.name, progress_callback)
+            logger.info("pip[%s] running in bundled mode", plugin_path.name)
+            with contextlib.redirect_stdout(writer), contextlib.redirect_stderr(writer):
+                exit_code = pip_main(pip_args)
+            writer.flush()
+            if exit_code == 0:
+                return True, ""
+            return False, f"pip exited with code {exit_code}"
+        except SystemExit as e:
+            try:
+                writer.flush()
+            except Exception:
+                pass
+            code = e.code if isinstance(e.code, int) else 1
+            if code == 0:
+                return True, ""
+            return False, f"pip exited with code {code}"
+        except Exception as e:
+            return False, str(e)
+
+    return _run_pip_subprocess(plugin_path, pip_args, progress_callback)
+
+
+async def install_plugin_dependencies(
+    plugin_path: Path,
+    plugin_metadata: Dict[str, Any],
+    progress_callback: DependencyProgressCallback = None,
+) -> bool:
     """Install plugin dependencies automatically.
     
     Supports two methods:
@@ -53,114 +270,59 @@ async def install_plugin_dependencies(plugin_path: Path, plugin_metadata: Dict[s
     Returns:
         True if installation succeeded or no dependencies, False on error
     """
-    import subprocess
-    import sys
-    
-    dependencies_to_install = []
-    
-    # Method 1: Check metadata.yaml dependencies field
-    if 'dependencies' in plugin_metadata:
-        deps = plugin_metadata['dependencies']
-        if isinstance(deps, list):
-            for dep in deps:
-                if isinstance(dep, dict):
-                    # Format: {"name": "package", "version": ">=1.0.0"}
-                    dep_name = dep.get('name', '')
-                    dep_version = dep.get('version', '')
-                    if dep_name:
-                        if dep_version:
-                            dependencies_to_install.append(f"{dep_name}{dep_version}")
-                        else:
-                            dependencies_to_install.append(dep_name)
-                elif isinstance(dep, str):
-                    # Format: "package>=1.0.0" or just "package"
-                    dependencies_to_install.append(dep)
-    
-    # Method 2: Check requirements.txt
-    requirements_file = plugin_path / "requirements.txt"
-    if requirements_file.exists():
-        try:
-            with open(requirements_file, 'r', encoding='utf-8') as f:
-                for line in f:
-                    line = line.strip()
-                    # Skip comments and empty lines
-                    if line and not line.startswith('#'):
-                        dependencies_to_install.append(line)
-        except Exception as e:
-            logger.warning(f"Failed to read requirements.txt: {e}")
-    
-    # If no dependencies found, return success
-    if not dependencies_to_install:
+    pip_requirement_args = _build_dependency_install_args(plugin_path, plugin_metadata)
+
+    if not pip_requirement_args:
         logger.info(f"No dependencies found for plugin at {plugin_path}")
         return True
-    
-    # Install dependencies
-    logger.info(f"Installing {len(dependencies_to_install)} dependencies for plugin: {plugin_path.name}")
-    
+
+    deps_dir = get_plugin_dependency_dir(plugin_path)
+    logger.info(
+        "Installing dependencies for plugin %s into %s",
+        plugin_path.name,
+        deps_dir,
+    )
+
     try:
-        # Use pip to install dependencies
-        # Try pip3 first, then pip
-        pip_cmd = 'pip3' if sys.platform != 'win32' else 'pip'
-        
-        # Check if pip is available
-        try:
-            result = subprocess.run(
-                [pip_cmd, '--version'],
-                capture_output=True,
-                timeout=5
-            )
-            if result.returncode != 0:
-                # Try 'pip' if 'pip3' failed
-                pip_cmd = 'pip'
-        except (FileNotFoundError, subprocess.TimeoutExpired):
-            pip_cmd = 'pip'
-        
-        # Install each dependency (run in thread pool to avoid blocking)
-        failed_deps = []
-        
-        def install_dep(dep: str) -> Tuple[str, bool, str]:
-            """Install a single dependency synchronously."""
+        deps_dir.mkdir(parents=True, exist_ok=True)
+        marker_file = deps_dir / ".xqnext-deps.json"
+        fingerprint = _build_dependency_fingerprint(plugin_path, pip_requirement_args)
+        if marker_file.exists():
             try:
-                logger.info(f"Installing dependency: {dep}")
-                result = subprocess.run(
-                    [sys.executable, '-m', 'pip', 'install', dep],
-                    capture_output=True,
-                    text=True,
-                    timeout=300  # 5 minutes timeout
-                )
-                
-                if result.returncode == 0:
-                    logger.info(f"Successfully installed: {dep}")
-                    return (dep, True, "")
-                else:
-                    error_msg = result.stderr or result.stdout
-                    logger.warning(f"Failed to install {dep}: {error_msg}")
-                    return (dep, False, error_msg)
-            except subprocess.TimeoutExpired:
-                logger.error(f"Timeout installing {dep}")
-                return (dep, False, "Timeout")
+                marker_data = json.loads(marker_file.read_text(encoding="utf-8"))
+                if marker_data.get("fingerprint") == fingerprint:
+                    logger.info("Dependencies already satisfied for plugin: %s", plugin_path.name)
+                    return True
             except Exception as e:
-                logger.error(f"Error installing {dep}: {e}")
-                return (dep, False, str(e))
-        
-        # Install dependencies sequentially (to avoid conflicts)
-        for dep in dependencies_to_install:
-            dep_name, success, error = await run_in_blocking_pool(install_dep, dep)
-            if not success:
-                failed_deps.append(dep_name)
-        
-        if failed_deps:
-            logger.warning(f"Some dependencies failed to install: {failed_deps}")
-            # Don't fail the entire installation, just warn
+                logger.debug("Ignoring invalid dependency marker for %s: %s", plugin_path.name, e)
+
+        success, output = await run_in_blocking_pool(
+            _run_pip_install_for_plugin,
+            plugin_path,
+            pip_requirement_args,
+            progress_callback,
+        )
+        if success:
+            marker_file.write_text(
+                json.dumps(
+                    {
+                        "fingerprint": fingerprint,
+                        "installed_at": datetime.now().isoformat(),
+                        "args": pip_requirement_args,
+                    },
+                    ensure_ascii=False,
+                    indent=2,
+                ),
+                encoding="utf-8",
+            )
+            logger.info("Dependencies installed successfully for plugin: %s", plugin_path.name)
             return True
-        else:
-            logger.info(f"All dependencies installed successfully for plugin: {plugin_path.name}")
-            return True
-            
+
+        logger.warning("Failed to install dependencies for %s: %s", plugin_path.name, output)
+        return False
     except Exception as e:
         logger.error(f"Error installing plugin dependencies: {e}", exc_info=True)
-        # Don't fail the entire installation, just warn
-        return True
+        return False
 
 
 class ProxyMessageInterceptor(MessageInterceptor):
@@ -1112,8 +1274,9 @@ class PluginRuntimeConnector:
             # Check if this is a message-sending action that should be intercepted
             message_actions = ['send_group_msg', 'send_private_msg', 'send_msg']
             is_message_action = action in message_actions
+            skip_interceptors = bool(params.pop('__skip_relay', False))
             
-            if is_message_action:
+            if is_message_action and not skip_interceptors:
                 # Run message interceptors
                 logger.debug(
                     f"Running interceptors for {action} from {source_plugin}, "
@@ -1140,6 +1303,32 @@ class PluginRuntimeConnector:
                 if modified_params != params:
                     logger.info(f"Message modified by interceptor: {action}")
                     params = modified_params
+
+                try:
+                    from ...core.sandbox.sandbox_manager import get_sandbox_manager
+
+                    sandbox_result = await get_sandbox_manager().record_plugin_api_call(
+                        source_plugin=source_plugin or "",
+                        action=action,
+                        params=params,
+                    )
+                    if sandbox_result is not None:
+                        logger.info(
+                            f"Plugin API call captured by sandbox: {action} "
+                            f"from {source_plugin}, result={sandbox_result}"
+                        )
+                        if request_id:
+                            await self._send_to_runtime({
+                                'type': 'api_response',
+                                'data': {
+                                    'request_id': request_id,
+                                    'success': True,
+                                    'result': sandbox_result
+                                }
+                            })
+                        return
+                except Exception as e:
+                    logger.error(f"Failed to route plugin API call to sandbox: {e}", exc_info=True)
             
             # Get OneBot adapter from app
             if self.app and hasattr(self.app, 'onebot_adapter'):
@@ -1420,8 +1609,24 @@ class PluginRuntimeConnector:
                 try:
                     plugin_metadata = await _load_plugin_manifest_async(plugin_path, thread_pool)
                     priority_from_manifest = plugin_metadata.get('priority')
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.warning(
+                        "Skipping enabled plugin %s/%s: failed to load manifest from %s: %s",
+                        p.plugin_author,
+                        p.plugin_name,
+                        plugin_path,
+                        e,
+                    )
+                    continue
+
+                dependencies_ok = await install_plugin_dependencies(plugin_path, plugin_metadata)
+                if not dependencies_ok:
+                    logger.warning(
+                        "Skipping enabled plugin %s/%s: dependency installation failed",
+                        p.plugin_author,
+                        p.plugin_name,
+                    )
+                    continue
                 
                 # Priority: database > metadata.yaml > default
                 final_priority = p.priority
@@ -1630,6 +1835,7 @@ class PluginRuntimeConnector:
         try:
             plugins_dir = self._get_resolved_plugin_base()
             plugin_path = plugins_dir / name
+            deps_dir = get_plugin_dependency_dir(plugin_path)
             
             # 
             if plugin_path.exists():
@@ -1773,7 +1979,13 @@ class PluginRuntimeConnector:
             
             # 
             logger.info(f"Checking dependencies for plugin: {author}/{name}")
-            await install_plugin_dependencies(plugin_path, plugin_metadata)
+            if not await install_plugin_dependencies(plugin_path, plugin_metadata):
+                logger.error(f"Plugin dependency installation failed: {author}/{name}")
+                import shutil
+                shutil.rmtree(plugin_path, ignore_errors=True)
+                deps_dir = get_plugin_dependency_dir(plugin_path)
+                shutil.rmtree(deps_dir, ignore_errors=True)
+                return False
             
             # 
             if self.db_manager:
@@ -1922,6 +2134,14 @@ class PluginRuntimeConnector:
                     logger.info(f"Deleted plugin directory: {plugin_path}")
                 except Exception as e:
                     logger.warning(f"Failed to delete plugin directory: {e}")
+
+            if deps_dir.exists():
+                import shutil
+                try:
+                    shutil.rmtree(deps_dir)
+                    logger.info(f"Deleted plugin dependency directory: {deps_dir}")
+                except Exception as e:
+                    logger.warning(f"Failed to delete plugin dependency directory: {e}")
             
             return True
                 
@@ -1958,7 +2178,11 @@ class PluginRuntimeConnector:
             logger.error(f"Failed to unload plugin {plugin_name}: {e}", exc_info=True)
             return False
     
-    async def reload_plugin(self, plugin_name: str) -> bool:
+    async def reload_plugin(
+        self,
+        plugin_name: str,
+        progress_callback: DependencyProgressCallback = None,
+    ) -> bool:
         """Reload a single plugin.
         
         Args:
@@ -1973,6 +2197,18 @@ class PluginRuntimeConnector:
             # Refresh DB metadata for this plugin when users click reload.
             target_dir_name = plugin_name.split('/', 1)[1] if '/' in plugin_name else plugin_name
             await self._sync_plugin_records_from_disk(plugin_dir_name=target_dir_name)
+
+            plugin_path_for_deps = self._get_resolved_plugin_base() / target_dir_name
+            if plugin_manifest_exists(plugin_path_for_deps):
+                thread_pool = getattr(self.app, 'blocking_task_pool', None) if self.app else None
+                plugin_metadata = await _load_plugin_manifest_async(plugin_path_for_deps, thread_pool)
+                if not await install_plugin_dependencies(
+                    plugin_path_for_deps,
+                    plugin_metadata,
+                    progress_callback=progress_callback,
+                ):
+                    logger.error("Cannot reload plugin %s: dependency installation failed", plugin_name)
+                    return False
 
             # Get fresh config from database to pass to runtime
             # This avoids SQLite cross-process caching issues

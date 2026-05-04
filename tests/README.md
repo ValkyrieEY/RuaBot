@@ -76,31 +76,33 @@ pytest tests/ --lf
 ```
 tests/
 ├── __init__.py
-├── conftest.py                 # Shared fixtures and configuration
 ├── run_tests.py               # Interactive test runner
 ├── README.md                  # This file
 ├── test_core/                 # Core module tests
 │   ├── __init__.py
 │   ├── test_app.py            # Application lifecycle tests
+│   ├── test_config_paths.py   # Runtime path tests
 │   ├── test_config.py         # Configuration tests
 │   ├── test_database.py       # Database tests
 │   ├── test_event_bus.py      # Event bus tests
 │   └── test_storage.py        # Storage tests
-├── test_ai/                   # AI module tests
-│   ├── __init__.py
-│   └── test_ai_manager.py     # AI manager tests
 ├── test_protocol/             # Protocol module tests
 │   ├── __init__.py
 │   └── test_onebot.py         # OneBot adapter tests
-├── test_router/               # Router module tests
+├── test_plugins/              # Plugins module tests
 │   ├── __init__.py
-│   └── test_router.py         # Router and rules tests
-├── test_security/             # Security module tests
-│   ├── __init__.py
-│   └── test_auth.py           # Authentication and authorization tests
-└── test_plugins/              # Plugins module tests
-    ├── __init__.py
-    └── test_interceptor.py    # Interceptor tests
+│   ├── test_interceptor.py    # Interceptor tests
+│   ├── test_manifest.py       # Manifest loading tests
+│   ├── test_plugin_config_types.py
+│   ├── test_runtime_connector.py
+│   ├── test_runtime_handler.py
+│   └── test_runtime_main_paths.py
+├── test_sandbox/              # Sandbox module tests
+│   └── test_local_shell_state.py
+├── test_napcat/               # NapCat management tests
+│   └── test_manager_config_persistence.py
+└── test_ui/                   # Web UI API tests
+    └── test_api_onebot_connectivity.py
 ```
 
 ## Writing Tests

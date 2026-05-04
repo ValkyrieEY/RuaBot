@@ -55,6 +55,25 @@ if not getattr(sys, "frozen", False):
 
 from src.plugins.manifest import load_plugin_manifest
 
+PLUGIN_DEPS_DIR_NAME = ".deps"
+
+
+def get_plugin_dependency_dir(plugin_dir: Path) -> Path:
+    """Return the private dependency directory for a plugin."""
+    return plugin_dir.parent / PLUGIN_DEPS_DIR_NAME / plugin_dir.name
+
+
+def add_import_path(path: Path) -> Optional[str]:
+    """Move an import path to the front when it exists."""
+    if not path.exists():
+        return None
+
+    path_str = str(path.resolve())
+    while path_str in sys.path:
+        sys.path.remove(path_str)
+    sys.path.insert(0, path_str)
+    return path_str
+
 
 class PluginRuntime:
     """Plugin runtime process."""
@@ -62,6 +81,7 @@ class PluginRuntime:
     def __init__(self):
         self.plugins: Dict[str, Any] = {}  # author/name -> plugin instance
         self.plugin_configs: Dict[str, Dict[str, Any]] = {}  # author/name -> config
+        self.plugin_dependency_paths: Dict[str, str] = {}  # author/name -> dependency path
         self.running = True
         self.base_dir = RUNTIME_BASE_DIR
         self.plugins_dir = (self.base_dir / "plugins").resolve()
@@ -165,6 +185,14 @@ class PluginRuntime:
             pass
         except Exception as e:
             self.log("error", f"Error in parent process monitor: {e}")
+
+    def _activate_plugin_import_path(self, plugin_id: str) -> None:
+        """Put a plugin's private dependency directory first for lazy imports."""
+        dependency_path = self.plugin_dependency_paths.get(plugin_id)
+        if dependency_path and Path(dependency_path).exists():
+            while dependency_path in sys.path:
+                sys.path.remove(dependency_path)
+            sys.path.insert(0, dependency_path)
     
     async def _stdin_reader(self):
         """Continuously read from stdin in background."""
@@ -364,6 +392,7 @@ class PluginRuntime:
             if hasattr(self, '_interceptors') and plugin_id in self._interceptors:
                 interceptor = self._interceptors[plugin_id]
                 try:
+                    self._activate_plugin_import_path(plugin_id)
                     # Run interceptor with timeout to prevent blocking
                     # Use reasonable timeout to allow interceptor to complete quickly
                     # Interceptors should return immediately, but some may need a bit more time
@@ -454,6 +483,11 @@ class PluginRuntime:
                 if not plugin_file.exists():
                     self.log("error", f"Plugin entry file not found: {plugin_file}")
                     continue
+
+                dependency_path = add_import_path(get_plugin_dependency_dir(plugin_dir))
+                if dependency_path:
+                    self.plugin_dependency_paths[plugin_id] = dependency_path
+                    self.log("info", f"Using dependency path for {plugin_id}: {dependency_path}")
                 
                 # Load plugin module
                 spec = importlib.util.spec_from_file_location(
@@ -567,6 +601,7 @@ class PluginRuntime:
                 del self.plugins[plugin_id]
                 if plugin_id in self.plugin_configs:
                     del self.plugin_configs[plugin_id]
+                self.plugin_dependency_paths.pop(plugin_id, None)
                 
                 # Remove module from sys.modules
                 module_name = f"plugin_{plugin_id.replace('/', '_')}"
@@ -596,6 +631,7 @@ class PluginRuntime:
                 import traceback
                 self.log("error", traceback.format_exc())
         
+        self.plugin_dependency_paths.clear()
         self.log("info", "All plugins shut down")
     
     async def reload_plugin(self, plugin_name: str, config_override: Optional[Dict[str, Any]] = None):
@@ -639,6 +675,7 @@ class PluginRuntime:
                 del self.plugins[plugin_id]
                 if plugin_id in self.plugin_configs:
                     del self.plugin_configs[plugin_id]
+                self.plugin_dependency_paths.pop(plugin_id, None)
                 
                 # Remove module from sys.modules
                 module_name = f"plugin_{plugin_id.replace('/', '_')}"
@@ -810,6 +847,7 @@ class PluginRuntime:
                     # Check if plugin has on_event_context handler
                     if hasattr(plugin_instance, 'on_event_context'):
                         self.log("debug", f"Calling on_event_context for plugin {plugin_id}")
+                        self._activate_plugin_import_path(plugin_id)
                         
                         # Determine timeout based on event type (reactive: timeout immediately skips to next)
                         if modified_context.event_name == 'message.received':
@@ -967,6 +1005,46 @@ class PluginAPI:
             API response data (the actual result from OneBot)
         """
         import uuid
+
+        message_actions = {
+            'send_group_msg',
+            'send_private_msg',
+            'send_msg',
+            'send_group_forward_msg',
+            'send_private_forward_msg',
+            'send_forward_msg',
+        }
+
+        if action in message_actions and not params.get('__skip_relay'):
+            current_params = params.copy()
+            interceptors = getattr(self.runtime, '_interceptors', {})
+            for interceptor_id, interceptor in sorted(
+                interceptors.items(),
+                key=lambda item: getattr(item[1], 'priority', 100)
+            ):
+                try:
+                    self.runtime._activate_plugin_import_path(interceptor_id)
+                    result = await asyncio.wait_for(
+                        interceptor.intercept_message(action, current_params, self.plugin_id),
+                        timeout=1.0
+                    )
+                    if getattr(result, 'allow', True) is False:
+                        self.log("debug", f"API {action} locally blocked by interceptor {interceptor_id}")
+                        return {
+                            'message_id': 0,
+                            'relayed': True,
+                            'blocked_by_interceptor': interceptor_id,
+                        }
+                    modified_data = getattr(result, 'modified_data', None)
+                    if modified_data is not None:
+                        current_params = modified_data
+                except asyncio.TimeoutError:
+                    self.log("warning", f"Local interceptor timeout for {interceptor_id}, allowing message")
+                    continue
+                except Exception as e:
+                    self.log("error", f"Local interceptor error for {interceptor_id}: {e}")
+                    continue
+            params = current_params
         
         request_id = str(uuid.uuid4())
         future = asyncio.get_event_loop().create_future()

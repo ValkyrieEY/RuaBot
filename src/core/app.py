@@ -156,6 +156,19 @@ class Application:
                     from ..ui.image_cache import get_image_cache_manager
                     image_cache = get_image_cache_manager()
                     raw_message = plugin_payload.get('raw_message', '')
+                    if raw_message and '[CQ:' in raw_message and (
+                        'base64://' in raw_message or 'data:' in raw_message
+                    ):
+                        rewritten_message = await image_cache.cache_embedded_cq_media_for_display(
+                            raw_message,
+                            self.onebot_adapter if hasattr(self, 'onebot_adapter') else None
+                        )
+                        if rewritten_message != raw_message:
+                            plugin_payload = dict(plugin_payload)
+                            plugin_payload['raw_message'] = rewritten_message
+                            if isinstance(plugin_payload.get('message'), str):
+                                plugin_payload['message'] = rewritten_message
+                            raw_message = rewritten_message
                     if raw_message and '[CQ:image' in raw_message:
                         # Extract and cache images asynchronously (don't wait)
                         asyncio.create_task(
@@ -345,24 +358,6 @@ class Application:
         except Exception as e:
             logger.warning(f"Sandbox manager wiring skipped: {e}")
         
-        # Start group data cleanup scheduler (runs daily)
-        try:
-            async def cleanup_expired_groups():
-                """Cleanup expired left group data daily."""
-                while True:
-                    await asyncio.sleep(86400)  # 24
-                    try:
-                        count = await self.db_manager.cleanup_expired_left_groups(days=30)
-                        if count > 0:
-                            logger.info(f"Auto cleanup: deleted {count} expired left group configurations")
-                    except Exception as e:
-                        logger.error(f"Failed to cleanup expired groups: {e}", exc_info=True)
-            
-            self.add_task(cleanup_expired_groups())
-            logger.info("Group data cleanup scheduler started (runs daily)")
-        except Exception as e:
-            logger.error(f"Failed to start group cleanup scheduler: {e}", exc_info=True)
-
         # Cleanup persisted message events daily to control DB size.
         try:
             retention_days = max(1, int(getattr(self.config, "message_event_retention_days", 30)))

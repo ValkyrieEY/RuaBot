@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import {
   ArrowLeft,
+  ArrowDown,
   CalendarDays,
   FileClock,
   FileText,
@@ -68,7 +69,23 @@ export default function AuditPage() {
   const [viewerLoading, setViewerLoading] = useState(false)
   const [viewerError, setViewerError] = useState('')
   const [deletingFileName, setDeletingFileName] = useState('')
+  const [isRealtimeAtBottom, setIsRealtimeAtBottom] = useState(true)
   const terminalRef = useRef<HTMLDivElement | null>(null)
+  const shouldStickRealtimeBottomRef = useRef(true)
+
+  const scrollRealtimeToBottom = (behavior: ScrollBehavior = 'auto') => {
+    const terminal = terminalRef.current
+    if (!terminal) return
+    terminal.scrollTo({ top: terminal.scrollHeight, behavior })
+  }
+
+  const updateRealtimeScrollState = () => {
+    const terminal = terminalRef.current
+    if (!terminal) return
+    const nearBottom = terminal.scrollHeight - terminal.scrollTop - terminal.clientHeight <= 80
+    shouldStickRealtimeBottomRef.current = nearBottom
+    setIsRealtimeAtBottom(nearBottom)
+  }
 
   const loadRealtimeLogs = async (initial = false) => {
     if (initial) setLoadingRealtime(true)
@@ -165,7 +182,10 @@ export default function AuditPage() {
 
   useEffect(() => {
     if (!terminalRef.current || activeTab !== 'realtime') return
-    terminalRef.current.scrollTop = terminalRef.current.scrollHeight
+    if (shouldStickRealtimeBottomRef.current) {
+      scrollRealtimeToBottom('auto')
+      setIsRealtimeAtBottom(true)
+    }
   }, [activeTab, normalizedLogs])
 
   useEffect(() => {
@@ -420,7 +440,7 @@ export default function AuditPage() {
 
         <div className="flex-1 min-h-0 overflow-hidden">
           {activeTab === 'realtime' ? (
-            <div className="flex h-full flex-col bg-slate-950">
+            <div className="relative flex h-full flex-col bg-slate-950">
               <div className="h-12 border-b border-slate-800 flex items-center justify-between px-4 md:px-6">
                 <div className="flex items-center gap-3">
                   <div className="flex items-center gap-2">
@@ -437,6 +457,7 @@ export default function AuditPage() {
 
               <div
                 ref={terminalRef}
+                onScroll={updateRealtimeScrollState}
                 className="custom-scrollbar flex-1 overflow-auto px-4 py-4 md:px-6 font-mono text-xs leading-6"
               >
                 {loadingRealtime ? (
@@ -467,6 +488,21 @@ export default function AuditPage() {
                   </>
                 )}
               </div>
+
+              {!isRealtimeAtBottom ? (
+                <button
+                  type="button"
+                  onClick={() => {
+                    shouldStickRealtimeBottomRef.current = true
+                    setIsRealtimeAtBottom(true)
+                    scrollRealtimeToBottom('smooth')
+                  }}
+                  className="absolute bottom-5 right-5 z-10 flex items-center gap-2 rounded-lg border border-slate-700 bg-slate-900/95 px-3 py-2 text-xs font-medium text-slate-100 shadow-lg transition-colors hover:bg-slate-800"
+                >
+                  <ArrowDown className="h-4 w-4" />
+                  返回底部
+                </button>
+              ) : null}
 
             </div>
           ) : (

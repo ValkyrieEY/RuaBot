@@ -2,7 +2,11 @@ import pytest
 import sys
 from unittest.mock import MagicMock
 
-from src.plugins.runtime.connector import PluginRuntimeConnector
+from src.plugins.runtime.connector import (
+    PluginRuntimeConnector,
+    _build_dependency_install_args,
+    get_plugin_dependency_dir,
+)
 
 
 class _FakeAsyncStdin:
@@ -108,6 +112,37 @@ def test_build_runtime_command_uses_runtime_mode_when_frozen(connector, monkeypa
     cmd = connector._build_runtime_command()
 
     assert cmd == [sys.executable, "--runtime-mode"]
+
+
+def test_plugin_dependency_dir_is_private_to_plugin(tmp_path):
+    plugin_path = tmp_path / "plugins" / "demo"
+
+    deps_dir = get_plugin_dependency_dir(plugin_path)
+
+    assert deps_dir == tmp_path / "plugins" / ".deps" / "demo"
+
+
+def test_build_dependency_install_args_supports_metadata_and_requirements(tmp_path):
+    plugin_path = tmp_path / "plugins" / "demo"
+    plugin_path.mkdir(parents=True)
+    requirements = plugin_path / "requirements.txt"
+    requirements.write_text("pillow>=10\n", encoding="utf-8")
+
+    args = _build_dependency_install_args(
+        plugin_path,
+        {
+            "dependencies": [
+                {"name": "requests", "version": ">=2.32.0"},
+                {"name": "aiofiles", "version": "23.2.1"},
+                "psutil",
+            ]
+        },
+    )
+
+    assert "requests>=2.32.0" in args
+    assert "aiofiles==23.2.1" in args
+    assert "psutil" in args
+    assert args[-2:] == ["-r", str(requirements)]
 
 
 @pytest.mark.asyncio

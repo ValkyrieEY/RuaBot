@@ -226,6 +226,45 @@ def _run_pip_install_for_plugin(
                 f"or install dependencies manually. Original error: {e}",
             )
 
+        # Pre-import pip vendored packages so they are already in sys.modules
+        # before pip's VendorImporter tries filesystem lookups (which fail in
+        # frozen / PyInstaller builds).
+        _pip_vendor_preloads = [
+            "pip._vendor.distlib",
+            "pip._vendor.distlib.scripts",
+            "pip._vendor.distlib.markers",
+            "pip._vendor.distlib.metadata",
+            "pip._vendor.distlib.util",
+            "pip._vendor.distlib.locators",
+            "pip._vendor.distlib.database",
+            "pip._vendor.distlib.version",
+            "pip._vendor.distlib.wheel",
+            "pip._vendor.packaging",
+            "pip._vendor.packaging.requirements",
+            "pip._vendor.packaging.version",
+            "pip._vendor.packaging.specifiers",
+            "pip._vendor.packaging.markers",
+            "pip._vendor.packaging.tags",
+            "pip._vendor.platformdirs",
+            "pip._vendor.pygments",
+            "pip._vendor.rich",
+            "pip._vendor.requests",
+            "pip._vendor.certifi",
+            "pip._vendor.urllib3",
+            "pip._vendor.idna",
+            "pip._vendor.charset_normalizer",
+            "pip._vendor.resolvelib",
+            "pip._vendor.tomli",
+            "pip._vendor.truststore",
+            "pip._vendor.pyproject_hooks",
+        ]
+        import importlib as _il
+        for _mod_name in _pip_vendor_preloads:
+            try:
+                _il.import_module(_mod_name)
+            except Exception:
+                pass
+
         try:
             import contextlib
 

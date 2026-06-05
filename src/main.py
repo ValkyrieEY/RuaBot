@@ -43,58 +43,6 @@ config_manager.reload()  # Force reload from TOML file
 get_config.cache_clear() if hasattr(get_config, 'cache_clear') else None
 config = get_config()
 
-# Sync debug and log_level on startup: ensure they are consistent
-# - if debug=true, log_level should be DEBUG
-# - if debug=false and log_level is DEBUG, log_level should be INFO
-import tomllib
-import tomli_w
-
-toml_file = get_config_file_path()
-
-if toml_file.exists():
-    try:
-        with open(toml_file, "rb") as f:
-            toml_data = tomllib.load(f)
-        
-        needs_update = False
-        
-        if config.debug and config.log_level.upper() != "DEBUG":
-            # Debug mode is enabled but log_level is not DEBUG, update it
-            if "logging" not in toml_data:
-                toml_data["logging"] = {}
-            toml_data["logging"]["level"] = "DEBUG"
-            if "app" not in toml_data:
-                toml_data["app"] = {}
-            toml_data["app"]["log_level"] = "DEBUG"
-            needs_update = True
-        elif not config.debug and config.log_level.upper() == "DEBUG":
-            # Debug mode is disabled but log_level is DEBUG, update it to INFO
-            if "logging" not in toml_data:
-                toml_data["logging"] = {}
-            toml_data["logging"]["level"] = "INFO"
-            if "app" not in toml_data:
-                toml_data["app"] = {}
-            toml_data["app"]["log_level"] = "INFO"
-            needs_update = True
-        
-        if needs_update:
-            # Save back to file
-            with open(toml_file, "wb") as f:
-                tomli_w.dump(toml_data, f)
-            
-            # Reload config to get updated log_level
-            config_manager.reload()
-            get_config.cache_clear() if hasattr(get_config, 'cache_clear') else None
-            config = get_config()
-    except Exception as e:
-        # If file update fails, override log_level for this session
-        if config.debug:
-            config.log_level = "DEBUG"
-        elif config.log_level.upper() == "DEBUG":
-            config.log_level = "INFO"
-        print(f"Warning: Failed to sync log_level with debug mode in config file: {e}")
-        print(f"Using {config.log_level} log level for this session.")
-
 setup_logger(
     name="xiaoyi_qq",
     level=config.log_level,
